@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Paper Trade India — NSE/BSE simulator</title>
+    <!-- Premium type: Inter (UI) + JetBrains Mono (numbers), from Google Fonts.
+         Each has a full SYSTEM fallback in styles.css, so the app still works
+         fully offline (it just falls back to the OS fonts if the CDN is blocked). -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="css/styles.css" />
+    <!-- Apply the saved light/dark theme BEFORE first paint so a light-theme
+         user doesn't see a flash of the default dark theme on reload. Tiny
+         inline vanilla script (no build step, no framework). -->
+    <script>
+      try {
+        var t = localStorage.getItem('paper-trade-india:theme');
+        if (t) document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <!-- ============ TOP STATUS BAR ============ -->
+    <header id="statusbar" class="statusbar">
+      <div class="brand">
+        <span class="brand-mark">◆</span>
+        <span class="brand-name">PAPER&nbsp;TRADE&nbsp;INDIA</span>
+        <span class="brand-tag">SIMULATION&nbsp;ONLY</span>
+      </div>
+      <div class="status-items">
+        <div class="status-item">
+          <span class="status-label">MARKET</span>
+          <span id="market-state" class="status-value">—</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">IST</span>
+          <span id="ist-clock" class="status-value num">--:--:--</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">DATA</span>
+          <span id="data-source" class="status-value">—</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">BALANCE</span>
+          <span id="balance" class="status-value num">—</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Prominent stale / closed banner -->
+    <div id="alert-banner" class="alert-banner hidden" role="status"></div>
+
+    <!-- ============ MAIN LAYOUT ============ -->
+    <div class="layout">
+      <!-- Left rail: navigation + watchlist -->
+      <aside class="leftrail">
+        <nav class="nav" aria-label="Main navigation">
+          <button class="nav-btn active" data-tab="dashboard">
+            <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+            <span>Dashboard</span>
+          </button>
+          <button class="nav-btn" data-tab="chain">
+            <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/><circle cx="8" cy="6" r="1.6" fill="currentColor" stroke="none"/><circle cx="16" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="10" cy="18" r="1.6" fill="currentColor" stroke="none"/></svg>
+            <span>Option Chain</span>
+          </button>
+          <button class="nav-btn" data-tab="strategy">
+            <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17l5-6 4 3 5-7 4 4"/><circle cx="8" cy="11" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="14" r="1.4" fill="currentColor" stroke="none"/><circle cx="17" cy="7" r="1.4" fill="currentColor" stroke="none"/></svg>
+            <span>Strategy Builder</span>
+          </button>
+          <button class="nav-btn" data-tab="orders">
+            <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5h11M9 12h11M9 19h11"/><path d="M4 5l1 1 1.5-2M4 12l1 1 1.5-2M4 19l1 1 1.5-2"/></svg>
+            <span>Orders</span>
+          </button>
+          <button class="nav-btn" data-tab="tournament">
+            <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M5 5H3v2a3 3 0 0 0 3 3M19 5h2v2a3 3 0 0 1-3 3"/></svg>
+            <span>Tournament</span>
+          </button>
+          <button class="nav-btn" data-tab="autopilot">
+            <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.4"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg>
+            <span>Auto-Pilot</span>
+          </button>
+        </nav>
+
+        <section class="watchlist-section">
+          <div class="section-head">
+            <h2>Watchlist</h2>
+            <div class="wl-controls">
+              <select id="watchlist-select" aria-label="Select watchlist"></select>
+              <button type="button" id="btn-new-watchlist" class="btn btn-mini" title="New watchlist">＋</button>
+              <button type="button" id="btn-del-watchlist" class="btn btn-mini" title="Delete this watchlist">🗑</button>
+            </div>
+          </div>
+          <form id="watch-form" class="watch-form" autocomplete="off">
+            <input
+              id="watch-input"
+              type="text"
+              placeholder="Add symbol e.g. TCS"
+              aria-label="Add symbol to watchlist"
+            />
+            <button type="submit" class="btn-accent">Add</button>
+          </form>
+          <div id="watchlist" class="watchlist"></div>
+        </section>
+
+        <section class="account-box">
+          <div class="section-head"><h2>Account</h2></div>
+          <div id="account-summary" class="account-summary"></div>
+          <div class="account-actions">
+            <button id="btn-export" class="btn">Export</button>
+            <button id="btn-import" class="btn">Import</button>
+            <button id="btn-reset" class="btn btn-danger">Reset</button>
+            <button id="btn-theme" class="btn">☀ Light</button>
+            <input id="import-file" type="file" accept="application/json" class="hidden" />
+          </div>
+        </section>
+
+        <section class="alerts-section">
+          <div class="section-head"><h2>Price Alerts</h2></div>
+          <form id="alert-form" class="watch-form" autocomplete="off">
+            <input id="alert-symbol" type="text" placeholder="Symbol" aria-label="Alert symbol" />
+            <select id="alert-op" aria-label="Alert condition">
+              <option value="above">≥</option>
+              <option value="below">≤</option>
+            </select>
+            <input id="alert-price" type="number" step="0.05" placeholder="Price" aria-label="Alert price" />
+            <button type="submit" class="btn-accent">Add</button>
+          </form>
+          <div id="alerts-list" class="alerts-list"></div>
+        </section>
+      </aside>
+
+      <!-- Main workspace -->
+      <main class="workspace">
+        <!-- ---- Positions / Dashboard ---- -->
+        <section id="tab-dashboard" class="tab-panel active">
+          <!-- Hero stat cards (headline P&L). Rendered by positions.js. -->
+          <div id="pnl-summary" class="hero-cards"></div>
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Markets</h2>
+            </div>
+            <div class="chart-row">
+              <div class="chart-box">
+                <div class="chart-title">
+                  <span id="chart-symbol">—</span>
+                  <span id="chart-ltp" class="num"></span>
+                  <div id="chart-timeframes" class="chart-timeframes" role="group" aria-label="Chart timeframe">
+                    <button type="button" class="tf-btn active" data-tf="1D">1D</button>
+                    <button type="button" class="tf-btn" data-tf="1W">1W</button>
+                    <button type="button" class="tf-btn" data-tf="1M">1M</button>
+                    <button type="button" class="tf-btn" data-tf="1Y">1Y</button>
+                    <button type="button" class="tf-btn" data-tf="5Y">5Y</button>
+                    <button type="button" class="tf-btn" data-tf="10Y">10Y</button>
+                    <button type="button" class="tf-btn" data-tf="Max">Max</button>
+                  </div>
+                </div>
+                <canvas id="price-chart" class="canvas" height="220"></canvas>
+              </div>
+              <div class="chart-box">
+                <div class="chart-title"><span>Account Value</span><span id="equity-now" class="num"></span></div>
+                <canvas id="equity-chart" class="canvas" height="220"></canvas>
+              </div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Open Positions</h2>
+              <div id="portfolio-greeks" class="strat-greeks"></div>
+              <button id="btn-square-off" class="btn btn-danger">Square off all</button>
+            </div>
+            <div id="positions-table" class="table-wrap"></div>
+          </div>
+        </section>
+
+        <!-- ---- Option Chain ---- -->
+        <section id="tab-chain" class="tab-panel">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Option Chain</h2>
+              <form id="chain-form" class="inline-form" autocomplete="off">
+                <input id="chain-symbol" type="text" value="NIFTY" aria-label="Option chain symbol" />
+                <select id="chain-expiry" aria-label="Expiry"></select>
+                <button type="submit" class="btn-accent">Load</button>
+              </form>
+            </div>
+            <div id="chain-meta" class="chain-meta"></div>
+            <div id="chain-table" class="table-wrap chain-table-wrap"></div>
+          </div>
+        </section>
+
+        <!-- ---- Strategy Builder ---- -->
+        <section id="tab-strategy" class="tab-panel">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Strategy Builder</h2>
+              <form id="strat-form" class="inline-form" autocomplete="off">
+                <input id="strat-symbol" type="text" value="NIFTY" aria-label="Underlying symbol" />
+                <input id="strat-spot" type="number" step="0.05" placeholder="Spot" aria-label="Spot price" />
+                <input id="strat-days" type="number" value="7" min="1" placeholder="Days" aria-label="Days to expiry" />
+                <select id="strat-template" aria-label="Strategy template"></select>
+                <button type="button" id="btn-load-template" class="btn-accent">Load</button>
+              </form>
+            </div>
+            <div class="strat-toolbar">
+              <input id="strat-name" type="text" placeholder="Name to save" aria-label="Strategy name" />
+              <button type="button" id="btn-save-strat" class="btn">Save</button>
+              <select id="strat-saved-list" aria-label="Saved strategies"></select>
+              <button type="button" id="btn-load-strat" class="btn">Load saved</button>
+              <button type="button" id="btn-delete-strat" class="btn btn-danger">Delete</button>
+              <button type="button" id="btn-load-positions" class="btn">Load my positions</button>
+            </div>
+            <div class="strat-grid">
+              <div class="strat-legs">
+                <div class="section-head"><h3>Legs</h3><button id="btn-add-leg" class="btn">+ Leg</button></div>
+                <div id="legs-table" class="table-wrap"></div>
+                <div id="strat-legs-pnl" class="strat-legs-pnl table-wrap"></div>
+              </div>
+              <div class="strat-output">
+                <canvas id="payoff-chart" class="canvas" height="260"></canvas>
+                <div id="strat-stats" class="strat-stats"></div>
+                <div id="strat-greeks" class="strat-greeks"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ---- Orders ---- -->
+        <section id="tab-orders" class="tab-panel">
+          <div class="panel order-ticket-panel">
+            <div class="panel-head"><h2>Order Ticket</h2></div>
+            <form id="order-ticket" class="order-ticket" autocomplete="off">
+              <div class="ticket-row">
+                <label>Type
+                  <select id="t-kind">
+                    <option value="EQ">Equity</option>
+                    <option value="FUT">Future</option>
+                    <option value="OPT">Option</option>
+                  </select>
+                </label>
+                <label>Symbol
+                  <input id="t-symbol" type="text" value="RELIANCE" />
+                </label>
+              </div>
+              <div class="ticket-row fno-only">
+                <label>Expiry <input id="t-expiry" type="text" placeholder="26-Jun-2026" /></label>
+                <label>Lot size <input id="t-lotsize" type="number" value="1" min="1" /></label>
+              </div>
+              <div class="ticket-row opt-only">
+                <label>Strike <input id="t-strike" type="number" step="0.05" /></label>
+                <label>Right
+                  <select id="t-opttype"><option value="CE">CE (Call)</option><option value="PE">PE (Put)</option></select>
+                </label>
+              </div>
+              <div class="ticket-row">
+                <label>Side
+                  <select id="t-side"><option value="BUY">BUY</option><option value="SELL">SELL</option></select>
+                </label>
+                <label>Order
+                  <select id="t-ordertype"><option value="MARKET">MARKET</option><option value="LIMIT">LIMIT</option></select>
+                </label>
+              </div>
+              <div class="ticket-row">
+                <label id="lots-label">Quantity <input id="t-lots" type="number" value="1" min="1" /></label>
+                <label>Price <input id="t-price" type="number" step="0.05" placeholder="auto = last" /></label>
+              </div>
+              <div class="ticket-row">
+                <label>Stop-loss <input id="t-sl" type="number" step="0.05" placeholder="optional" /></label>
+                <label>Target <input id="t-target" type="number" step="0.05" placeholder="optional" /></label>
+              </div>
+              <div id="ticket-estimate" class="ticket-estimate"></div>
+              <div class="ticket-actions">
+                <button type="submit" class="btn-buy">Place Order</button>
+                <button type="button" id="t-refresh-price" class="btn">Get last price</button>
+              </div>
+              <p class="ticket-note">All orders are simulated with virtual money. No real order is ever sent.</p>
+            </form>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Order History</h2>
+              <span id="pending-count" class="muted"></span>
+            </div>
+            <div id="orders-table" class="table-wrap"></div>
+          </div>
+        </section>
+
+        <!-- ---- Tournament ---- -->
+        <section id="tab-tournament" class="tab-panel">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Bot Tournament</h2>
+              <span id="tourn-meta" class="muted"></span>
+              <span class="row-actions" style="margin-left: auto">
+                <button id="btn-add-bot" class="btn btn-mini" title="Add a random strategy from the generated pool">+ Add bot</button>
+                <button id="btn-evolve" class="btn btn-mini" title="Breed challenger strategies and ADD a winner to the board (no bot is retired) — free, local, no API keys">Evolve ⚙</button>
+                <button id="btn-reset-tourn" class="btn btn-mini" title="Reset to the original line-up at generation 0">Reset</button>
+              </span>
+            </div>
+
+            <details class="tourn-help" style="margin: 0 0 10px">
+              <summary class="muted" style="cursor: pointer">❓ How this works (click to read)</summary>
+              <div class="muted" style="margin-top: 8px; line-height: 1.5">
+                <strong>What you're seeing:</strong> a set of trading "bots", each with <strong>₹1 crore of virtual
+                money</strong> against real prices. They never place a real order. Some trade a single index; the
+                <strong>BASKET</strong> bots dynamically <em>pick &amp; rebalance a portfolio of the best companies</em>
+                from a broad stock universe (the “active” hunters rotate weekly) — <strong>click any bot to see its full
+                trade history</strong>: what it bought, when, and each trade's profit/loss.<br />
+                <strong>Live % vs Track %:</strong> <em>Live</em> is the bot's <strong>latest trading day's</strong> return
+                (today's move). <em>Track</em> is its <strong>total return over its whole life</strong> so far — the big picture.<br />
+                <strong>Machine learning:</strong> three basket bots rank stocks with a <em>local machine-learning model</em> (a ridge
+                regressor, a logistic classifier and a gradient-boosted tree ensemble) trained <em>walk-forward</em> on the
+                price history — 100% free and offline, <strong>no external keys or API calls</strong>.<br />
+                <strong>Evolve ⚙:</strong> a free, local genetic algorithm breeds new strategies by tweaking the current
+                ones — across stocks, baskets <em>and</em> ML settings — backtests them, and <strong>adds</strong> any that
+                beat the weakest bot to the board. <strong>No bot is ever retired</strong> — old and new strategies stay so
+                you can compare them side by side (the board grows up to a cap). Bots tagged <code>·g3</code> were born in
+                generation 3.<br />
+                <strong>F&amp;O bots</strong> sell options (straddles/strangles/condors); their option prices are
+                <em>modelled</em> with Black-Scholes (no free option history exists), so treat F&amp;O numbers as indicative.
+                <strong>Click any bot</strong> to highlight its line and read what it does in plain English.
+              </div>
+            </details>
+
+            <!-- The leaderboard "view". Hidden while the per-bot detail PAGE is open. -->
+            <div id="tourn-board">
+              <div class="muted" style="margin: 0 0 9px; font-size: 12px">
+                💡 Click any bot to open its full <strong>portfolio, strategy rationale &amp; trade history</strong> →
+              </div>
+              <div id="tourn-table" class="table-wrap"></div>
+              <div class="muted" style="margin: 16px 0 4px">Equity race — growth since each bot's track start, on a <strong>log scale</strong> (so a 10× and a 100× bot are both visible across the ~20-year history). Lines are coloured by strategy kind; the highlighted line is the last bot you opened. Marked to market: the curves include the unrealised profit/loss of any open positions, so a line can move on a day with no trade.</div>
+              <div id="tourn-chart-windows" class="chart-windows"></div>
+              <canvas id="tourn-chart" class="canvas" height="240"></canvas>
+              <div id="tourn-legend" class="tourn-legend"></div>
+              <div id="tourn-history" class="muted" style="margin-top: 14px"></div>
+            </div>
+
+            <!-- The dedicated per-bot PAGE (strategy rationale + why each stock was
+                 chosen + portfolio + contributions + full history). Shown when a bot's
+                 "Full details" is opened; hidden otherwise. -->
+            <div id="tourn-botpage" hidden>
+              <button id="btn-botpage-back" class="btn btn-mini" type="button">← Back to leaderboard</button>
+              <div id="tourn-botpage-body" style="margin-top: 10px"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ---- Auto-Pilot (let a bot trade for me) ---- -->
+        <section id="tab-autopilot" class="tab-panel">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Auto-Pilot</h2>
+              <span id="ap-status" class="muted"></span>
+              <span class="row-actions" style="margin-left: auto">
+                <button id="ap-toggle" class="btn btn-accent" title="Start / pause letting a bot trade your account">▶ Start</button>
+                <button id="ap-sync" class="btn btn-mini" title="Re-copy the bot's portfolio right now">Sync now</button>
+              </span>
+            </div>
+
+            <details class="tourn-help" style="margin: 0 0 10px">
+              <summary class="muted" style="cursor: pointer">❓ How Auto-Pilot works (click to read)</summary>
+              <div class="muted" style="margin-top: 8px; line-height: 1.5">
+                Auto-Pilot picks the <strong>best bot</strong> from the tournament (in <em>Auto</em> mode it follows the best
+                <strong>risk-adjusted (Sharpe)</strong> bot — its no-hindsight walk-forward pick — or switch to <em>Manual</em>
+                and pick a bot yourself) and <strong>copies its portfolio onto your own ₹1-crore account</strong>. It places the same
+                trades through the normal engine, so your Positions, P&amp;L and Order History all update — and you can watch
+                a bot trade for you. <strong>It only trades when the bot rebalances</strong> (no churn on quiet days).<br />
+                <strong>It manages your whole account:</strong> when active it will buy/sell to match the bot, including
+                <em>replacing</em> any positions you opened manually. Use <strong>“Start fresh ₹1 cr”</strong> for a clean
+                slate. <strong>Pause</strong> stops new trades and leaves your positions as they are.<br />
+                F&amp;O option legs are copied and then <strong>re-priced live from the underlying</strong> with the same
+                <em>indicative</em> Black-Scholes model the bot uses (there's no free live option feed), so your copy
+                tracks the bot's P&amp;L between rebalances. Everything is <strong>virtual money — no real order is ever
+                sent.</strong>
+              </div>
+            </details>
+
+            <div class="ap-controls">
+              <label
+                >Strategy
+                <select id="ap-mode">
+                  <option value="auto">Auto — follow the best bot</option>
+                  <option value="manual">Manual — I pick the bot</option>
+                </select>
+              </label>
+              <button id="ap-fresh" class="btn btn-mini" title="Reset your account to a clean ₹1 crore so the copy starts fresh">Start fresh ₹1 cr</button>
+            </div>
+
+            <div id="ap-champion" style="margin: 10px 0"></div>
+
+            <!-- The honest "Auto-Pilot vs the market" multi-year walk-forward track record. -->
+            <div id="ap-track" style="margin: 10px 0"></div>
+
+            <div class="ap-grid">
+              <div>
+                <div class="section-head"><h3>What the bot holds → your copy</h3></div>
+                <div id="ap-holdings" class="table-wrap"></div>
+              </div>
+              <div>
+                <div class="section-head"><h3>Auto-Pilot activity</h3></div>
+                <div id="ap-actions"></div>
+              </div>
+            </div>
+
+            <div id="ap-picker" style="margin-top: 14px"></div>
+
+            <!-- Full Auto-Pilot detail (like a normal bot's page): what it DID on your account —
+                 equity curve, trade history with reasons, per-name P&L — plus the strategy it
+                 follows (which bot over time + a link to the followed bot's full page). -->
+            <div id="ap-detail" style="margin-top: 18px"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <!-- ES module entry point. type="module" => no build step needed. -->
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>
