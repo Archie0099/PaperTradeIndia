@@ -1,0 +1,17 @@
+# Render.com Blueprint — free deploy of Paper Trade India.
+# On render.com: New + > Blueprint > connect this repo. Render reads this file,
+# provisions a free web service, runs `npm install`, then `npm start`. It sets
+# the PORT env var automatically (src/config.js already reads process.env.PORT).
+#
+# SIMULATION ONLY — no real orders, no API keys, no paid services.
+services:
+  - type: web
+    name: paper-trade-india
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
