@@ -1,0 +1,2439 @@
+[
+  {
+    "kind": "EQ",
+    "name": "Triple-EMA stack",
+    "note": "fast>mid>slow EMA alignment = pure uptrend stack",
+    "entry": [
+      "and",
+      [
+        ">",
+        [
+          "ema",
+          8
+        ],
+        [
+          "ema",
+          21
+        ]
+      ],
+      [
+        ">",
+        [
+          "ema",
+          21
+        ],
+        [
+          "ema",
+          55
+        ]
+      ]
+    ],
+    "exit": [
+      "<",
+      [
+        "ema",
+        8
+      ],
+      [
+        "ema",
+        21
+      ]
+    ],
+    "_persona": "trend-hunter"
+  },
+  {
+    "kind": "EQ",
+    "name": "55-day breakout (Donchian)",
+    "note": "go long when price punches above the prior 55-day high; exit on 20-day low break",
+    "entry": [
+      ">",
+      [
+        "price"
+      ],
+      [
+        "high",
+        55
+      ]
+    ],
+    "exit": [
+      "<",
+      [
+        "price"
+      ],
+      [
+        "low",
+        20
+      ]
+    ],
+    "_persona": "trend-hunter"
+  },
+  {
+    "kind": "EQ",
+    "name": "Momentum 126 regime",
+    "note": "6-month price momentum positive AND above the 100-day mean",
+    "entry": [
+      "and",
+      [
+        ">",
+        [
+          "mom",
+          126
+        ],
+        0
+      ],
+      [
+        ">",
+        [
+          "price"
+        ],
+        [
+          "sma",
+          100
+        ]
+      ]
+    ],
+    "exit": [
+      "<",
+      [
+        "mom",
+        126
+      ],
+      0
+    ],
+    "_persona": "trend-hunter"
+  },
+  {
+    "kind": "EQ",
+    "name": "RSI thrust trend",
+    "note": "momentum ignition: RSI breaks above 60 while in an EMA uptrend",
+    "entry": [
+      "and",
+      [
+        ">",
+        [
+          "rsi",
+          10
+        ],
+        60
+      ],
+      [
+        ">",
+        [
+          "ema",
+          20
+        ],
+        [
+          "ema",
+          50
+        ]
+      ]
+    ],
+    "exit": [
+      "<",
+      [
+        "rsi",
+        10
+      ],
+      45
+    ],
+    "_persona": "trend-hunter"
+  },
+  {
+    "kind": "EQ",
+    "name": "Fast 5/15 cross scalper",
+    "note": "very fast MA cross for short-horizon momentum bursts",
+    "entry": [
+      ">",
+      [
+        "sma",
+        5
+      ],
+      [
+        "sma",
+        15
+      ]
+    ],
+    "exit": [
+      "<",
+      [
+        "sma",
+        5
+      ],
+      [
+        "sma",
+        15
+      ]
+    ],
+    "_persona": "trend-hunter"
+  },
+  {
+    "kind": "EQ",
+    "name": "20-day channel + vol throttle",
+    "note": "breakout above 20-day high, sized inversely to recent volatility",
+    "entry": [
+      ">",
+      [
+        "price"
+      ],
+      [
+        "high",
+        20
+      ]
+    ],
+    "exit": [
+      "<",
+      [
+        "price"
+      ],
+      [
+        "sma",
+        20
+      ]
+    ],
+    "weight": [
+      "clamp",
+      [
+        "/",
+        0.02,
+        [
+          "vol",
+          20
+        ]
+      ],
+      0.2,
+      1
+    ],
+    "_persona": "trend-hunter"
+  },
+  {
+    "kind": "EQ",
+    "name": "Continuous momentum sizer",
+    "note": "risk-on weight scales with normalized 60-day momentum (no hard on/off)",
+    "weight": [
+      "clamp",
+      [
+        "*",
+        10,
+        [
+          "/",
+          [
+            "mom",
+            60
+          ],
+          [
+            "price"
+          ]
+        ]
+      ],
+      0,
+      1
+    ],
+    "_persona": "trend-hunter"
+  },
+  {
+    "kind": "EQ",
+    "name": "Slow golden + momentum filter",
+    "note": "classic 50/200 trend but only when 1-month momentum confirms",
+    "entry": [
+      "and",
+      [
+        ">",
+        [
+          "sma",
+          50
+        ],
+        [
+          "sma",
+          200
+        ]
+      ],
+      [
+        ">",
+        [
+          "mom",
+          21
+        ],
+        0
+      ]
+    ],
+    "exit": [
+      "<",
+      [
+        "sma",
+        50
+      ],
+      [
+        "sma",
+        200
+      ]
+    ],
+    "_persona": "trend-hunter"
+  },
+  {
+    "kind": "EQ",
+    "name": "New-high persistence",
+    "note": "price at fresh 120-day high AND EMA rising = strong trend persistence",
+    "entry": [
+      "and",
+      [
+        ">=",
+        [
+          "price"
+        ],
+        [
+          "high",
+          120
+        ]
+      ],
+      [
+        ">",
+        [
+          "ema",
+          30
+        ],
+        [
+          "sma",
+          60
+        ]
+      ]
+    ],
+    "exit": [
+      "<",
+      [
+        "price"
+      ],
+      [
+        "ema",
+        30
+      ]
+    ],
+    "_persona": "trend-hunter"
+  },
+  {
+    "kind": "EQ",
+    "name": "Dual-RSI momentum gate",
+    "note": "fast RSI hot and slow RSI confirms regime; deploy more when both strong",
+    "entry": [
+      "and",
+      [
+        ">",
+        [
+          "rsi",
+          7
+        ],
+        55
+      ],
+      [
+        ">",
+        [
+          "rsi",
+          28
+        ],
+        50
+      ]
+    ],
+    "exit": [
+      "<",
+      [
+        "rsi",
+        28
+      ],
+      45
+    ],
+    "weight": [
+      "clamp",
+      [
+        "/",
+        [
+          "-",
+          [
+            "rsi",
+            14
+          ],
+          50
+        ],
+        30
+      ],
+      0.3,
+      1
+    ],
+    "_persona": "trend-hunter"
+  },
+  {
+    "kind": "FNO",
+    "name": "Bullish call ratio backspread",
+    "note": "trend-up convexity: sell 1 ATM call, buy 2 OTM calls for upside breakout",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1,
+        "lots": 1
+      },
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.05,
+        "lots": 2
+      }
+    ],
+    "_persona": "trend-hunter"
+  },
+  {
+    "kind": "FNO",
+    "name": "Momentum call debit spread",
+    "note": "directional up-trend bet: buy near-ATM call, sell further OTM to cheapen",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.01,
+        "lots": 2
+      },
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.08,
+        "lots": 2
+      }
+    ],
+    "_persona": "trend-hunter"
+  },
+  {
+    "kind": "FNO",
+    "name": "Breakout strangle (long gamma)",
+    "note": "buy OTM call + OTM put to ride a volatility breakout in either direction",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.06,
+        "lots": 1
+      },
+      {
+        "type": "PE",
+        "side": "BUY",
+        "strikePct": 0.94,
+        "lots": 1
+      }
+    ],
+    "_persona": "trend-hunter"
+  },
+  {
+    "kind": "EQ",
+    "name": "RSI capitulation buy",
+    "note": "Buy deep oversold RSI(7), exit on mean snap-back to 50",
+    "entry": [
+      "<",
+      [
+        "rsi",
+        7
+      ],
+      22
+    ],
+    "exit": [
+      ">",
+      [
+        "rsi",
+        7
+      ],
+      50
+    ],
+    "_persona": "contrarian"
+  },
+  {
+    "kind": "EQ",
+    "name": "Far below the 50-SMA",
+    "note": "Fade price stretched >6% under SMA50, exit when it reclaims the line",
+    "entry": [
+      "<",
+      [
+        "price"
+      ],
+      [
+        "*",
+        [
+          "sma",
+          50
+        ],
+        0.94
+      ]
+    ],
+    "exit": [
+      ">",
+      [
+        "price"
+      ],
+      [
+        "sma",
+        50
+      ]
+    ],
+    "_persona": "contrarian"
+  },
+  {
+    "kind": "EQ",
+    "name": "Lower-band knife catch",
+    "note": "Bollinger-style: buy when price pierces SMA20 minus 2 vol-units; exit at the mean",
+    "entry": [
+      "<",
+      [
+        "price"
+      ],
+      [
+        "-",
+        [
+          "sma",
+          20
+        ],
+        [
+          "*",
+          2,
+          [
+            "*",
+            [
+              "sma",
+              20
+            ],
+            [
+              "vol",
+              20
+            ]
+          ]
+        ]
+      ]
+    ],
+    "exit": [
+      ">=",
+      [
+        "price"
+      ],
+      [
+        "sma",
+        20
+      ]
+    ],
+    "_persona": "contrarian"
+  },
+  {
+    "kind": "EQ",
+    "name": "20-day low contrarian",
+    "note": "Buy a fresh prior 20-day low (breakdown fade), exit when 10-day momentum turns positive",
+    "entry": [
+      "<=",
+      [
+        "price"
+      ],
+      [
+        "low",
+        20
+      ]
+    ],
+    "exit": [
+      ">",
+      [
+        "mom",
+        10
+      ],
+      0
+    ],
+    "_persona": "contrarian"
+  },
+  {
+    "kind": "EQ",
+    "name": "Crash momentum fade",
+    "note": "60-bar return below -15% = oversold panic; ride the bounce until 20-bar mom recovers",
+    "entry": [
+      "<",
+      [
+        "mom",
+        60
+      ],
+      -0.15
+    ],
+    "exit": [
+      ">",
+      [
+        "mom",
+        20
+      ],
+      0.03
+    ],
+    "_persona": "contrarian"
+  },
+  {
+    "kind": "EQ",
+    "name": "Slow vs fast EMA dislocation",
+    "note": "Fast EMA9 dives under EMA34: short-term washout in a longer base; exit on re-cross",
+    "entry": [
+      "and",
+      [
+        "<",
+        [
+          "ema",
+          9
+        ],
+        [
+          "*",
+          [
+            "ema",
+            34
+          ],
+          0.97
+        ]
+      ],
+      [
+        "<",
+        [
+          "rsi",
+          14
+        ],
+        35
+      ]
+    ],
+    "exit": [
+      ">",
+      [
+        "ema",
+        9
+      ],
+      [
+        "ema",
+        34
+      ]
+    ],
+    "_persona": "contrarian"
+  },
+  {
+    "kind": "EQ",
+    "name": "Continuous oversold sizing",
+    "note": "No hard entry: size up as RSI(14) falls below 40, scaled 0..1, flat above 40",
+    "weight": [
+      "clamp",
+      [
+        "/",
+        [
+          "-",
+          40,
+          [
+            "rsi",
+            14
+          ]
+        ],
+        25
+      ],
+      0,
+      1
+    ],
+    "_persona": "contrarian"
+  },
+  {
+    "kind": "EQ",
+    "name": "Distance-weighted dip ladder",
+    "note": "Deploy more capital the further price sits below SMA100; cap at full size",
+    "weight": [
+      "clamp",
+      [
+        "*",
+        12,
+        [
+          "-",
+          1,
+          [
+            "/",
+            [
+              "price"
+            ],
+            [
+              "sma",
+              100
+            ]
+          ]
+        ]
+      ],
+      0,
+      1
+    ],
+    "_persona": "contrarian"
+  },
+  {
+    "kind": "EQ",
+    "name": "Calm-water reversion only",
+    "note": "Buy oversold RSI but only when volatility is low (avoid falling-knife chaos); inverse-vol sized",
+    "entry": [
+      "and",
+      [
+        "<",
+        [
+          "rsi",
+          10
+        ],
+        30
+      ],
+      [
+        "<",
+        [
+          "vol",
+          20
+        ],
+        0.02
+      ]
+    ],
+    "exit": [
+      ">",
+      [
+        "rsi",
+        10
+      ],
+      55
+    ],
+    "weight": [
+      "clamp",
+      [
+        "/",
+        0.012,
+        [
+          "vol",
+          20
+        ]
+      ],
+      0,
+      1
+    ],
+    "_persona": "contrarian"
+  },
+  {
+    "kind": "EQ",
+    "name": "Triple-confirm bottom fade",
+    "note": "Oversold RSI AND below lower vol-band AND near 30-day low — high-conviction reversion",
+    "entry": [
+      "and",
+      [
+        "<",
+        [
+          "rsi",
+          14
+        ],
+        28
+      ],
+      [
+        "<",
+        [
+          "price"
+        ],
+        [
+          "*",
+          [
+            "sma",
+            30
+          ],
+          0.92
+        ]
+      ],
+      [
+        "<=",
+        [
+          "price"
+        ],
+        [
+          "*",
+          [
+            "low",
+            30
+          ],
+          1.02
+        ]
+      ]
+    ],
+    "exit": [
+      ">=",
+      [
+        "price"
+      ],
+      [
+        "sma",
+        30
+      ]
+    ],
+    "_persona": "contrarian"
+  },
+  {
+    "kind": "FNO",
+    "name": "Oversold bull put spread",
+    "note": "Fade the panic: sell a 6% OTM put, buy a 12% OTM put as tail hedge — bet the dip holds",
+    "legs": [
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.94,
+        "lots": 2
+      },
+      {
+        "type": "PE",
+        "side": "BUY",
+        "strikePct": 0.88,
+        "lots": 2
+      }
+    ],
+    "_persona": "contrarian"
+  },
+  {
+    "kind": "FNO",
+    "name": "Contrarian put-skew harvest",
+    "note": "Sell two near-the-money puts into fear, finance one deep CE — directional reversion lean up",
+    "legs": [
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.97,
+        "lots": 2
+      },
+      {
+        "type": "PE",
+        "side": "BUY",
+        "strikePct": 0.9,
+        "lots": 1
+      },
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.06,
+        "lots": 1
+      }
+    ],
+    "_persona": "contrarian"
+  },
+  {
+    "kind": "FNO",
+    "name": "ATM short straddle",
+    "note": "Sell ATM CE+PE, pure theta harvest betting on a quiet expiry; max premium, undefined risk both sides.",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1,
+        "lots": 1
+      },
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 1,
+        "lots": 1
+      }
+    ],
+    "_persona": "vol-harvester"
+  },
+  {
+    "kind": "FNO",
+    "name": "Wide 6% strangle",
+    "note": "Sell 6% OTM call and put for a roomy, lower-gamma premium collect with a big breakeven corridor.",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.06,
+        "lots": 2
+      },
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.94,
+        "lots": 2
+      }
+    ],
+    "_persona": "vol-harvester"
+  },
+  {
+    "kind": "FNO",
+    "name": "Tight 2% strangle",
+    "note": "Aggressive near-the-money strangle for fat premium when you expect a dead-flat tape.",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.02,
+        "lots": 1
+      },
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.98,
+        "lots": 1
+      }
+    ],
+    "_persona": "vol-harvester"
+  },
+  {
+    "kind": "FNO",
+    "name": "Iron condor 3/7",
+    "note": "Defined-risk condor: sell 3% wings, buy 7% wings to cap tail losses while harvesting the middle.",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.03,
+        "lots": 1
+      },
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.07,
+        "lots": 1
+      },
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.97,
+        "lots": 1
+      },
+      {
+        "type": "PE",
+        "side": "BUY",
+        "strikePct": 0.93,
+        "lots": 1
+      }
+    ],
+    "_persona": "vol-harvester"
+  },
+  {
+    "kind": "FNO",
+    "name": "Iron condor 4/10",
+    "note": "Wide-bodied condor with far protective wings; lower credit but very forgiving breakevens.",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.04,
+        "lots": 2
+      },
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.1,
+        "lots": 2
+      },
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.96,
+        "lots": 2
+      },
+      {
+        "type": "PE",
+        "side": "BUY",
+        "strikePct": 0.9,
+        "lots": 2
+      }
+    ],
+    "_persona": "vol-harvester"
+  },
+  {
+    "kind": "FNO",
+    "name": "Put ratio 1x2",
+    "note": "Buy 1 ATM put, sell 2 deeper OTM puts for a net-credit bearish lean with a downside sweet spot.",
+    "legs": [
+      {
+        "type": "PE",
+        "side": "BUY",
+        "strikePct": 0.99,
+        "lots": 1
+      },
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.93,
+        "lots": 2
+      }
+    ],
+    "_persona": "vol-harvester"
+  },
+  {
+    "kind": "FNO",
+    "name": "Call ratio 1x3",
+    "note": "Buy 1 near-ATM call, sell 3 OTM calls; extreme credit-skewed bet that the upside stays capped.",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.01,
+        "lots": 1
+      },
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.05,
+        "lots": 3
+      }
+    ],
+    "_persona": "vol-harvester"
+  },
+  {
+    "kind": "FNO",
+    "name": "Naked OTM put",
+    "note": "Sell a single 5% OTM put to get paid for a willingness to 'buy the dip' in the index.",
+    "legs": [
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.95,
+        "lots": 2
+      }
+    ],
+    "_persona": "vol-harvester"
+  },
+  {
+    "kind": "FNO",
+    "name": "Jade lizard",
+    "note": "Sell OTM put + sell OTM call spread so total credit erases all upside risk; only downside is exposed.",
+    "legs": [
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.96,
+        "lots": 1
+      },
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.03,
+        "lots": 1
+      },
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.06,
+        "lots": 1
+      }
+    ],
+    "_persona": "vol-harvester"
+  },
+  {
+    "kind": "FNO",
+    "name": "Broken-wing butterfly call",
+    "note": "Skewed call fly (sell 2 ATM, buy unequal wings) for a cheap-or-credit upside fade with limited risk.",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1,
+        "lots": 1
+      },
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.04,
+        "lots": 2
+      },
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.1,
+        "lots": 1
+      }
+    ],
+    "_persona": "vol-harvester"
+  },
+  {
+    "kind": "FNO",
+    "name": "Big lizard double ratio",
+    "note": "Short straddle plus a long OTM wing on each side, scaled, to crush vol while taming the worst tail.",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1,
+        "lots": 2
+      },
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 1,
+        "lots": 2
+      },
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.08,
+        "lots": 1
+      },
+      {
+        "type": "PE",
+        "side": "BUY",
+        "strikePct": 0.92,
+        "lots": 1
+      }
+    ],
+    "_persona": "vol-harvester"
+  },
+  {
+    "kind": "EQ",
+    "name": "Short-vol regime filter",
+    "note": "Equity overlay that only deploys when realized vol is low and not in freefall — a calm-tape proxy for when to sell premium.",
+    "entry": [
+      "and",
+      [
+        "<",
+        [
+          "vol",
+          20
+        ],
+        0.012
+      ],
+      [
+        ">",
+        [
+          "rsi",
+          14
+        ],
+        45
+      ]
+    ],
+    "exit": [
+      "or",
+      [
+        ">",
+        [
+          "vol",
+          20
+        ],
+        0.02
+      ],
+      [
+        "<",
+        [
+          "rsi",
+          14
+        ],
+        35
+      ]
+    ],
+    "weight": [
+      "clamp",
+      [
+        "/",
+        0.008,
+        [
+          "vol",
+          20
+        ]
+      ],
+      0,
+      1
+    ],
+    "_persona": "vol-harvester"
+  },
+  {
+    "kind": "EQ",
+    "name": "Vol-targeted regime rider",
+    "note": "Long only above the 200-SMA trend filter; size inversely to 20-day vol so risk stays constant, going flat in downtrends.",
+    "entry": [
+      ">",
+      [
+        "price"
+      ],
+      [
+        "sma",
+        200
+      ]
+    ],
+    "exit": [
+      "<",
+      [
+        "price"
+      ],
+      [
+        "sma",
+        200
+      ]
+    ],
+    "weight": [
+      "clamp",
+      [
+        "/",
+        0.012,
+        [
+          "vol",
+          20
+        ]
+      ],
+      0,
+      1
+    ],
+    "_persona": "defensive"
+  },
+  {
+    "kind": "EQ",
+    "name": "Dual-trend safety gate",
+    "note": "Requires both medium (50>150) and long (price>200) uptrend agreement; flattens the moment either breaks. Pure drawdown avoidance.",
+    "entry": [
+      "and",
+      [
+        ">",
+        [
+          "sma",
+          50
+        ],
+        [
+          "sma",
+          150
+        ]
+      ],
+      [
+        ">",
+        [
+          "price"
+        ],
+        [
+          "sma",
+          200
+        ]
+      ]
+    ],
+    "exit": [
+      "or",
+      [
+        "<",
+        [
+          "sma",
+          50
+        ],
+        [
+          "sma",
+          150
+        ]
+      ],
+      [
+        "<",
+        [
+          "price"
+        ],
+        [
+          "sma",
+          200
+        ]
+      ]
+    ],
+    "_persona": "defensive"
+  },
+  {
+    "kind": "EQ",
+    "name": "Calm-uptrend dip buyer",
+    "note": "Buys RSI pullbacks ONLY when above 100-SMA and vol is calm; avoids catching falling knives in turbulent regimes.",
+    "entry": [
+      "and",
+      [
+        ">",
+        [
+          "price"
+        ],
+        [
+          "sma",
+          100
+        ]
+      ],
+      [
+        "<",
+        [
+          "rsi",
+          10
+        ],
+        35
+      ],
+      [
+        "<",
+        [
+          "vol",
+          20
+        ],
+        0.02
+      ]
+    ],
+    "exit": [
+      "or",
+      [
+        ">",
+        [
+          "rsi",
+          10
+        ],
+        60
+      ],
+      [
+        "<",
+        [
+          "price"
+        ],
+        [
+          "sma",
+          100
+        ]
+      ]
+    ],
+    "weight": [
+      "clamp",
+      [
+        "/",
+        0.01,
+        [
+          "vol",
+          20
+        ]
+      ],
+      0.2,
+      1
+    ],
+    "_persona": "defensive"
+  },
+  {
+    "kind": "EQ",
+    "name": "Inverse-vol continuous sizer",
+    "note": "Always-on but continuously de-risks: weight shrinks as 30-day vol rises, with a hard trend kill-switch baked into clamp via momentum sign proxy.",
+    "weight": [
+      "clamp",
+      [
+        "*",
+        [
+          "/",
+          0.015,
+          [
+            "vol",
+            30
+          ]
+        ],
+        [
+          "max",
+          0,
+          [
+            "min",
+            1,
+            [
+              "/",
+              [
+                "mom",
+                60
+              ],
+              0.05
+            ]
+          ]
+        ]
+      ],
+      0,
+      1
+    ],
+    "_persona": "defensive"
+  },
+  {
+    "kind": "EQ",
+    "name": "Drawdown-avoid channel break",
+    "note": "Enters on a 50-day high breakout confirmed by long trend; exits hard on a 20-day low (Donchian stop) to cap drawdowns.",
+    "entry": [
+      "and",
+      [
+        ">=",
+        [
+          "price"
+        ],
+        [
+          "high",
+          50
+        ]
+      ],
+      [
+        ">",
+        [
+          "sma",
+          50
+        ],
+        [
+          "sma",
+          200
+        ]
+      ]
+    ],
+    "exit": [
+      "<=",
+      [
+        "price"
+      ],
+      [
+        "low",
+        20
+      ]
+    ],
+    "weight": [
+      "clamp",
+      [
+        "/",
+        0.012,
+        [
+          "vol",
+          25
+        ]
+      ],
+      0,
+      1
+    ],
+    "_persona": "defensive"
+  },
+  {
+    "kind": "EQ",
+    "name": "Momentum-with-brakes",
+    "note": "Long when 120-day momentum is positive, but weight scales down smoothly as short-term vol expands relative to long-term vol (regime stress).",
+    "entry": [
+      ">",
+      [
+        "mom",
+        120
+      ],
+      0
+    ],
+    "exit": [
+      "<",
+      [
+        "mom",
+        120
+      ],
+      0
+    ],
+    "weight": [
+      "clamp",
+      [
+        "/",
+        [
+          "vol",
+          60
+        ],
+        [
+          "max",
+          [
+            "vol",
+            10
+          ],
+          0.001
+        ]
+      ],
+      0.1,
+      1
+    ],
+    "_persona": "defensive"
+  },
+  {
+    "kind": "EQ",
+    "name": "Triple-EMA cascade flat-in-down",
+    "note": "Needs a clean fast>mid>slow EMA stack; any inversion goes flat. Classic regime switch that sits out chop and downtrends.",
+    "entry": [
+      "and",
+      [
+        ">",
+        [
+          "ema",
+          10
+        ],
+        [
+          "ema",
+          30
+        ]
+      ],
+      [
+        ">",
+        [
+          "ema",
+          30
+        ],
+        [
+          "ema",
+          60
+        ]
+      ]
+    ],
+    "exit": [
+      "<",
+      [
+        "ema",
+        10
+      ],
+      [
+        "ema",
+        30
+      ]
+    ],
+    "_persona": "defensive"
+  },
+  {
+    "kind": "EQ",
+    "name": "RSI regime + vol floor",
+    "note": "Stays long while RSI(20) holds a bullish regime above 50, but only deploys when vol is below a ceiling; de-risks into volatility spikes.",
+    "entry": [
+      ">",
+      [
+        "rsi",
+        20
+      ],
+      50
+    ],
+    "exit": [
+      "<",
+      [
+        "rsi",
+        20
+      ],
+      45
+    ],
+    "weight": [
+      "clamp",
+      [
+        "-",
+        1,
+        [
+          "/",
+          [
+            "vol",
+            20
+          ],
+          0.04
+        ]
+      ],
+      0,
+      1
+    ],
+    "_persona": "defensive"
+  },
+  {
+    "kind": "EQ",
+    "name": "Crash-avoidance long-flat",
+    "note": "Goes flat fast: exits if price drops below the 20-low OR the 60-day momentum turns negative; re-enters only above 100-SMA. Capital preservation first.",
+    "entry": [
+      "and",
+      [
+        ">",
+        [
+          "price"
+        ],
+        [
+          "sma",
+          100
+        ]
+      ],
+      [
+        ">",
+        [
+          "mom",
+          60
+        ],
+        0
+      ]
+    ],
+    "exit": [
+      "or",
+      [
+        "<=",
+        [
+          "price"
+        ],
+        [
+          "low",
+          20
+        ]
+      ],
+      [
+        "<",
+        [
+          "mom",
+          60
+        ],
+        0
+      ]
+    ],
+    "weight": [
+      "clamp",
+      [
+        "/",
+        0.01,
+        [
+          "vol",
+          15
+        ]
+      ],
+      0.25,
+      1
+    ],
+    "_persona": "defensive"
+  },
+  {
+    "kind": "FNO",
+    "name": "Defensive far OTM strangle",
+    "note": "Premium collection with wide wings (8% OTM each side) for low-gamma, drawdown-tolerant theta in calm regimes.",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.08,
+        "lots": 1
+      },
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.92,
+        "lots": 1
+      }
+    ],
+    "_persona": "defensive"
+  },
+  {
+    "kind": "FNO",
+    "name": "Crash-hedged put-spread collar",
+    "note": "Net-long-vol protection: buy a near put, finance with a far OTM put sale and a far OTM call sale. Defends the downside while keeping carry positive.",
+    "legs": [
+      {
+        "type": "PE",
+        "side": "BUY",
+        "strikePct": 0.97,
+        "lots": 1
+      },
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.9,
+        "lots": 1
+      },
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.07,
+        "lots": 1
+      }
+    ],
+    "_persona": "defensive"
+  },
+  {
+    "kind": "FNO",
+    "name": "Iron condor regime fade",
+    "note": "Defined-risk premium: sell a 5% strangle, buy 9% wings. Capped max loss makes it survive a vol regime shift without blowup.",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.05,
+        "lots": 1
+      },
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.09,
+        "lots": 1
+      },
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.95,
+        "lots": 1
+      },
+      {
+        "type": "PE",
+        "side": "BUY",
+        "strikePct": 0.91,
+        "lots": 1
+      }
+    ],
+    "_persona": "defensive"
+  },
+  {
+    "kind": "FNO",
+    "name": "Tail-risk put ladder",
+    "note": "Pure drawdown insurance: long two near puts financed by a single deep put sale, leaving a long-vol, crash-protective skew.",
+    "legs": [
+      {
+        "type": "PE",
+        "side": "BUY",
+        "strikePct": 0.96,
+        "lots": 2
+      },
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.85,
+        "lots": 1
+      }
+    ],
+    "_persona": "defensive"
+  },
+  {
+    "kind": "EQ",
+    "name": "Fibonacci triple-EMA stack",
+    "note": "trend: long only when fast>mid>slow EMAs in Fibonacci order",
+    "entry": [
+      "and",
+      [
+        ">",
+        [
+          "ema",
+          13
+        ],
+        [
+          "ema",
+          55
+        ]
+      ],
+      [
+        ">",
+        [
+          "ema",
+          55
+        ],
+        [
+          "ema",
+          233
+        ]
+      ]
+    ],
+    "exit": [
+      "<",
+      [
+        "ema",
+        13
+      ],
+      [
+        "ema",
+        55
+      ]
+    ],
+    "_persona": "mad-scientist"
+  },
+  {
+    "kind": "EQ",
+    "name": "Quiet breakout hunter",
+    "note": "hybrid: break 47-day high but only when 20-day vol compressed",
+    "entry": [
+      "and",
+      [
+        ">",
+        [
+          "price"
+        ],
+        [
+          "high",
+          47
+        ]
+      ],
+      [
+        "<",
+        [
+          "vol",
+          20
+        ],
+        0.018
+      ]
+    ],
+    "exit": [
+      "<",
+      [
+        "price"
+      ],
+      [
+        "sma",
+        23
+      ]
+    ],
+    "_persona": "mad-scientist"
+  },
+  {
+    "kind": "EQ",
+    "name": "RSI sandwich mean-revert",
+    "note": "reversion: dip in uptrend OR deep panic flush",
+    "entry": [
+      "or",
+      [
+        "and",
+        [
+          ">",
+          [
+            "sma",
+            30
+          ],
+          [
+            "sma",
+            100
+          ]
+        ],
+        [
+          "<",
+          [
+            "rsi",
+            9
+          ],
+          35
+        ]
+      ],
+      [
+        "<",
+        [
+          "rsi",
+          9
+        ],
+        15
+      ]
+    ],
+    "exit": [
+      ">",
+      [
+        "rsi",
+        9
+      ],
+      62
+    ],
+    "_persona": "mad-scientist"
+  },
+  {
+    "kind": "EQ",
+    "name": "Inverse-vol risk parity sizing",
+    "note": "continuous weight: target 1.2% daily risk",
+    "weight": [
+      "clamp",
+      [
+        "/",
+        0.012,
+        [
+          "max",
+          [
+            "vol",
+            30
+          ],
+          0.004
+        ]
+      ],
+      0.05,
+      1
+    ],
+    "_persona": "mad-scientist"
+  },
+  {
+    "kind": "EQ",
+    "name": "Momentum-scaled conviction",
+    "note": "long on positive 89d momentum, size by strength",
+    "entry": [
+      ">",
+      [
+        "mom",
+        89
+      ],
+      0
+    ],
+    "exit": [
+      "<",
+      [
+        "mom",
+        89
+      ],
+      0
+    ],
+    "weight": [
+      "clamp",
+      [
+        "*",
+        [
+          "mom",
+          89
+        ],
+        4
+      ],
+      0.1,
+      1
+    ],
+    "_persona": "mad-scientist"
+  },
+  {
+    "kind": "EQ",
+    "name": "Donchian squeeze rider",
+    "note": "ride upper Donchian band above sma5",
+    "entry": [
+      "and",
+      [
+        ">",
+        [
+          "price"
+        ],
+        [
+          "sma",
+          5
+        ]
+      ],
+      [
+        ">",
+        [
+          "price"
+        ],
+        [
+          "-",
+          [
+            "high",
+            20
+          ],
+          [
+            "*",
+            0.25,
+            [
+              "-",
+              [
+                "high",
+                20
+              ],
+              [
+                "low",
+                20
+              ]
+            ]
+          ]
+        ]
+      ]
+    ],
+    "exit": [
+      "<",
+      [
+        "price"
+      ],
+      [
+        "low",
+        10
+      ]
+    ],
+    "_persona": "mad-scientist"
+  },
+  {
+    "kind": "EQ",
+    "name": "Dual-RSI regime switch",
+    "note": "fast RSI strong, slow RSI not euphoric; fade when both overheat",
+    "entry": [
+      "and",
+      [
+        ">",
+        [
+          "rsi",
+          7
+        ],
+        55
+      ],
+      [
+        "<",
+        [
+          "rsi",
+          28
+        ],
+        70
+      ]
+    ],
+    "exit": [
+      "and",
+      [
+        ">",
+        [
+          "rsi",
+          7
+        ],
+        80
+      ],
+      [
+        ">",
+        [
+          "rsi",
+          28
+        ],
+        75
+      ]
+    ],
+    "_persona": "mad-scientist"
+  },
+  {
+    "kind": "EQ",
+    "name": "Stretch-from-mean fader",
+    "note": "buy >7% below 144d mean, exit on reversion",
+    "entry": [
+      "<",
+      [
+        "price"
+      ],
+      [
+        "*",
+        0.93,
+        [
+          "sma",
+          144
+        ]
+      ]
+    ],
+    "exit": [
+      ">",
+      [
+        "price"
+      ],
+      [
+        "sma",
+        144
+      ]
+    ],
+    "weight": [
+      "clamp",
+      [
+        "/",
+        [
+          "-",
+          [
+            "sma",
+            144
+          ],
+          [
+            "price"
+          ]
+        ],
+        [
+          "sma",
+          144
+        ]
+      ],
+      0.2,
+      1
+    ],
+    "_persona": "mad-scientist"
+  },
+  {
+    "kind": "EQ",
+    "name": "Vol-of-vol throttle trend",
+    "note": "uptrend with brake when short-vol exceeds long-vol",
+    "entry": [
+      ">",
+      [
+        "ema",
+        21
+      ],
+      [
+        "ema",
+        89
+      ]
+    ],
+    "exit": [
+      "<",
+      [
+        "ema",
+        21
+      ],
+      [
+        "ema",
+        89
+      ]
+    ],
+    "weight": [
+      "clamp",
+      [
+        "/",
+        [
+          "vol",
+          60
+        ],
+        [
+          "max",
+          [
+            "vol",
+            10
+          ],
+          0.005
+        ]
+      ],
+      0.15,
+      1
+    ],
+    "_persona": "mad-scientist"
+  },
+  {
+    "kind": "FNO",
+    "name": "Iron condor 5-3",
+    "note": "sell 5% strangle, buy 8% wings",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.05,
+        "lots": 1
+      },
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.95,
+        "lots": 1
+      },
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.08,
+        "lots": 1
+      },
+      {
+        "type": "PE",
+        "side": "BUY",
+        "strikePct": 0.92,
+        "lots": 1
+      }
+    ],
+    "_persona": "mad-scientist"
+  },
+  {
+    "kind": "FNO",
+    "name": "Skewed call broken-wing fly",
+    "note": "bullish: ATM body, sell 2x 4% OTM, buy 9% tail",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1,
+        "lots": 1
+      },
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.04,
+        "lots": 2
+      },
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.09,
+        "lots": 1
+      }
+    ],
+    "_persona": "mad-scientist"
+  },
+  {
+    "kind": "FNO",
+    "name": "Jade lizard no-upside-risk",
+    "note": "sell ATM put + short call spread financed by put",
+    "legs": [
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.98,
+        "lots": 2
+      },
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.03,
+        "lots": 2
+      },
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.06,
+        "lots": 2
+      }
+    ],
+    "_persona": "mad-scientist"
+  },
+  {
+    "kind": "FNO",
+    "name": "Naked CE moonshot",
+    "note": "single short call, far OTM, pure theta + bearish/neutral tilt; uncapped upside risk",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.08,
+        "lots": 1
+      }
+    ],
+    "_persona": "fno-explorer"
+  },
+  {
+    "kind": "FNO",
+    "name": "Naked PE cushion",
+    "note": "single short put, 6% OTM; collect premium betting market doesn't crash",
+    "legs": [
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.94,
+        "lots": 2
+      }
+    ],
+    "_persona": "fno-explorer"
+  },
+  {
+    "kind": "FNO",
+    "name": "Put-skewed strangle",
+    "note": "sell asymmetric strangle leaning bullish: tighter call, wider put to respect crash-skew",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.03
+      },
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.9
+      }
+    ],
+    "_persona": "fno-explorer"
+  },
+  {
+    "kind": "FNO",
+    "name": "Call-skewed strangle",
+    "note": "bearish-tilt strangle: wide call, tight put, harvesting flat-to-down drift",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.1
+      },
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.97
+      }
+    ],
+    "_persona": "fno-explorer"
+  },
+  {
+    "kind": "FNO",
+    "name": "Razor-thin condor",
+    "note": "very-narrow iron condor straddling ATM; max premium, max gamma pain",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.01
+      },
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.03
+      },
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.99
+      },
+      {
+        "type": "PE",
+        "side": "BUY",
+        "strikePct": 0.97
+      }
+    ],
+    "_persona": "fno-explorer"
+  },
+  {
+    "kind": "FNO",
+    "name": "Cavernous condor",
+    "note": "very-wide iron condor with deep wings; low premium, sleeps through most moves",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.12
+      },
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.2
+      },
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.88
+      },
+      {
+        "type": "PE",
+        "side": "BUY",
+        "strikePct": 0.8
+      }
+    ],
+    "_persona": "fno-explorer"
+  },
+  {
+    "kind": "FNO",
+    "name": "Call ratio backspread",
+    "note": "buy 2 OTM calls, finance with 1 nearer short call; bullish convexity, limited downside",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.02,
+        "lots": 1
+      },
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.06,
+        "lots": 2
+      }
+    ],
+    "_persona": "fno-explorer"
+  },
+  {
+    "kind": "FNO",
+    "name": "Put ratio spread",
+    "note": "sell 3 puts, buy 1 lower as partial hedge; aggressive bullish premium, naked tail",
+    "legs": [
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.95,
+        "lots": 3
+      },
+      {
+        "type": "PE",
+        "side": "BUY",
+        "strikePct": 0.88,
+        "lots": 1
+      }
+    ],
+    "_persona": "fno-explorer"
+  },
+  {
+    "kind": "FNO",
+    "name": "ATM call butterfly",
+    "note": "classic 3-strike fly: long wings, short 2x body at ATM; pinning bet on expiry",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 0.98,
+        "lots": 1
+      },
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1,
+        "lots": 2
+      },
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.02,
+        "lots": 1
+      }
+    ],
+    "_persona": "fno-explorer"
+  },
+  {
+    "kind": "FNO",
+    "name": "Broken-wing put fly",
+    "note": "skewed 3-strike put butterfly, wider lower wing -> credit + bullish lean, no downside debit",
+    "legs": [
+      {
+        "type": "PE",
+        "side": "BUY",
+        "strikePct": 1,
+        "lots": 1
+      },
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.95,
+        "lots": 2
+      },
+      {
+        "type": "PE",
+        "side": "BUY",
+        "strikePct": 0.86,
+        "lots": 1
+      }
+    ],
+    "_persona": "fno-explorer"
+  },
+  {
+    "kind": "FNO",
+    "name": "Jade lizard",
+    "note": "short OTM put + short call spread above; net credit with zero upside risk if credit > call width",
+    "legs": [
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.94,
+        "lots": 1
+      },
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.05,
+        "lots": 1
+      },
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.09,
+        "lots": 1
+      }
+    ],
+    "_persona": "fno-explorer"
+  },
+  {
+    "kind": "FNO",
+    "name": "Synthetic risk reversal",
+    "note": "bullish synthetic long: sell deep put, buy OTM call; replicates long futures with skew edge",
+    "legs": [
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.92,
+        "lots": 1
+      },
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.04,
+        "lots": 1
+      }
+    ],
+    "_persona": "fno-explorer"
+  },
+  {
+    "kind": "FNO",
+    "name": "Tail-risk crash hedge",
+    "note": "long deep-OTM puts at the 0.5 bound, financed by a tight near-ATM credit put spread",
+    "legs": [
+      {
+        "type": "PE",
+        "side": "BUY",
+        "strikePct": 0.5,
+        "lots": 3
+      },
+      {
+        "type": "PE",
+        "side": "SELL",
+        "strikePct": 0.97,
+        "lots": 1
+      },
+      {
+        "type": "PE",
+        "side": "BUY",
+        "strikePct": 0.93,
+        "lots": 1
+      }
+    ],
+    "_persona": "fno-explorer"
+  },
+  {
+    "kind": "FNO",
+    "name": "Short call ladder",
+    "note": "three short calls climbing OTM (multi-strike) for layered theta; staggered tail risk",
+    "legs": [
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.04,
+        "lots": 2
+      },
+      {
+        "type": "CE",
+        "side": "SELL",
+        "strikePct": 1.08,
+        "lots": 1
+      },
+      {
+        "type": "CE",
+        "side": "BUY",
+        "strikePct": 1.15,
+        "lots": 1
+      }
+    ],
+    "_persona": "fno-explorer"
+  }
+]
