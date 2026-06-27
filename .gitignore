@@ -1,0 +1,17 @@
+# Node dependencies (re-created by `npm install`)
+node_modules/
+
+# Local environment overrides (never commit secrets)
+.env
+
+# Cached market history (re-downloaded free on first run)
+backtest/data/
+
+# Runtime tournament state (per-deployment forward data, regenerated on boot)
+data/
+
+# Logs and OS junk
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
