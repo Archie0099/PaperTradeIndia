@@ -232,6 +232,20 @@ function validateBasket(spec) {
   // Optimiser knobs (used by the meanvar/riskparity weightings; harmless otherwise).
   if (spec.covLookback !== undefined && !(Number.isInteger(spec.covLookback) && spec.covLookback >= 20 && spec.covLookback <= 504)) return 'basket.covLookback must be 20..504';
   if (spec.maxWeight !== undefined && !(Number.isFinite(spec.maxWeight) && spec.maxWeight > 0 && spec.maxWeight <= 1)) return 'basket.maxWeight must be in (0,1]';
+  // Risk-overlay knobs (research; all optional — absent means the legacy behaviour,
+  // byte-identical). `dailyGate` reads the marketGate EVERY bar instead of only at
+  // rebalance bars (so a crash building BETWEEN rebalances is exited in days, not weeks);
+  // it is meaningless without a marketGate, so the pair is required together.
+  // `gateConfirmBars` is the whipsaw buffer: a gate flip only takes effect after that many
+  // CONSECUTIVE bars agree. `volTarget`/`volLookback` scale gross exposure at decision bars
+  // by min(1, volTarget / realized annualized market vol) — de-risk only, never leverage.
+  if (spec.dailyGate !== undefined) {
+    if (typeof spec.dailyGate !== 'boolean') return 'basket.dailyGate must be a boolean';
+    if (spec.dailyGate && spec.marketGate === undefined) return 'basket.dailyGate requires basket.marketGate';
+  }
+  if (spec.gateConfirmBars !== undefined && !(Number.isInteger(spec.gateConfirmBars) && spec.gateConfirmBars >= 1 && spec.gateConfirmBars <= 10)) return 'basket.gateConfirmBars must be 1..10';
+  if (spec.volTarget !== undefined && !(Number.isFinite(spec.volTarget) && spec.volTarget > 0 && spec.volTarget < 1)) return 'basket.volTarget must be in (0,1)';
+  if (spec.volLookback !== undefined && !(Number.isInteger(spec.volLookback) && spec.volLookback >= 20 && spec.volLookback <= 252)) return 'basket.volLookback must be 20..252';
   if (spec.mlConfig !== undefined) {
     const m = spec.mlConfig;
     if (!m || typeof m !== 'object') return 'basket.mlConfig must be an object';

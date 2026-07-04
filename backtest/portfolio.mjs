@@ -178,6 +178,17 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
   const rebalanceBars = spec.rebalanceBars;
   const covLookback = spec.covLookback || 63; // trailing window for the optimiser's covariance
   const maxWeight = spec.maxWeight || 1;       // per-name weight cap (optimiser weightings)
+  // --- Risk-overlay knobs (research) — ALL default OFF, so every path below is
+  // byte-identical to the legacy behaviour when a spec doesn't carry them. -----------
+  // dailyGate: read the marketGate EVERY bar (not only at rebalance bars) so a crash
+  // that builds BETWEEN rebalances is exited within days. gateConfirmBars is the
+  // whipsaw buffer (a flip must hold for N consecutive bars before it acts).
+  // volTarget/volLookback: scale gross exposure at DECISION bars by
+  // min(1, volTarget / realized annualized market vol) — de-risk only, never leverage.
+  const dailyGate = spec.dailyGate === true && spec.marketGate !== undefined;
+  const gateConfirmBars = spec.gateConfirmBars || 1; // 1 = act on the first confirmed flip
+  const volTarget = spec.volTarget == null ? null : spec.volTarget; // annualized, e.g. 0.15
+  const volLookback = spec.volLookback || 63;
   const inst = {}, key = {};
   for (const s of universe) { inst[s] = { kind: 'EQ', symbol: s, lotSize: 1 }; key[s] = `EQ:${s.toUpperCase()}`; }
 
@@ -185,6 +196,13 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
   let targetW = null;       // weights to apply at the NEXT bar (one-bar lag)
   let pending = false;      // a rebalance was decided last bar; execute it now
   let lastRebalGi = -Infinity;
+  // Daily-gate state (dailyGate only). gateOn is the CONFIRMED regime state — it starts
+  // risk-off (an unwarm/null gate reads as OFF, exactly matching the legacy rebalance-bar
+  // semantics, so warmup stays flat and the first confirmed ON triggers the first buy).
+  // gateStreak counts CONSECUTIVE bars whose raw reading disagrees with gateOn; the
+  // state flips only when the streak reaches gateConfirmBars.
+  let gateOn = false;
+  let gateStreak = 0;
   let trades = 0;
   // The LATEST rebalance decision (only captured in recording mode) — powers the
   // per-bot page's "why each stock was chosen": every candidate's rank score +
@@ -201,13 +219,20 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
   const buyReason = (s, curQty) => {
     if (!lastRankCtx) return 'Bought toward the target weight.';
     const info = lastRankCtx.rankBySym.get(s);
+    // A daily-gate re-entry is a full rebalance triggered by the market filter turning
+    // back on — say so, instead of implying a scheduled cycle.
+    const prefix = lastRankCtx.gateReentry && curQty === 0 ? 'Gate re-entry — the market filter flipped back risk-on, triggering a full rebalance: ' : '';
     return curQty === 0
-      ? `Entered ${s} — ${rankMetric} ranked it ${rankAt(info)} this rebalance, so it made the cut into the basket's top ${lastRankCtx.K} holdings and was bought to its target weight.`
+      ? `${prefix}Entered ${s} — ${rankMetric} ranked it ${rankAt(info)} this rebalance, so it made the cut into the basket's top ${lastRankCtx.K} holdings and was bought to its target weight.`
       : `Added to ${s} — it held its place in the top ${lastRankCtx.K} (now ${rankAt(info)}); topping the position back up to its target weight.`;
   };
   const sellReason = (s, desiredQty) => {
     if (!lastRankCtx) return 'Reduced the position.';
+    // Daily-gate exit outranks the generic risk-off wording: this sell happened MID-CYCLE
+    // because the per-bar gate confirmed a flip, not on a scheduled rebalance.
+    if (lastRankCtx.gateExit) return `Daily regime gate exit — the market filter (NIFTY trend) flipped to "cash"${gateConfirmBars > 1 ? ` (confirmed over ${gateConfirmBars} bars)` : ''}, so the basket sold every holding immediately instead of waiting for the next scheduled rebalance.`;
     if (!lastRankCtx.riskOn) return `Risk-off — the market filter (NIFTY trend) flipped to "cash", so the basket sold every holding and is sitting fully in cash this cycle to sidestep a falling market.`;
+    if (lastRankCtx.chosen.has(s) && desiredQty > 0 && lastRankCtx.volScalar != null && lastRankCtx.volScalar < 0.999) return `Vol-target trim — trailing ${volLookback}-day market volatility ran above the ${(volTarget * 100).toFixed(0)}%/yr target, so gross exposure was scaled to ${(lastRankCtx.volScalar * 100).toFixed(0)}% and ${s} was trimmed to its reduced target weight.`;
     if (lastRankCtx.chosen.has(s) && desiredQty > 0) return `Trimmed ${s} back to its target weight — still a holding, just rebalanced down so no single name runs over its allocation.`;
     const info = lastRankCtx.rankBySym.get(s);
     return info
@@ -274,17 +299,52 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
     // (c) Record account value, marked at this bar's clean close (one point/bar).
     equityCurve.push(engine.equity());
 
+    // (d0) DAILY GATE (opt-in): read the confirmed regime state EVERY bar. A confirmed
+    // flip OFF flattens the whole book (executed NEXT bar — the one-bar lag holds; note
+    // `pending` is always false here, step (b) consumed it this bar, so this can never
+    // clobber an unexecuted scheduled target — only follow one, an honest one-bar round
+    // trip). A confirmed flip ON triggers a FULL rebalance decision at this bar.
+    let gateReentry = false;
+    if (dailyGate) {
+      const mi = A.marketRealIdx ? A.marketRealIdx[gi] : -1;
+      const raw = mi >= 0 && evalNode(spec.marketGate, A.marketCloses, mi) === true;
+      if (raw === gateOn) {
+        gateStreak = 0;                       // agreement resets the whipsaw counter
+      } else if (++gateStreak >= gateConfirmBars) {
+        gateOn = raw; gateStreak = 0;         // confirmed flip
+        if (!gateOn) {
+          targetW = {}; pending = true;       // flatten, executed next bar
+          if (tradeLog) {
+            lastRankCtx = { rankBySym: new Map(), chosen: new Set(), N: 0, K: k, riskOn: false, gateExit: true };
+            lastDecision = { t: master[gi], riskOn: false, trigger: 'daily-gate-exit', weighting, universeSize: universe.length, passedGate: 0, candidates: [], mlWeights: null };
+          }
+        } else {
+          gateReentry = true;                 // re-enter via a full rebalance below
+        }
+      }
+    }
+
     // (d) DECIDE the next target on a rebalance bar, using ONLY data up to gi.
-    if (gi - lastRebalGi >= rebalanceBars) {
+    // (A daily-gate re-entry is a full-information rebalance too — and it resets the
+    // rebalance clock via `lastRebalGi = gi`, so the next scheduled one is a full
+    // cycle away instead of double-trading a few bars later.)
+    if (gateReentry || gi - lastRebalGi >= rebalanceBars) {
       lastRebalGi = gi;
       const decisionTime = master[gi];
 
       // Portfolio-level risk-off: if the market gate is present and not satisfied
-      // (or the proxy has no data yet), sit entirely in cash this cycle.
+      // (or the proxy has no data yet), sit entirely in cash this cycle. Under
+      // dailyGate the CONFIRMED per-bar state is the single source of truth (so a
+      // scheduled rebalance during a confirmed risk-off cycle stays in cash even if
+      // the raw gate blips true for a day).
       let riskOn = true;
       if (spec.marketGate !== undefined) {
-        const mi = A.marketRealIdx ? A.marketRealIdx[gi] : -1;
-        riskOn = mi >= 0 && evalNode(spec.marketGate, A.marketCloses, mi) === true;
+        if (dailyGate) {
+          riskOn = gateOn;
+        } else {
+          const mi = A.marketRealIdx ? A.marketRealIdx[gi] : -1;
+          riskOn = mi >= 0 && evalNode(spec.marketGate, A.marketCloses, mi) === true;
+        }
       }
 
       // Gather the listed, gate-passing names (with their OWN closes + real bar index).
@@ -355,7 +415,23 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
         }
         if (ok) optimizer = { cols, mu: top.map((t) => t.score), maxWeight };
       }
-      const w = weightsFor(top, weighting, gross, optimizer);
+      // Vol-target (opt-in): scale gross by min(1, volTarget / realized market vol),
+      // computed ONLY at decision bars (a per-bar rescale would micro-churn —
+      // the failure mode the trend research study proved). The MARKET proxy's vol is used, not the strategy's own
+      // equity curve: own-equity vol is ~0 during a flat/risk-off spell, which would
+      // blow the scalar up to the cap exactly at re-entry (and is a self-referential
+      // feedback loop besides). Unwarm/absent proxy -> scalar 1 (matching research/tsmom.mjs);
+      // the cap at 1 means the overlay can only DE-RISK, never lever up.
+      let effGross = gross;
+      let volScalar = 1;
+      if (volTarget != null) {
+        const mi = A.marketRealIdx ? A.marketRealIdx[gi] : -1;
+        const sd = mi >= 0 ? retStdev(A.marketCloses, mi, volLookback) : null;
+        const annVol = sd != null && Number.isFinite(sd) ? sd * Math.sqrt(252) : null;
+        volScalar = annVol > 0 ? Math.min(1, volTarget / annVol) : 1;
+        effGross = gross * volScalar;
+      }
+      const w = weightsFor(top, weighting, effGross, optimizer);
       targetW = {};
       top.forEach((t, i) => { targetW[t.sym] = w[i]; });
       pending = true; // execute at the NEXT bar
@@ -369,7 +445,7 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
         // Rank context for explaining the NEXT bar's trades (entered/exited/trimmed + rank).
         const rankBySym = new Map();
         candidates.forEach((c, idx) => rankBySym.set(c.sym, { rank: idx + 1, score: c.score }));
-        lastRankCtx = { rankBySym, chosen: new Set(top.map((tt) => tt.sym)), N: candidates.length, K: k, riskOn };
+        lastRankCtx = { rankBySym, chosen: new Set(top.map((tt) => tt.sym)), N: candidates.length, K: k, riskOn, gateReentry, volScalar };
         // For an OPTIMISER basket, surface each chosen name's share of portfolio risk
         // (so the per-bot page can show "risk contributions"). Off the hot path — only
         // computed here in recording mode (it rebuilds the covariance).
@@ -380,9 +456,9 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
           // inverse-vol (singular covariance / infeasible cap), `w` holds the FALLBACK weights — and a
           // Risk % computed on those yet labelled as the optimiser's risk share would mislead.
           const wOpt = weighting === 'meanvar'
-            ? meanVarWeights(optimizer.cols, optimizer.mu, gross, optimizer.maxWeight)
-            : riskParityWeights(optimizer.cols, gross, optimizer.maxWeight);
-          const used = wOpt && wOpt.length === top.length && wOpt.every((x) => Number.isFinite(x) && x >= 0) && wOpt.reduce((a, b) => a + b, 0) >= gross - 1e-6;
+            ? meanVarWeights(optimizer.cols, optimizer.mu, effGross, optimizer.maxWeight)
+            : riskParityWeights(optimizer.cols, effGross, optimizer.maxWeight);
+          const used = wOpt && wOpt.length === top.length && wOpt.every((x) => Number.isFinite(x) && x >= 0) && wOpt.reduce((a, b) => a + b, 0) >= effGross - 1e-6;
           if (used) {
             const rc = riskContributions(optimizer.cols, wOpt);
             if (rc) { riskContribBySym = {}; top.forEach((t, i) => { riskContribBySym[t.sym] = rc[i]; }); }
@@ -392,6 +468,10 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
           t: decisionTime,
           riskOn,
           weighting,
+          // Overlay context (risk-overlay knobs) — conditional-spread only, so the legacy
+          // JSON surface is unchanged when the knobs are off.
+          ...(dailyGate ? { trigger: gateReentry ? 'gate-reentry' : 'schedule' } : {}),
+          ...(volTarget != null ? { volScalar: +volScalar.toFixed(4), effGrossPct: +(effGross * 100).toFixed(1) } : {}),
           universeSize: universe.length,
           passedGate: candidates.length, // names that cleared the gate (and risk-on)
           candidates: candidates.map((c) => ({

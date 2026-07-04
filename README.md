@@ -1,4 +1,4 @@
-# Paper Trade India
+﻿# Paper Trade India
 
 Paper Trade India is a browser-based paper-trading terminal for Indian stocks and F&O (NSE and BSE). It uses virtual money only and never places a real order. A small Node and Express backend serves the frontend and proxies free market data, and the whole trading simulation runs in your browser.
 
@@ -40,7 +40,7 @@ The money model holds one identity exactly across every instrument type: realise
 ## Tests
 
 ```bash
-npm test          # 519 tests, runs with node --test
+npm test          # 527 tests, runs with node --test
 ```
 
 The suite covers the engine and money invariants, option pricing and payoffs, the backtester and tournament, the machine-learning rankers, and the browser UI (driven through jsdom). `jsdom` is the only development dependency.
