@@ -13,16 +13,28 @@
 // funded simply doesn't open (the book sits flat that month).
 // ---------------------------------------------------------------------------
 
-import { freshEngine, snapshotPositions } from './harness.mjs';
+import { freshEngine, snapshotPositions, chargeFee, feesCharged } from './harness.mjs';
 import { instrumentKey } from '../public/js/core/engine.js';
 import { summarize } from './metrics.mjs';
 import { modelIV, priceOptionAt } from './options-model.mjs';
+import { optFillPrice } from './costs.mjs';
 
 const HOLD_BARS = 21; // ~1 trading month per cycle (monthly options)
 
 const roundStrike = (x, step) => Math.round(x / step) * step;
 
-function runFnoBacktest({ strategy, candles, symbol = 'NIFTY', cash = 1_000_000, lotSize = 75, strikeStep = 50, keepOpen = false, recordTrades = false }) {
+// COSTS: pass `costModel` (backtest/costs.mjs indexOptionCosts()) for honest results —
+// each traded leg then crosses half a bid-ask spread off the Black-Scholes MID, pays the
+// proportional charges (STT on sell premium, exchange txn charge, stamp) baked into its
+// fill price, plus flat brokerage per order and STT on an exercised ITM long at expiry
+// (both charged via harness.chargeFee). Without it legs fill AT the model mid for free —
+// the legacy behaviour, kept for the hand-computed engine tests (which pass null
+// explicitly). The honest surfaces (tournament, CLIs) always pass the real model.
+//
+// `volPremium` is THE modelling assumption the seller edge rests on (options priced at
+// realized vol × this). Exposed so a sensitivity run can show results at 1.0/1.1/1.2
+// instead of asserting one number — see backtest/fno-sensitivity.mjs.
+function runFnoBacktest({ strategy, candles, symbol = 'NIFTY', cash = 1_000_000, lotSize = 75, strikeStep = 50, keepOpen = false, recordTrades = false, costModel = null, volPremium = 1.2 }) {
   const closes = candles.map((c) => c.c);
   const times = candles.map((c) => c.t);
   const n = closes.length;
@@ -77,11 +89,14 @@ function runFnoBacktest({ strategy, candles, symbol = 'NIFTY', cash = 1_000_000,
     // trade-history reason honestly — an early settle closes at the model MARK (time value intact),
     // not "intrinsic". Same for all legs of a cycle, so compute it once.
     const daysLeft = Math.max(0, (cycle.expiryTime - times[i]) / 864e5);
+    const isExpiry = daysLeft <= 0;
     for (const leg of cycle.legs) {
       const pos = engine.state.positions[leg.key];
       if (!pos || pos.qty === 0) continue;
+      const wasLong = pos.qty > 0;
+      const units = Math.abs(pos.qty);
       const intrinsic = priceOptionAt(leg.inst.optType, spot, leg.inst.strike, 0, iv);
-      const lots = Math.abs(pos.qty) / leg.inst.lotSize;
+      const lots = units / leg.inst.lotSize;
       const side = pos.qty < 0 ? 'BUY' : 'SELL'; // offset to flat
       // Close at the leg's CURRENT marked price, NOT a forced intrinsic. At a TRUE expiry
       // markCycle already set this mark to intrinsic (daysLeft 0), so completed cycles stay
@@ -90,11 +105,20 @@ function runFnoBacktest({ strategy, candles, symbol = 'NIFTY', cash = 1_000_000,
       // over-credit a short seller unearned time-decay on a stub cycle, or (b) under/over-
       // value a deep-ITM leg vs its discounted model price. Falls back to intrinsic if unmarked.
       const mark = engine.state.lastPrices[leg.key];
-      const closePrice = Math.max(Number.isFinite(mark) && mark > 0 ? mark : intrinsic, 0.05);
+      const base = Math.max(Number.isFinite(mark) && mark > 0 ? mark : intrinsic, 0.05);
+      // COSTS. A true expiry is a cash SETTLEMENT, not a trade: no spread/exchange charge —
+      // but the exchange auto-exercises an ITM LONG, charging STT on the settlement value
+      // (sellers pay nothing at expiry). An early settle is a real market close: it crosses
+      // the spread + pays the proportional charges (in the fill price) + flat brokerage.
+      const closePrice = costModel && !isExpiry ? optFillPrice(costModel, side, base) : base;
       const r0 = engine.realisedTotal();
       engine.placeOrder({ instrument: leg.inst, side, orderType: 'MARKET', lots, price: closePrice });
+      if (costModel) {
+        if (!isExpiry) chargeFee(engine, costModel.brokeragePerOrder);
+        else if (wasLong && intrinsic > 0) chargeFee(engine, costModel.settleLongSttRate * intrinsic * units);
+      }
       trades++;
-      const reason = daysLeft <= 0
+      const reason = isExpiry
         ? `Expiry — the ${leg.inst.strike} ${leg.inst.optType} settled at its intrinsic value (₹${closePrice.toFixed(2)}); the monthly cycle closed and its margin is freed for the next one.`
         : `Closed the ${leg.inst.strike} ${leg.inst.optType} early at its current model price (mark-to-market, ₹${closePrice.toFixed(2)}) — the run ended before this cycle's expiry; its margin is freed.`;
       logTrade(times[i], leg.inst, `${side} (close)`, lots, closePrice, r0, reason);
@@ -105,7 +129,7 @@ function runFnoBacktest({ strategy, candles, symbol = 'NIFTY', cash = 1_000_000,
   for (let i = 0; i < n; i++) {
     const spot = closes[i];
     if (!(spot > 0)) { equityCurve.push(engine.equity()); continue; }
-    const iv = modelIV(closes, i);
+    const iv = modelIV(closes, i, { volPremium });
 
     markCycle(i, iv);
     // Settle only when the cycle has TRULY reached its natural expiry (within the data). The
@@ -156,8 +180,14 @@ function runFnoBacktest({ strategy, candles, symbol = 'NIFTY', cash = 1_000_000,
         const opened = []; // { inst, key, spec, price, lots } for legs that actually filled
         let allOk = true;
         for (const spec of specs) {
-          const price = priceOptionAt(spec.type, spot, spec.strike, daysToExpiry, iv);
-          if (!(price > 0)) { allOk = false; break; }
+          const modelPrice = priceOptionAt(spec.type, spot, spec.strike, daysToExpiry, iv);
+          if (!(modelPrice > 0)) { allOk = false; break; }
+          // The model price is a MID; a real order crosses half the bid-ask spread and
+          // pays the proportional charges — both baked into the fill price when a cost
+          // model runs (a SELL collects less than mid, a BUY pays more). The rollback
+          // path below offsets at this SAME fill price, so an aborted cycle is an
+          // exact, costless undo either way.
+          const price = costModel ? optFillPrice(costModel, spec.side, modelPrice) : modelPrice;
           // expiryMs (a real timestamp) + iv are carried so the Auto-Pilot copy can
           // RE-MARK this leg client-side from the live underlying (the cyc{i} expiry never
           // appears in a real option chain). iv is refreshed each bar in markCycle.
@@ -174,6 +204,7 @@ function runFnoBacktest({ strategy, candles, symbol = 'NIFTY', cash = 1_000_000,
           const r0 = engine.realisedTotal();
           for (const o of opened) {
             legs.push({ inst: o.inst, key: o.key });
+            if (costModel) chargeFee(engine, costModel.brokeragePerOrder); // flat ₹/order, only on a COMMITTED leg
             trades++;
             const why = o.spec.side === 'SELL'
               ? `Sold the ${o.spec.strike} ${o.spec.type} for ₹${o.price.toFixed(2)} — an opening leg of this month's premium-selling cycle, collecting time-decay (theta) while the index stays in range.`
@@ -214,7 +245,7 @@ function runFnoBacktest({ strategy, candles, symbol = 'NIFTY', cash = 1_000_000,
     let si = n - 1;
     while (si >= 0 && !(closes[si] > 0)) si--;
     if (si >= 0) {
-      closeCycle(si, modelIV(closes, si));
+      closeCycle(si, modelIV(closes, si, { volPremium }));
       if (equityCurve.length) equityCurve[equityCurve.length - 1] = engine.equity();
     }
   }
@@ -233,7 +264,13 @@ function runFnoBacktest({ strategy, candles, symbol = 'NIFTY', cash = 1_000_000,
   }
 
   const years = n >= 2 ? (times[n - 1] - times[0]) / (365.25 * 864e5) : undefined;
-  return { name: strategy.name, note: strategy.note, equityCurve, position, finalPositions: snapshotPositions(engine), metrics: summarize(equityCurve, { years, trades }), ...(tradeLog ? { trades: tradeLog } : {}) };
+  return {
+    name: strategy.name, note: strategy.note, equityCurve, position,
+    finalPositions: snapshotPositions(engine),
+    metrics: summarize(equityCurve, { years, trades }),
+    costs: { model: costModel ? costModel.kind : 'none', feesPaid: +feesCharged(engine).toFixed(2) },
+    ...(tradeLog ? { trades: tradeLog } : {}),
+  };
 }
 
 // --- starter F&O strategies (index option selling — the classic "crazy") -----

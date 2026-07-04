@@ -35,6 +35,27 @@ function freshEngine(cash = 1_000_000) {
   return e;
 }
 
+// Charge a NON-TRADE fee (F&O brokerage, SLB borrow on a short, expiry STT) to a
+// backtest engine. Debits cash directly — so the fee genuinely shows up in equity,
+// returns, Sharpe and drawdown — and accrues it on a ledger the backtesters report.
+// This deliberately does NOT touch `realised` (fees are not trading P&L) and does
+// NOT touch `initialCash` (that would hide the fee from the return calculation).
+// The MASTER money invariant therefore EXTENDS for fee-charged runs:
+//     realisedTotal + unrealisedTotal − feesCharged == equity − initialCash
+// (For a run that never calls chargeFee, feesCharged is 0 and the classic
+// invariant holds unchanged.) HARNESS-only: the live browser engine has no fees.
+function chargeFee(engine, amount) {
+  if (!(amount > 0) || !Number.isFinite(amount)) return 0;
+  engine.state.cash -= amount;
+  engine._feesCharged = (engine._feesCharged || 0) + amount;
+  return amount;
+}
+
+// Total fees charged to this engine via chargeFee (0 when none were).
+function feesCharged(engine) {
+  return engine._feesCharged || 0;
+}
+
 // Snapshot the engine's OPEN positions as plain, serialisable data. Used by the live
 // tournament so the "Auto-Pilot" can COPY a bot's current portfolio onto the personal
 // paper account: each entry carries the FULL instrument spec (so even an F&O option
@@ -71,4 +92,4 @@ function snapshotPositions(engine) {
   return out;
 }
 
-export { freshEngine, snapshotPositions };
+export { freshEngine, snapshotPositions, chargeFee, feesCharged };

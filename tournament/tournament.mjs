@@ -31,7 +31,8 @@ import { runBacktest } from '../backtest/backtester.mjs';
 import { runFnoBacktest } from '../backtest/fno.mjs';
 import { runPortfolioBacktest } from '../backtest/portfolio.mjs';
 import { runPairsBacktest } from '../backtest/pairs.mjs';
-import { sharpe as sharpeOfCurve, maxDrawdownPct } from '../backtest/metrics.mjs';
+import { sharpe as sharpeOfCurve, maxDrawdownPct, RF_ANNUAL } from '../backtest/metrics.mjs';
+import { equityDeliveryCosts, equityIntradayCosts, indexOptionCosts } from '../backtest/costs.mjs';
 import { makeRankSource } from '../backtest/ml.mjs';
 import { safeCompile, explainSpec, strategyRationale } from '../backtest/dsl.mjs';
 import freeProvider from '../src/dataSources/freeProvider.js';
@@ -43,6 +44,13 @@ import { evolve, scoreSpec, fitness } from './evolve.mjs';
 import { readFileSync as readFile, existsSync as fileExists } from 'node:fs';
 
 const INDEX_SPECS = FNO_INDICES; // F&O lot size + strike grid, keyed by index symbol
+
+// The tournament always runs the REAL Indian cost schedules (backtest/costs.mjs) —
+// the leaderboard is the project's honest surface, so no bot trades for a flat 5bps
+// or sells option premium for free. Built once; the models are pure + stateless.
+const EQ_COSTS = equityDeliveryCosts();      // daily EQ / BASKET / PAIRS legs (incl. SLB borrow on shorts)
+const EQ_COSTS_INTRADAY = equityIntradayCosts(); // the 60m intraday track (lighter STT, no overnight borrow)
+const OPT_COSTS = indexOptionCosts();        // F&O premium sellers (spread + charges + brokerage + expiry STT)
 // The "backfill" is each bot's visible TRACK RECORD before its forward/live clock
 // starts. We make it the ENTIRE fetched history (Infinity = no cap) so every bot
 // trades from the OLDEST data we can fetch — by design. For daily bots that is
@@ -219,7 +227,12 @@ function multiResCurve(points, max = 120) {
 // Benchmarked against Buy & Hold (₹1cr in NIFTY). Pure function of the bots' equity curves.
 const AP_REBAL_BARS = 63; // re-pick the followed bot ~quarterly
 const AP_MIN_HISTORY = 252; // a bot needs ≥ ~1 year of history before it can be followed
-function computeAutopilotTrack(curves, cash) {
+// `triSeries` (optional): daily candles of a TOTAL-RETURN proxy for the market —
+// NIFTYBEES's dividend-adjusted close. The primary benchmark stays the NIFTY price
+// index (full ~20y window, and the walk-forward mechanics are untouched), but "the
+// market" really pays dividends, so where the TRI proxy's history overlaps the
+// walk-forward we ALSO report the head-to-head over that common window (`benchTri`).
+function computeAutopilotTrack(curves, cash, triSeries = null) {
   const usable = (curves || []).filter((c) => Array.isArray(c.eq) && Array.isArray(c.times) && c.eq.length === c.times.length && c.times.length >= 2);
   if (!usable.length) return null;
   // Benchmark / master timeline = the protected Buy & Hold (₹1cr in NIFTY), else the longest series.
@@ -243,10 +256,14 @@ function computeAutopilotTrack(curves, cash) {
   // live copy actually does (and the walk-forward's CURRENT pick == the live champion). Reads
   // no future data, so the whole thing stays look-ahead-free.
   const sharpeUpTo = (a, hi) => {
+    // EXCESS-of-risk-free per-bar returns (same convention as metrics.mjs), so the
+    // champion is picked on the honest hurdle — a bot merely matching the T-bill
+    // rate with volatility no longer looks "risk-adjusted positive".
+    const rfBar = RF_ANNUAL / 252;
     const rets = [];
     for (let j = 1; j <= hi; j++) {
       const p = a[j - 1];
-      if (p != null && p > 0 && a[j] != null) rets.push(a[j] / p - 1);
+      if (p != null && p > 0 && a[j] != null) rets.push(a[j] / p - 1 - rfBar);
     }
     if (rets.length < 20) return -Infinity;
     const m = rets.reduce((s, x) => s + x, 0) / rets.length;
@@ -291,6 +308,35 @@ function computeAutopilotTrack(curves, cash) {
     const prevB = benchEqArr.length ? benchEqArr[benchEqArr.length - 1] : cash;
     benchEqArr.push(benchA.a[i] != null && benchBase > 0 ? cash * (benchA.a[i] / benchBase) : prevB);
   }
+  // TRI-proxy head-to-head (see the triSeries doc above): forward-fill the proxy onto
+  // the master timeline, then compare the Auto-Pilot and the proxy over the COMMON
+  // window (both rebased at the proxy's first bar inside the walk-forward). Reported
+  // only when the overlap is ≥ ~1 year — a shorter head-to-head says nothing.
+  let benchTri = null;
+  if (Array.isArray(triSeries) && triSeries.length >= 2) {
+    const tri = new Array(master.length).fill(null);
+    let ti = 0, lastT = null;
+    for (let i = 0; i < master.length; i++) {
+      while (ti < triSeries.length && triSeries[ti].t <= master[i]) { lastT = triSeries[ti].c; ti++; }
+      tri[i] = lastT;
+    }
+    let base = -1;
+    for (let i = startIdx; i < master.length; i++) { if (tri[i] != null && tri[i] > 0) { base = i; break; } }
+    const end = master.length - 1;
+    if (base >= 0 && master[end] - master[base] >= 365 * 864e5
+      && tri[end] != null && tri[end] > 0 && ap[base] != null && ap[base] > 0 && ap[end] != null) {
+      const apReturnPct = +(((ap[end] / ap[base]) - 1) * 100).toFixed(2);
+      const triReturnPct = +(((tri[end] / tri[base]) - 1) * 100).toFixed(2);
+      benchTri = {
+        name: 'NIFTYBEES (dividend-adjusted market proxy)',
+        startedAt: master[base],
+        apReturnPct,
+        triReturnPct,
+        vsPct: +(apReturnPct - triReturnPct).toFixed(2),
+      };
+    }
+  }
+
   const DAY = 864e5;
   const metricsOf = (times, eq) => {
     const last = eq[eq.length - 1];
@@ -321,6 +367,7 @@ function computeAutopilotTrack(curves, cash) {
     metrics: apM,
     benchMetrics: benchM,
     benchName: bench.name,
+    benchTri, // dividend-adjusted market head-to-head over the common window (null if no proxy data)
     vsMarketPct: +((apM.trackReturnPct || 0) - (benchM.trackReturnPct || 0)).toFixed(2),
     currentBot: chosen ? { id: chosen.id, name: chosen.name, kind: chosen.kind, symbol: chosen.symbol, holdings: chosen.holdings || null } : null,
     followedCount: new Set(followed.map((f) => f.id)).size,
@@ -487,7 +534,7 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       const dbs = {};
       for (const s of spec.universe) dbs[s] = seriesFor(s, interval);
       const rankSource = spec.mlConfig ? makeRankSource({ spec, dataBySymbol: dbs }) : null;
-      return runPortfolioBacktest({ spec, dataBySymbol: dbs, marketSeries: seriesFor('NIFTY'), cash: CASH, costBps: 5, rankSource, recordTrades, intraday, alignCache });
+      return runPortfolioBacktest({ spec, dataBySymbol: dbs, marketSeries: seriesFor('NIFTY'), cash: CASH, costModel: intraday ? EQ_COSTS_INTRADAY : EQ_COSTS, rankSource, recordTrades, intraday, alignCache });
     }
     if (bot.kind === 'PAIRS') {
       // A PAIRS bot also spans many stocks (long/short pairs) — gather each
@@ -496,13 +543,13 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       const spec = bot.spec;
       const dbs = {};
       for (const s of spec.universe) dbs[s] = seriesFor(s, interval);
-      return runPairsBacktest({ spec, dataBySymbol: dbs, cash: CASH, costBps: 5, recordTrades, intraday });
+      return runPairsBacktest({ spec, dataBySymbol: dbs, cash: CASH, costModel: EQ_COSTS, recordTrades, intraday });
     }
     if (bot.kind === 'FNO') {
       const spec = INDEX_SPECS[bot.symbol] || INDEX_SPECS.NIFTY;
-      return runFnoBacktest({ strategy: bot.strategy, candles, symbol: bot.symbol, cash: CASH, ...spec, keepOpen: true, recordTrades });
+      return runFnoBacktest({ strategy: bot.strategy, candles, symbol: bot.symbol, cash: CASH, ...spec, keepOpen: true, recordTrades, costModel: OPT_COSTS });
     }
-    return runBacktest({ strategy: bot.strategy, candles, symbol: bot.symbol, cash: CASH, costBps: 5, recordTrades, intraday, spec: bot.spec });
+    return runBacktest({ strategy: bot.strategy, candles, symbol: bot.symbol, cash: CASH, costModel: intraday ? EQ_COSTS_INTRADAY : EQ_COSTS, recordTrades, intraday, spec: bot.spec });
   }
 
   // The deploy-boundary TIMESTAMP for a bot (the last backfill bar at-or-before
@@ -609,6 +656,11 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       metrics: traded
         ? { totalReturnPct: res.metrics.totalReturnPct, sharpe: res.metrics.sharpe, maxDrawdownPct: res.metrics.maxDrawdownPct, trades: res.metrics.trades }
         : { totalReturnPct: 0, sharpe: 0, maxDrawdownPct: 0, trades: 0 }, // never-traded: neutral, matching the leaderboard row
+      // Cost/liquidity honesty for the per-bot page: which cost schedule the run paid
+      // (+ non-trade fees like SLB borrow / F&O brokerage), and how many fills exceeded
+      // the volume-participation cap (a too-big-to-execute warning, not an impact model).
+      costs: res.costs || null,
+      liquidity: res.liquidity || null,
       deployAt: Number.isFinite(cutoff) ? cutoff : null,
       tradeCount: all.length,
       liveTradeCount: all.filter((t) => t.live).length,
@@ -742,7 +794,9 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       // evolution has paused because the roster is full — so the live UI can say so.
       const atCap = !retireWeakest && roster.length >= maxRosterBots;
       // The honest "Auto-Pilot vs the market" walk-forward (null until there's ≥1y of history).
-      const autopilot = computeAutopilotTrack(apCurves, CASH);
+      // NIFTYBEES (loaded via the ETF bots' sources) is the dividend-adjusted market proxy for
+      // the benchTri head-to-head; seriesFor returns [] when it isn't loaded — gracefully null.
+      const autopilot = computeAutopilotTrack(apCurves, CASH, seriesFor('NIFTYBEES'));
       standings = { deployedAt: state.deployedAt, generation: state.generation, liveBars, asOf: Date.now(), startingCash: CASH, atCap, maxBots: maxRosterBots, botCount: rows.length, evolutionEnabled, autopilot, history: state.history.slice(-30), bots: rows };
       return standings;
     }

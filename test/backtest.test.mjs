@@ -40,8 +40,11 @@ test('Sharpe annualises by periodsPerYear (intraday bars are not under-annualise
   // A noisy, slightly-up per-bar return series.
   const eq = [100];
   for (let i = 1; i < 200; i++) eq.push(eq[i - 1] * (1 + 0.0004 + (((i * 73) % 7) - 3) * 0.001));
-  const daily = sharpe(eq);        // default 252 (one bar = one trading day)
-  const hourly = sharpe(eq, 1575); // ~252 * 6.25 hourly NSE bars/day
+  // rf = 0 explicitly: this test pins the pure sqrt-annualisation mechanics, and the
+  // exact sqrt ratio only holds with no risk-free hurdle (the per-bar rf differs
+  // between the two bar frequencies, which is correct but breaks the clean ratio).
+  const daily = sharpe(eq, 252, 0);  // one bar = one trading day
+  const hourly = sharpe(eq, 1575, 0); // ~252 * 6.25 hourly NSE bars/day
   assert.ok(daily !== 0 && hourly !== 0, 'both non-zero on a non-flat series');
   assert.ok(Math.abs(Math.abs(hourly / daily) - Math.sqrt(1575 / 252)) < 1e-6, 'Sharpe scales by sqrt(periodsPerYear ratio)');
   // inferPeriodsPerYear: too-short series -> 252 fallback; hourly NSE bars land well above 252.

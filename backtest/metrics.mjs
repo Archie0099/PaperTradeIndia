@@ -2,10 +2,16 @@
 // backtest/metrics.mjs
 // Pure performance metrics computed from a backtest's equity curve (the account
 // value over time) plus a trade count. No side effects -> easy to unit-test.
-// The risk-free rate is taken as 0 (simplifies the Sharpe ratio; documented).
+//
+// SHARPE CONVENTION: the headline Sharpe is EXCESS-of-risk-free (rf ≈ 6.5%/yr,
+// matching the app's own riskFreeRate setting). The old rf = 0 convention made
+// every strategy look better than it is — earning 12%/yr at 15% vol is Sharpe
+// 0.80 at rf=0 but only ~0.37 in excess terms, and a quant reads the latter.
+// The rf=0 figure is still reported alongside (`sharpeRf0`) for continuity.
 // ---------------------------------------------------------------------------
 
 const TRADING_DAYS = 252; // ~NSE trading days per year, for annualising
+const RF_ANNUAL = 0.065;  // ~Indian T-bill / repo rate; the Sharpe hurdle
 
 // Daily simple returns from an equity series: r[i] = c[i] / c[i-1] - 1.
 function dailyReturns(equity) {
@@ -47,16 +53,20 @@ function cagrPct(equity, years) {
   return (Math.pow(equity[equity.length - 1] / equity[0], 1 / yrs) - 1) * 100;
 }
 
-// Annualised Sharpe ratio (rf = 0): mean / std of per-BAR returns * sqrt(periodsPerYear).
-// `periodsPerYear` defaults to 252 (one bar = one trading day). For INTRADAY series
-// (e.g. ~6.25 hourly bars/day) pass a larger value — use inferPeriodsPerYear(times) —
-// so the per-bar Sharpe is annualised by the right factor (else hourly bars would be
+// Annualised Sharpe ratio: mean / std of per-BAR returns IN EXCESS of the
+// risk-free rate, * sqrt(periodsPerYear). `rfAnnual` defaults to RF_ANNUAL
+// (~6.5%); pass 0 explicitly for the raw rf=0 figure. `periodsPerYear` defaults
+// to 252 (one bar = one trading day). For INTRADAY series (e.g. ~6.25 hourly
+// bars/day) pass a larger value — use inferPeriodsPerYear(times) — so the
+// per-bar Sharpe is annualised by the right factor (else hourly bars would be
 // under-annualised ~sqrt(6) and look artificially poor).
-function sharpe(equity, periodsPerYear = TRADING_DAYS) {
-  const r = dailyReturns(equity);
+function sharpe(equity, periodsPerYear = TRADING_DAYS, rfAnnual = RF_ANNUAL) {
+  const ppy = periodsPerYear > 0 ? periodsPerYear : TRADING_DAYS;
+  const rfBar = (rfAnnual || 0) / ppy; // per-bar risk-free hurdle (simple, standard)
+  const r = dailyReturns(equity).map((x) => x - rfBar);
   const sd = stddev(r);
   if (sd === 0) return 0;
-  const value = (mean(r) / sd) * Math.sqrt(periodsPerYear > 0 ? periodsPerYear : TRADING_DAYS);
+  const value = (mean(r) / sd) * Math.sqrt(ppy);
   // A WIPED account (equity touched <= 0 at some point — a blown short / naked-option blowup) must
   // never advertise a POSITIVE risk-adjusted return: dailyReturns SKIPS the steps from non-positive
   // equity (prev>0 guard), so the surviving early gains could otherwise yield a positive Sharpe on a
@@ -103,7 +113,10 @@ function summarize(equity, { years, trades = 0, periodsPerYear = TRADING_DAYS } 
   return {
     totalReturnPct: +totalReturnPct(equity).toFixed(2),
     cagrPct: +cagrPct(equity, years).toFixed(2),
+    // Headline Sharpe is EXCESS-of-rf (the honest hurdle); the rf=0 figure is
+    // kept alongside so the two conventions are never silently confused.
     sharpe: +sharpe(equity, periodsPerYear).toFixed(2),
+    sharpeRf0: +sharpe(equity, periodsPerYear, 0).toFixed(2),
     maxDrawdownPct: +maxDrawdownPct(equity).toFixed(2),
     trades,
     finalEquity: +(equity[equity.length - 1] || 0).toFixed(2),
@@ -113,5 +126,5 @@ function summarize(equity, { years, trades = 0, periodsPerYear = TRADING_DAYS } 
 export {
   dailyReturns, mean, stddev,
   totalReturnPct, cagrPct, sharpe, maxDrawdownPct,
-  summarize, inferPeriodsPerYear, TRADING_DAYS,
+  summarize, inferPeriodsPerYear, TRADING_DAYS, RF_ANNUAL,
 };

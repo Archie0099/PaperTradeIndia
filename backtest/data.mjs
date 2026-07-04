@@ -174,19 +174,45 @@ async function fetchYahooWithRetry(symbol, interval, range, tries = 3) {
   throw lastErr || new Error(`fetch failed for ${symbol}`);
 }
 
+// Re-base a series onto Yahoo's ADJUSTED close (split + dividend back-adjusted) —
+// the price series a backtest must trade on. On RAW closes a 1:1 bonus looks like a
+// fake −50% day (booking fake P&L and poisoning momentum/vol/ML features) and 20
+// years of dividends are silently forfeited. Policy:
+//   * If (nearly) every bar carries `a`, serve `c = a` and keep the raw close as
+//     `craw` (display/participation reference). Bars missing `a` inside an
+//     otherwise-adjusted series are DROPPED — mixing adjusted and raw scales in
+//     one series would fabricate a jump, which is worse than a one-bar gap.
+//   * If the series has no/few `a` fields (intraday responses carry none, and old
+//     v1 caches predate the field), serve the raw closes unchanged — recent
+//     intraday windows contain few corporate actions, and that limitation is
+//     disclosed in METHODOLOGY.md.
+function toAdjusted(candles) {
+  const withAdj = candles.filter((c) => c.a != null && Number.isFinite(c.a) && c.a > 0);
+  if (withAdj.length < candles.length * 0.9) return { candles, adjusted: false };
+  return {
+    candles: withAdj.map((c) => ({ ...c, c: c.a, craw: c.c })),
+    adjusted: true,
+  };
+}
+
 async function loadCandles(symbol, { interval = '1d', range = '5y', refresh = false } = {}) {
   if (!existsSync(CACHE_DIR)) mkdirSync(CACHE_DIR, { recursive: true });
-  const file = join(CACHE_DIR, `${symbol.toUpperCase()}-${interval}-${range}.json`);
+  // `-v2`: the cache format gained the adjusted close (`a`) — a v1 file (raw closes
+  // only) must not satisfy a read, or that symbol would silently backtest unadjusted
+  // forever. Bumping the name makes stale caches invisible; they refetch once.
+  const file = join(CACHE_DIR, `${symbol.toUpperCase()}-${interval}-${range}-v2.json`);
 
   // The on-disk cache always stores the RAW Yahoo candles (the reproducible source of
-  // truth); we SANITIZE on READ so the artifact rules can evolve without re-fetching, and
-  // log any trim so it is never silent (the project values honest, visible data handling).
-  const clean = (candles, source) => {
+  // truth); we ADJUST + SANITIZE on READ so those rules can evolve without re-fetching,
+  // and log any trim so it is never silent (the project values honest data handling).
+  const clean = (rawCandles, source) => {
+    const based = toAdjusted(rawCandles);
+    const candles = based.candles;
     const out = sanitizeCandles(candles);
     if (out.length < candles.length) {
       console.log(`data: sanitised ${symbol.toUpperCase()} (${interval}/${range}) — dropped ${candles.length - out.length} artifact bar(s).`);
     }
-    return { candles: out, source };
+    return { candles: out, source: based.adjusted ? source : `${source} (unadjusted)` };
   };
 
   // 1. Cached on disk -> instant + reproducible. A CORRUPT/truncated cache file (e.g. a write
@@ -239,4 +265,4 @@ async function loadCandles(symbol, { interval = '1d', range = '5y', refresh = fa
   return clean(syn.candles, 'synthetic (offline — wiring only)');
 }
 
-export { loadCandles, sanitizeCandles, trailingSuspectJump };
+export { loadCandles, sanitizeCandles, trailingSuspectJump, toAdjusted };

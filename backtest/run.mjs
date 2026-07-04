@@ -14,6 +14,7 @@ import { STRATEGIES } from './strategies.mjs';
 import { runBacktest } from './backtester.mjs';
 import { FNO_STRATEGIES, runFnoBacktest } from './fno.mjs';
 import { loadCandles } from './data.mjs';
+import { equityDeliveryCosts, indexOptionCosts } from './costs.mjs';
 
 // Index option specs (lot size + strike grid). Only these get F&O strategies —
 // single-stock option lots/grids vary and aren't wired up for the MVP.
@@ -26,7 +27,10 @@ const INDEX_SPECS = {
 const symbol = (process.argv[2] || 'NIFTY').toUpperCase();
 const range = process.argv[3] || '5y';
 const CASH = 1_000_000;
-const COST_BPS = 5;
+// The real all-in Indian cost schedules (backtest/costs.mjs): STT/stamp/exchange/
+// GST + slippage on equity; spread + charges + brokerage on options.
+const EQ_COSTS = equityDeliveryCosts();
+const OPT_COSTS = indexOptionCosts();
 
 const { candles, source } = await loadCandles(symbol, { range });
 const n = candles.length;
@@ -37,18 +41,18 @@ const span = first && last
   : '';
 
 console.log(`\nStrategy Arena — ${symbol}   (${n} daily bars   ${span})`);
-console.log(`Data: ${source}   Capital: ₹${CASH.toLocaleString('en-IN')}   Equity cost: ${COST_BPS} bps/trade`);
+console.log(`Data: ${source}   Capital: ₹${CASH.toLocaleString('en-IN')}   Costs: full Indian schedule (~${(EQ_COSTS.buyRate * 10000).toFixed(1)}bps equity buy side; options pay spread + charges)`);
 
 const results = STRATEGIES.map((s) => ({
   type: 'EQ',
-  ...runBacktest({ strategy: s, candles, symbol, cash: CASH, costBps: COST_BPS }),
+  ...runBacktest({ strategy: s, candles, symbol, cash: CASH, costModel: EQ_COSTS }),
 }));
 
 const spec = INDEX_SPECS[symbol];
 if (spec) {
   console.log(`F&O: option prices are Black-Scholes-MODELLED (realized vol x 1.2) — not real quotes; monthly cycles, lot ${spec.lotSize}.`);
   for (const s of FNO_STRATEGIES) {
-    results.push({ type: 'F&O', ...runFnoBacktest({ strategy: s, candles, symbol, cash: CASH, ...spec }) });
+    results.push({ type: 'F&O', ...runFnoBacktest({ strategy: s, candles, symbol, cash: CASH, costModel: OPT_COSTS, ...spec }) });
   }
 } else {
   console.log('F&O: skipped (not a known index symbol).');

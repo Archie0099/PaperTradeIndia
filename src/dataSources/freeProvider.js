@@ -186,6 +186,13 @@ async function getHistory(symbol, opts = {}) {
 function parseHistory(symbol, result) {
   const ts = (result && result.timestamp) || [];
   const q = (result && result.indicators && result.indicators.quote && result.indicators.quote[0]) || {};
+  // Yahoo's ADJUSTED close (split + dividend back-adjusted) rides alongside the
+  // raw quote for daily ranges. The terminal charts show the raw close (`c` — the
+  // price you'd actually have seen on screen that day); the BACKTESTERS use the
+  // adjusted close (`a`, via backtest/data.mjs) so a stock split isn't booked as
+  // a fake −50% day and dividends are earned as total return. Intraday responses
+  // have no adjclose — `a` is simply omitted there.
+  const adj = (result && result.indicators && result.indicators.adjclose && result.indicators.adjclose[0] && result.indicators.adjclose[0].adjclose) || null;
   const candles = [];
   for (let i = 0; i < ts.length; i++) {
     // Skip any row without a usable close: a real gap, OR a response where Yahoo
@@ -193,14 +200,19 @@ function parseHistory(symbol, result) {
     // as live data — an empty series lets the orchestrator fall back instead.
     const close = q.close ? q.close[i] : null;
     if (close == null) continue;
-    candles.push({
+    const candle = {
       t: ts[i] * 1000,
       o: q.open ? num2(q.open[i]) : null,
       h: q.high ? num2(q.high[i]) : null,
       l: q.low ? num2(q.low[i]) : null,
       c: num2(close),
       v: q.volume ? q.volume[i] : null,
-    });
+    };
+    // Keep more precision on adjclose than the display 2dp: after a big split the
+    // adjusted values of old bars can be tiny (e.g. ₹3.1875), and 2dp rounding
+    // there would inject fake ±0.2% "returns" into every backtest indicator.
+    if (adj && adj[i] != null && Number.isFinite(adj[i]) && adj[i] > 0) candle.a = +Number(adj[i]).toFixed(4);
+    candles.push(candle);
   }
   return { symbol: symbol.toUpperCase(), candles, source: 'live' };
 }

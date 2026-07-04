@@ -575,6 +575,15 @@ function renderTrackRecord(app, ap) {
       ]),
     ])
   );
+  // Honesty: the primary benchmark is the NIFTY PRICE index (it pays no dividends). The
+  // real market does — so when the server could compute the head-to-head against the
+  // dividend-adjusted proxy (NIFTYBEES) over their common window, show it plainly.
+  if (ap.benchTri) {
+    const t = ap.benchTri;
+    const since = new Date(t.startedAt).getFullYear();
+    root.append(el('div', { class: 'muted', style: 'font-size:11px; margin: 2px 0 4px' },
+      `${ap.benchName} above is the PRICE index — dividends excluded. Against ${t.name} over their common window (since ${since}): Auto-Pilot ${signed(t.apReturnPct, 1)}% vs market ${signed(t.triReturnPct, 1)}% → ${t.vsPct >= 0 ? 'ahead' : 'behind'} by ${fmt(Math.abs(t.vsPct), 1)}%.`));
+  }
   // Honesty: when the currently-followed bot is an F&O premium-seller, the equity (and so the
   // "beating the market" figure + the seed value) bakes in MODELLED open-option prices — flag it.
   if (ap.currentBot && ap.currentBot.kind === 'FNO') {
@@ -616,7 +625,7 @@ function renderTrackRecord(app, ap) {
   winRow.append(windowButtons({ current: eff, span, onPick: (k) => { apWindow = k; renderTrackRecord(app, ap); } }));
   const cv = el('canvas', { id: 'ap-tr-chart', class: 'canvas', height: '210' });
   root.append(cv);
-  root.append(el('div', { class: 'muted', style: 'font-size:11px; margin-top:6px' }, 'Honest walk-forward: at each point it followed whichever bot had the best risk-adjusted return using ONLY the data known THEN — no hindsight in the PICK. One caveat to keep it honest: the bot line-up is today’s curated set, so this still flatters the result a bit (it shows “among these strategies, auto-picking beats the market” — not “you could have built these in 2008”). Simulated, paper money.'));
+  root.append(el('div', { class: 'muted', style: 'font-size:11px; margin-top:6px' }, 'Honest walk-forward: at each point it followed whichever bot had the best risk-adjusted return using ONLY the data known THEN — no hindsight in the PICK, all figures net of the full Indian cost model (STT, exchange charges, slippage, SLB borrow on shorts), Sharpe measured in excess of a ~6.5% risk-free rate. Two caveats to keep it honest: the bot line-up is today’s curated set, AND the stock universe is today’s liquid survivors — names that went to zero (DHFL, Jet Airways…) could never be picked, which flatters every long-history figure. It shows “among these strategies, on these surviving stocks, auto-picking beats the market” — not “you could have built this in 2008”. Simulated, paper money. See METHODOLOGY.md in the repo for the full assumptions.'));
   const winMs = windowMsOf(eff);
   const bw = windowed(benchSrc, winMs), aw = windowed(apSrc, winMs);
   drawMultiLine(

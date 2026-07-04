@@ -234,7 +234,7 @@ function render(app, data) {
       sortableTh('5Y', 'Return over the last ~5 years (“–” if the bot has less history) (click to sort)', 'r5y', -1, app),
       sortableTh('10Y', 'Return over the last ~10 years (“–” if the bot has less history) (click to sort)', 'r10y', -1, app),
       sortableTh('MAX', "Total return over the bot's WHOLE life — as if held from its first bar to now (click to sort)", 'trackReturnPct', -1, app),
-      sortableTh('Sharpe', 'Risk-adjusted return — higher is better (click to sort)', 'sharpe', -1, app),
+      sortableTh('Sharpe', 'Risk-adjusted return IN EXCESS of a ~6.5% risk-free rate — higher is better (click to sort)', 'sharpe', -1, app),
       sortableTh('MaxDD %', 'Worst peak-to-trough drop — lower is better (click to sort)', 'maxDrawdownPct', 1, app),
       th('Position'),
       sortableTh('Equity', 'Account value (click to sort)', 'equity', -1, app),
@@ -403,6 +403,21 @@ function renderBotPage(body, d, row) {
   stats.append(stat('Equity', rupee(d.equity, 0), moveClass((d.equity || 0) - 10000000)));
   stats.append(stat('Trades', String(d.tradeCount != null ? d.tradeCount : 0)));
   body.append(stats);
+
+  // Cost + liquidity honesty line: which real cost schedule this bot's whole track
+  // paid (plus non-trade fees — SLB borrow, F&O brokerage), and whether any fills
+  // were bigger than 10% of that bar's traded volume (a "not executable at this
+  // size" warning, since the simulator itself has no market-impact model).
+  if (d.costs && d.costs.model && d.costs.model !== 'none') {
+    const bits = [`Costs: full Indian schedule (${d.costs.model})`];
+    if (d.costs.feesPaid > 0) bits.push(`+ ${rupee(d.costs.feesPaid, 0)} in fees (borrow/brokerage/expiry STT)`);
+    if (d.liquidity && d.liquidity.checked > 0) {
+      bits.push(d.liquidity.flagged > 0
+        ? `⚠ ${d.liquidity.flagged} of ${d.liquidity.checked} fills exceeded ${Math.round(d.liquidity.cap * 100)}% of the bar's traded volume — at this size those fills wouldn't execute as simulated`
+        : `all ${d.liquidity.checked} volume-checked fills were under ${Math.round(d.liquidity.cap * 100)}% of the bar's traded volume`);
+    }
+    body.append(el('div', { class: 'muted', style: 'font-size:11px;margin-top:4px' }, bits.join(' · ')));
+  }
 
   // Strategy rationale (the "WHY the strategy" headline ask).
   const r = d.rationale;

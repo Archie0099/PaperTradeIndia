@@ -16,6 +16,14 @@ import { runFnoBacktest } from '../backtest/fno.mjs';
 import { runPortfolioBacktest } from '../backtest/portfolio.mjs';
 import { runPairsBacktest } from '../backtest/pairs.mjs';
 import { makeRankSource } from '../backtest/ml.mjs';
+import { equityDeliveryCosts, indexOptionCosts } from '../backtest/costs.mjs';
+
+// Challengers are scored under the SAME real Indian cost schedules the tournament
+// deploys with (tournament.mjs) — scoring cost-free would systematically breed
+// high-turnover strategies whose paper edge is eaten by costs the moment they run.
+// (Evolution breeds only daily bots, so the intraday schedule isn't needed here.)
+const EQ_COSTS = equityDeliveryCosts();
+const OPT_COSTS = indexOptionCosts();
 
 const INDEX_SPECS = {
   NIFTY: { lotSize: 75, strikeStep: 50 },
@@ -466,7 +474,7 @@ function scoreSpec(spec, series, symbol = 'NIFTY', cash = 1_000_000, dataBySymbo
     const present = spec.universe.filter((s) => Array.isArray(dbs[s]) && dbs[s].length);
     if (present.length < 2) return null; // not enough constituents have data
     const rankSource = spec.mlConfig ? makeRankSource({ spec, dataBySymbol: dbs }) : null;
-    const res = runPortfolioBacktest({ spec, dataBySymbol: dbs, marketSeries: dbs.NIFTY || null, cash, costBps: 5, rankSource });
+    const res = runPortfolioBacktest({ spec, dataBySymbol: dbs, marketSeries: dbs.NIFTY || null, cash, costModel: EQ_COSTS, rankSource });
     return { totalReturnPct: res.metrics.totalReturnPct, sharpe: res.metrics.sharpe, maxDrawdownPct: res.metrics.maxDrawdownPct };
   }
   if (c.kind === 'PAIRS') {
@@ -474,13 +482,13 @@ function scoreSpec(spec, series, symbol = 'NIFTY', cash = 1_000_000, dataBySymbo
     if (!dbs) return null;
     const present = spec.universe.filter((s) => Array.isArray(dbs[s]) && dbs[s].length);
     if (present.length < 4) return null; // not enough constituents to form pairs
-    const res = runPairsBacktest({ spec, dataBySymbol: dbs, cash, costBps: 5 });
+    const res = runPairsBacktest({ spec, dataBySymbol: dbs, cash, costModel: EQ_COSTS });
     return { totalReturnPct: res.metrics.totalReturnPct, sharpe: res.metrics.sharpe, maxDrawdownPct: res.metrics.maxDrawdownPct };
   }
   const res =
     c.kind === 'FNO'
-      ? runFnoBacktest({ strategy: c.strategy, candles: series, symbol, cash, ...(INDEX_SPECS[symbol] || INDEX_SPECS.NIFTY) })
-      : runBacktest({ strategy: c.strategy, candles: series, symbol, cash, costBps: 5 });
+      ? runFnoBacktest({ strategy: c.strategy, candles: series, symbol, cash, costModel: OPT_COSTS, ...(INDEX_SPECS[symbol] || INDEX_SPECS.NIFTY) })
+      : runBacktest({ strategy: c.strategy, candles: series, symbol, cash, costModel: EQ_COSTS });
   return { totalReturnPct: res.metrics.totalReturnPct, sharpe: res.metrics.sharpe, maxDrawdownPct: res.metrics.maxDrawdownPct };
 }
 

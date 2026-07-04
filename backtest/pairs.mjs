@@ -34,9 +34,10 @@
 // floating-point sum is identical run-to-run.
 // ---------------------------------------------------------------------------
 
-import { freshEngine, snapshotPositions } from './harness.mjs';
+import { freshEngine, snapshotPositions, chargeFee, feesCharged } from './harness.mjs';
 import { summarize, inferPeriodsPerYear } from './metrics.mjs';
 import { alignSeries } from './portfolio.mjs';
+import { flatCosts, eqFillPrice, borrowFee } from './costs.mjs';
 
 // --- small pure stats helpers (population moments; all O(n)) -----------------
 function mean(xs) { let s = 0; for (const x of xs) s += x; return s / xs.length; }
@@ -147,7 +148,10 @@ function selectPairs(priceGrid, listed, gi, { lookback, minCorr, maxPairs }) {
 
 // `intraday: true` annualises the Sharpe by the master timeline's bars-per-year (like
 // the other backtesters). Daily is the default (252) and byte-identical.
-function runPairsBacktest({ spec, dataBySymbol, cash = 10_000_000, costBps = 5, recordTrades = false, intraday = false, _hook = null, _barHook = null }) {
+// COSTS: pass a `costModel` (backtest/costs.mjs — the all-in Indian delivery schedule,
+// incl. the SLB borrow fee its SHORT legs must really pay) for honest results; without
+// one the legacy flat `costBps` applies, byte-identical (kept for tests/back-compat).
+function runPairsBacktest({ spec, dataBySymbol, cash = 10_000_000, costBps = 5, costModel = null, recordTrades = false, intraday = false, _hook = null, _barHook = null }) {
   const universe = [...spec.universe].filter((s) => Array.isArray(dataBySymbol[s]) && dataBySymbol[s].length).sort();
   const dataForUniverse = {};
   for (const s of universe) dataForUniverse[s] = dataBySymbol[s];
@@ -155,7 +159,11 @@ function runPairsBacktest({ spec, dataBySymbol, cash = 10_000_000, costBps = 5, 
   const { master, priceGrid, realIdx } = A;
 
   const engine = freshEngine(cash);
-  const cost = costBps / 10000;
+  const cm = costModel || flatCosts(costBps);
+  // Liquidity honesty flag (see backtester.mjs): fills bigger than this share of
+  // the bar's real traded value are counted, never silently absorbed.
+  const PARTICIPATION_CAP = 0.10;
+  let liqChecked = 0, liqFlagged = 0;
   const lookback = spec.lookback;
   const entryZ = spec.entryZ;
   const exitZ = spec.exitZ;
@@ -203,7 +211,7 @@ function runPairsBacktest({ spec, dataBySymbol, cash = 10_000_000, costBps = 5, 
     if (toQty === fromQty) return fromQty;
     const buying = toQty > fromQty;
     let qty = Math.abs(toQty - fromQty);
-    const fillPrice = buying ? px * (1 + cost) : px * (1 - cost);
+    const fillPrice = eqFillPrice(cm, buying ? 'BUY' : 'SELL', px);
     if (buying && toQty > 0) {
       const affordable = Math.floor(engine.availableFunds() / fillPrice);
       qty = Math.min(qty, Math.max(0, affordable) + Math.max(0, -fromQty)); // allow covering even if cash-poor
@@ -214,6 +222,13 @@ function runPairsBacktest({ spec, dataBySymbol, cash = 10_000_000, costBps = 5, 
     const order = engine.placeOrder({ instrument: inst[s], side, orderType: 'MARKET', lots: qty, price: fillPrice });
     if (!order || order.status !== 'FILLED') return posQty(s);
     trades++;
+    // Liquidity flag: fill value vs the bar's real traded value (raw volume × raw close).
+    const idx = realIdx[s][gi];
+    const vol = idx >= 0 ? A.volsBy[s][idx] : null;
+    if (Number.isFinite(vol) && vol > 0) {
+      liqChecked++;
+      if (qty * fillPrice > PARTICIPATION_CAP * vol * (A.rawsBy[s][idx] || px)) liqFlagged++;
+    }
     logTrade(master[gi], s, side, qty, fillPrice, r0, reasonOverride);
     return posQty(s);
   };
@@ -224,6 +239,19 @@ function runPairsBacktest({ spec, dataBySymbol, cash = 10_000_000, costBps = 5, 
     for (const s of universe) {
       const px = priceGrid[s][gi];
       if (Number.isFinite(px) && px > 0) engine.updateEquityPrice(s, px, true);
+    }
+
+    // (a2) Accrue the SLB borrow fee on every SHORT leg held since the last bar.
+    // A short in the Indian cash market is only holdable via Securities Lending &
+    // Borrowing — the fee runs on the borrowed notional for the CALENDAR time held
+    // (weekends included), which is exactly the master-timeline gap.
+    if (cm.borrowRatePA > 0 && gi > 0) {
+      const dt = master[gi] - master[gi - 1];
+      for (const s of universe) {
+        const q = posQty(s);
+        const px = priceGrid[s][gi];
+        if (q < 0 && Number.isFinite(px) && px > 0) chargeFee(engine, borrowFee(Math.abs(q) * px, cm.borrowRatePA, dt));
+      }
     }
 
     // (b) EXECUTE the pairs decided on the PREVIOUS bar (one-bar lag). Sizing happens HERE,
@@ -397,6 +425,8 @@ function runPairsBacktest({ spec, dataBySymbol, cash = 10_000_000, costBps = 5, 
     finalCash: engine.state.cash,
     finalPositions: snapshotPositions(engine), // current long/short legs (for the Auto-Pilot copy)
     metrics: summarize(equityCurve, { years, trades, periodsPerYear: intraday ? inferPeriodsPerYear(master) : undefined }),
+    costs: { model: cm.kind, feesPaid: +feesCharged(engine).toFixed(2) },
+    liquidity: { cap: PARTICIPATION_CAP, checked: liqChecked, flagged: liqFlagged },
     ...(tradeLog ? { trades: tradeLog, decision: lastDecision } : {}),
   };
 }

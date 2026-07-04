@@ -9,22 +9,33 @@
 // sells receive a little less).
 // ---------------------------------------------------------------------------
 
-import { freshEngine, snapshotPositions } from './harness.mjs';
+import { freshEngine, snapshotPositions, chargeFee, feesCharged } from './harness.mjs';
 import { summarize, inferPeriodsPerYear } from './metrics.mjs';
 import { describeExpr } from './dsl.mjs';
+import { flatCosts, eqFillPrice, borrowFee } from './costs.mjs';
 
 // `intraday: true` annualises the Sharpe by the series' own bars-per-year (e.g. ~1600
 // for 60-min NSE bars) instead of the daily 252 — so an intraday strategy isn't scored
 // as if its bars were days. Everything else (no-look-ahead one-bar lag, the engine) is
 // interval-agnostic, so the SAME backtester replays 60-min bars just like daily ones.
-function runBacktest({ strategy, candles, symbol = 'TEST', cash = 1_000_000, costBps = 5, recordTrades = false, intraday = false, spec = null }) {
+//
+// COSTS: pass a `costModel` (backtest/costs.mjs — the all-in Indian schedule, incl. an
+// SLB borrow fee on overnight shorts) for honest results; without one the legacy flat
+// `costBps` applies, byte-identical to the old behaviour (kept for tests/back-compat).
+function runBacktest({ strategy, candles, symbol = 'TEST', cash = 1_000_000, costBps = 5, costModel = null, recordTrades = false, intraday = false, spec = null }) {
   const closes = candles.map((c) => c.c);
   const times = candles.map((c) => c.t);
   const engine = freshEngine(cash);
   const inst = { kind: 'EQ', symbol, lotSize: 1 };
   const key = `EQ:${symbol.toUpperCase()}`;
   const decide = strategy.make(); // fresh per-run state
-  const cost = costBps / 10000;
+  const cm = costModel || flatCosts(costBps);
+  // Liquidity instrumentation (honesty, not simulation): count fills whose rupee
+  // value exceeds PARTICIPATION_CAP of that bar's traded value (volume × close).
+  // We do NOT model impact — we FLAG that the fill wouldn't be executable as
+  // simulated, so an over-sized bot can't quietly claim an impossible result.
+  const PARTICIPATION_CAP = 0.10;
+  let liqChecked = 0, liqFlagged = 0;
 
   const equityCurve = [];
   let target = 0; // weight decided on the PREVIOUS bar, executed on THIS bar
@@ -78,6 +89,17 @@ function runBacktest({ strategy, candles, symbol = 'TEST', cash = 1_000_000, cos
     }
     engine.updateEquityPrice(symbol, price, true); // mark to market (silent)
 
+    // --- accrue the SLB borrow fee on an overnight SHORT ------------------
+    // A short in the Indian cash market is only holdable via Securities Lending
+    // & Borrowing, which charges a fee on the borrowed stock's notional for the
+    // CALENDAR time held (weekends included) — accrued here bar by bar.
+    if (cm.borrowRatePA > 0 && i > 0) {
+      const posB = engine.state.positions[key];
+      if (posB && posB.qty < 0) {
+        chargeFee(engine, borrowFee(Math.abs(posB.qty) * price, cm.borrowRatePA, times[i] - times[i - 1]));
+      }
+    }
+
     // --- execute the previous bar's target at THIS bar's price -------------
     // `target` is SIGNED: > 0 long, < 0 SHORT (a bearish bot), 0 flat. desiredQty is the
     // signed unit count we want to hold; we trade the difference, funding only the part
@@ -97,7 +119,7 @@ function runBacktest({ strategy, candles, symbol = 'TEST', cash = 1_000_000, cos
 
     if (desiredQty !== curQty) {
       const buying = desiredQty > curQty;
-      const fillPrice = buying ? price * (1 + cost) : price * (1 - cost);
+      const fillPrice = eqFillPrice(cm, buying ? 'BUY' : 'SELL', price);
       let delta = Math.abs(desiredQty - curQty);
       // EQ margin per unit ≈ price for BOTH a long (full cash) and a short (full-notional
       // proxy), so one affordability cap works on either side. Only the NEW-exposure part
@@ -120,6 +142,14 @@ function runBacktest({ strategy, candles, symbol = 'TEST', cash = 1_000_000, cos
         if (order.status === 'FILLED') {
           trades++;
           logTrade(times[i], side, delta, fillPrice, r0, tradeReason(curQty, desiredQty, side, fillPrice));
+          // Liquidity flag: compare the fill's rupee value against the bar's real
+          // traded value (raw volume × the raw close where we have it — `craw` is
+          // carried when the series is dividend/split-adjusted).
+          const vol = candles[i].v;
+          if (Number.isFinite(vol) && vol > 0) {
+            liqChecked++;
+            if (delta * fillPrice > PARTICIPATION_CAP * vol * (candles[i].craw || price)) liqFlagged++;
+          }
         }
       }
     }
@@ -159,6 +189,11 @@ function runBacktest({ strategy, candles, symbol = 'TEST', cash = 1_000_000, cos
     finalCash: engine.state.cash,
     finalPositions: snapshotPositions(engine), // current holdings (for the Auto-Pilot copy)
     metrics: summarize(equityCurve, { years, trades, periodsPerYear: intraday ? inferPeriodsPerYear(times) : undefined }),
+    // Which cost schedule ran + the non-trade fees it charged (SLB borrow here).
+    costs: { model: cm.kind, feesPaid: +feesCharged(engine).toFixed(2) },
+    // Honesty flag, not an impact model: how many fills exceeded the participation
+    // cap of that bar's traded value (only bars with volume data are checked).
+    liquidity: { cap: PARTICIPATION_CAP, checked: liqChecked, flagged: liqFlagged },
     ...(tradeLog ? { trades: tradeLog } : {}),
   };
 }

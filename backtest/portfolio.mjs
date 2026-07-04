@@ -21,8 +21,9 @@
 //     indicator never sees a fake forward-filled bar).
 // ---------------------------------------------------------------------------
 
-import { freshEngine, snapshotPositions } from './harness.mjs';
+import { freshEngine, snapshotPositions, feesCharged } from './harness.mjs';
 import { summarize, inferPeriodsPerYear } from './metrics.mjs';
+import { flatCosts, eqFillPrice } from './costs.mjs';
 import { evalNode, describeExpr } from './dsl.mjs';
 import { retStdev } from './strategies.mjs';
 import { computeComposite } from './factors.mjs';
@@ -46,9 +47,14 @@ function alignSeries(dataBySymbol, marketSeries = null) {
   if (marketSeries) for (const c of marketSeries) all.push(c.t);
   const master = [...new Set(all)].sort((a, b) => a - b); // NUMERIC sort, not lexicographic
 
-  const priceGrid = {}, realIdx = {}, closesBy = {}, timesBy = {};
+  const priceGrid = {}, realIdx = {}, closesBy = {}, timesBy = {}, volsBy = {}, rawsBy = {};
   const fill = (series) => {
     const times = series.map((c) => c.t), closes = series.map((c) => c.c);
+    // Volume + raw (unadjusted) close per REAL bar — read via realIdx by the
+    // liquidity participation flag. Optional fields (injected test data / synthetic
+    // series carry neither); everything else ignores them, so grids are unchanged.
+    const vols = series.map((c) => (c.v != null ? c.v : null));
+    const raws = series.map((c) => (c.craw != null ? c.craw : c.c));
     const pg = new Array(master.length), ri = new Array(master.length);
     let p = -1; // pointer into this series (both arrays are ascending -> one pass)
     for (let gi = 0; gi < master.length; gi++) {
@@ -57,18 +63,18 @@ function alignSeries(dataBySymbol, marketSeries = null) {
       pg[gi] = p < 0 ? null : closes[p];
       ri[gi] = p;
     }
-    return { pg, ri, times, closes };
+    return { pg, ri, times, closes, vols, raws };
   };
   for (const s of symbols) {
     const f = fill(dataBySymbol[s]);
-    priceGrid[s] = f.pg; realIdx[s] = f.ri; closesBy[s] = f.closes; timesBy[s] = f.times;
+    priceGrid[s] = f.pg; realIdx[s] = f.ri; closesBy[s] = f.closes; timesBy[s] = f.times; volsBy[s] = f.vols; rawsBy[s] = f.raws;
   }
   let marketGrid = null, marketRealIdx = null, marketCloses = null;
   if (marketSeries && marketSeries.length) {
     const f = fill(marketSeries);
     marketGrid = f.pg; marketRealIdx = f.ri; marketCloses = f.closes;
   }
-  return { master, symbols, priceGrid, realIdx, closesBy, timesBy, marketGrid, marketRealIdx, marketCloses };
+  return { master, symbols, priceGrid, realIdx, closesBy, timesBy, volsBy, rawsBy, marketGrid, marketRealIdx, marketCloses };
 }
 
 // Compute the target WEIGHT for each chosen name (sums to `gross`, <= 1).
@@ -117,7 +123,10 @@ function weightsFor(top, weighting, gross, optimizer = null) {
 // (like the single-symbol backtester) instead of the daily 252 — so an intraday basket
 // isn't scored as if its bars were days. Everything else is interval-agnostic; daily
 // baskets are byte-identical (the default leaves periodsPerYear at 252).
-function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 10_000_000, costBps = 5, rankSource = null, recordTrades = false, intraday = false, _hook = null, alignCache = null }) {
+// COSTS: pass a `costModel` (backtest/costs.mjs — the all-in Indian delivery
+// schedule) for honest results; without one the legacy flat `costBps` applies,
+// byte-identical to the old behaviour (kept for tests/back-compat).
+function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 10_000_000, costBps = 5, costModel = null, rankSource = null, recordTrades = false, intraday = false, _hook = null, alignCache = null }) {
   // Operate on the universe in a CANONICAL (sorted) order so floating-point sums
   // (equity, weights) are identical regardless of input key order -> deterministic.
   const universe = [...spec.universe].filter((s) => Array.isArray(dataBySymbol[s]) && dataBySymbol[s].length).sort();
@@ -151,7 +160,18 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
   const { master, priceGrid, realIdx, closesBy } = A;
 
   const engine = freshEngine(cash);
-  const cost = costBps / 10000;
+  const cm = costModel || flatCosts(costBps);
+  // Liquidity honesty flag (see backtester.mjs): count fills whose rupee value
+  // exceeds this share of the bar's real traded value (volume × raw close).
+  const PARTICIPATION_CAP = 0.10;
+  let liqChecked = 0, liqFlagged = 0;
+  const flagLiquidity = (s, gi, qty, fillPrice) => {
+    const idx = realIdx[s][gi];
+    const vol = idx >= 0 ? A.volsBy[s][idx] : null;
+    if (!(Number.isFinite(vol) && vol > 0)) return;
+    liqChecked++;
+    if (qty * fillPrice > PARTICIPATION_CAP * vol * (A.rawsBy[s][idx] || priceGrid[s][gi])) liqFlagged++;
+  };
   const gross = spec.gross == null ? 1 : spec.gross;
   const weighting = spec.weighting || 'equal';
   const k = spec.k;
@@ -222,10 +242,11 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
         const curQty = pos ? pos.qty : 0;
         const desiredQty = Math.max(0, Math.floor(((targetW[s] || 0) * equity) / px));
         if (desiredQty < curQty) {
-          const sellPrice = px * (1 - cost), r0 = engine.realisedTotal();
+          const sellPrice = eqFillPrice(cm, 'SELL', px), r0 = engine.realisedTotal();
           const order = engine.placeOrder({ instrument: inst[s], side: 'SELL', orderType: 'MARKET', lots: curQty - desiredQty, price: sellPrice });
           if (order.status === 'FILLED') { // reducing SELLs open no new exposure so they don't reject — guard for safety/consistency with pairs.mjs/fno.mjs
             trades++;
+            flagLiquidity(s, gi, curQty - desiredQty, sellPrice);
             logTrade(master[gi], s, 'SELL', curQty - desiredQty, sellPrice, r0, tradeLog ? sellReason(s, desiredQty) : '');
           }
         }
@@ -237,14 +258,14 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
         const curQty = pos ? pos.qty : 0;
         const desiredQty = Math.max(0, Math.floor(((targetW[s] || 0) * equity) / px));
         if (desiredQty > curQty) {
-          const buyPrice = px * (1 + cost);
+          const buyPrice = eqFillPrice(cm, 'BUY', px);
           const affordable = Math.floor(engine.availableFunds() / buyPrice); // never overspend
           const qty = Math.min(desiredQty - curQty, affordable);
           // Defensive: the `affordable` cap (availableFunds re-read per name) means this
           // MARKET buy can't be rejected for funds — but only count/log it if it actually
           // FILLED, mirroring pairs.mjs/fno.mjs so a rejection can never log a phantom
           // trade or skew the basket's recorded weights.
-          if (qty > 0) { const r0 = engine.realisedTotal(); const order = engine.placeOrder({ instrument: inst[s], side: 'BUY', orderType: 'MARKET', lots: qty, price: buyPrice }); if (order.status === 'FILLED') { trades++; logTrade(master[gi], s, 'BUY', qty, buyPrice, r0, tradeLog ? buyReason(s, curQty) : ''); } }
+          if (qty > 0) { const r0 = engine.realisedTotal(); const order = engine.placeOrder({ instrument: inst[s], side: 'BUY', orderType: 'MARKET', lots: qty, price: buyPrice }); if (order.status === 'FILLED') { trades++; flagLiquidity(s, gi, qty, buyPrice); logTrade(master[gi], s, 'BUY', qty, buyPrice, r0, tradeLog ? buyReason(s, curQty) : ''); } }
         }
       }
       pending = false;
@@ -423,6 +444,8 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
     finalCash: engine.state.cash,
     finalPositions: snapshotPositions(engine), // current holdings (for the Auto-Pilot copy)
     metrics: summarize(equityCurve, { years, trades, periodsPerYear: intraday ? inferPeriodsPerYear(master) : undefined }),
+    costs: { model: cm.kind, feesPaid: +feesCharged(engine).toFixed(2) },
+    liquidity: { cap: PARTICIPATION_CAP, checked: liqChecked, flagged: liqFlagged },
     ...(tradeLog ? { trades: tradeLog, decision: lastDecision } : {}),
   };
 }

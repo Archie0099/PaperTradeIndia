@@ -15,6 +15,10 @@ import { dirname, join } from 'node:path';
 
 import { safeCompile } from './dsl.mjs';
 import { runBacktest } from './backtester.mjs';
+import { equityDeliveryCosts } from './costs.mjs';
+
+// Rank the generated strategies under the REAL Indian cost schedule (see costs.mjs).
+const EQ_COSTS = equityDeliveryCosts();
 import { runFnoBacktest } from './fno.mjs';
 import { loadCandles } from './data.mjs';
 import { STRATEGIES } from './strategies.mjs';
@@ -46,7 +50,7 @@ function scoreSpec(spec) {
   if (!c.ok) return { ok: false, error: c.error };
   const rows = [];
   if (c.kind === 'EQ') {
-    for (const sym of EQ_UNIVERSE) rows.push(runBacktest({ strategy: c.strategy, candles: data[sym], symbol: sym, cash: CASH, costBps: 5 }).metrics);
+    for (const sym of EQ_UNIVERSE) rows.push(runBacktest({ strategy: c.strategy, candles: data[sym], symbol: sym, cash: CASH, costModel: EQ_COSTS }).metrics);
   } else {
     for (const [sym, fspec] of Object.entries(FNO_UNIVERSE)) rows.push(runFnoBacktest({ strategy: c.strategy, candles: data[sym], symbol: sym, cash: CASH, ...fspec }).metrics);
   }
@@ -62,7 +66,7 @@ function scoreSpec(spec) {
 // Reference rows: Buy & Hold + Coin flip, median across the equity universe.
 const refOf = (name) => {
   const s = STRATEGIES.find((x) => x.name === name);
-  const rows = EQ_UNIVERSE.map((sym) => runBacktest({ strategy: s, candles: data[sym], symbol: sym, cash: CASH, costBps: 5 }).metrics);
+  const rows = EQ_UNIVERSE.map((sym) => runBacktest({ strategy: s, candles: data[sym], symbol: sym, cash: CASH, costModel: EQ_COSTS }).metrics);
   return { medReturn: +median(rows.map((r) => r.totalReturnPct)).toFixed(2), medSharpe: +median(rows.map((r) => r.sharpe)).toFixed(2) };
 };
 const bh = refOf('Buy & Hold');

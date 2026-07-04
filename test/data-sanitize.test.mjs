@@ -27,7 +27,10 @@ test('a CORRUPT cache file does not throw — loadCandles ignores it and falls t
   // ~200-symbol tournament boot aborts (the tournament stays permanently null until a redeploy).
   // A corrupt cache must now be IGNORED (fall through to a fresh fetch / synthetic), never fatal.
   const sym = 'ZZ_CORRUPT_PROBE';
-  const file = join(CACHE_DIR, `${sym}-1d-20y.json`);
+  // `-v2`: cache filenames were bumped when the format gained the adjusted close (`a`) —
+  // the planted cache must use the CURRENT name or loadCandles never reads it and the
+  // test exercises nothing.
+  const file = join(CACHE_DIR, `${sym}-1d-20y-v2.json`);
   // Two flavours of bad cache: (1) truncated/invalid JSON; (2) valid JSON but garbage close VALUES
   // (a non-truncation corruption / external tampering). Both must fall through to a usable series.
   const badContents = [
@@ -67,7 +70,9 @@ test('a trailing >40% jump in a CACHED file triggers ONE fresh re-fetch (frozen-
   // together with the cached prefix. A cache whose FINAL few bars hold a >40% jump
   // is now treated as suspect and re-fetched once (Yahoo has usually corrected it).
   const sym = 'ZZTRAILGLITCH';
-  const file = join(CACHE_DIR, `${sym}-1d-20y.json`);
+  // `-v2`: the current cache filename (see the corrupt-cache test above) — the planted
+  // suspect cache must live where loadCandles actually reads.
+  const file = join(CACHE_DIR, `${sym}-1d-20y-v2.json`);
   mkdirSync(CACHE_DIR, { recursive: true });
   const DAY = 864e5;
   // 80 clean bars around ~100, then a -90% bad print on the FINAL cached bar.

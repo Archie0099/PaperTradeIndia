@@ -14,7 +14,7 @@ Live demo: https://paper-trade-india.onrender.com
 - **Portfolio analytics:** net option Greeks across open F&O, an account equity curve, day P&L versus total return, and a trade log with per-fill realised P&L.
 - **Option chain and Greeks:** the full chain with last price, open interest, volume, and implied volatility, with Greeks computed locally using Black-Scholes.
 - **Strategy builder:** fifteen templates (spreads, straddles, strangles, iron condor, covered call, butterfly, calendar, diagonal, and more) with a payoff diagram, breakevens, max profit and loss, and net Greeks. Multi-expiry spreads are valued correctly. It works fully offline.
-- **Strategy lab and bot tournament:** an offline backtester that replays history through the same engine, a small JSON strategy language, and a live tournament where automated strategies compete forward on real data. Strategies range from single-stock trend and momentum to multi-stock baskets, market-neutral pairs, option-selling, and baskets ranked by local machine-learning models (ridge, logistic, and gradient-boosted trees, all hand-rolled).
+- **Strategy lab and bot tournament:** an offline backtester that replays history through the same engine, a small JSON strategy language, and a live tournament where automated strategies compete forward on real data. Strategies range from single-stock trend and momentum to multi-stock baskets, market-neutral pairs, option-selling, and baskets ranked by local machine-learning models (ridge, logistic, and gradient-boosted trees, all hand-rolled). Backtests use dividend-adjusted prices and pay a realistic Indian cost schedule (STT, stamp duty, exchange charges, brokerage, spreads, and stock-borrow fees on shorts); [METHODOLOGY.md](METHODOLOGY.md) documents every assumption and known bias.
 - **Auto-pilot:** copies the best-performing tournament strategy onto your own virtual account, with an honest walk-forward check of whether following it would have beaten the index.
 - **Terminal UI:** hand-rolled canvas charts, a market-hours status bar in IST, a light and dark theme, keyboard shortcuts, price alerts, multiple watchlists, and a mobile layout.
 
@@ -40,7 +40,7 @@ The money model holds one identity exactly across every instrument type: realise
 ## Tests
 
 ```bash
-npm test          # 488 tests, runs with node --test
+npm test          # 502 tests, runs with node --test
 ```
 
 The suite covers the engine and money invariants, option pricing and payoffs, the backtester and tournament, the machine-learning rankers, and the browser UI (driven through jsdom). `jsdom` is the only development dependency.
