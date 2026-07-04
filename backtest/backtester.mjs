@@ -22,7 +22,14 @@ import { flatCosts, eqFillPrice, borrowFee } from './costs.mjs';
 // COSTS: pass a `costModel` (backtest/costs.mjs — the all-in Indian schedule, incl. an
 // SLB borrow fee on overnight shorts) for honest results; without one the legacy flat
 // `costBps` applies, byte-identical to the old behaviour (kept for tests/back-compat).
-function runBacktest({ strategy, candles, symbol = 'TEST', cash = 1_000_000, costBps = 5, costModel = null, recordTrades = false, intraday = false, spec = null }) {
+// `rebalanceBand` (fraction of equity, default 0 = off, byte-identical to the old
+// behaviour): with a CONTINUOUS target weight, the engine would otherwise trade a
+// tiny qty drift almost every bar (cash sits still while the position's value
+// moves, so target·equity/price wanders a few units daily) — real cost bleed on
+// phantom "rebalances" the strategy never asked for. With a band, a SAME-SIDE
+// adjustment smaller than band·equity is skipped; entries, exits and side flips
+// always trade (a band must never suppress a signal, only sizing drift).
+function runBacktest({ strategy, candles, symbol = 'TEST', cash = 1_000_000, costBps = 5, costModel = null, recordTrades = false, intraday = false, spec = null, rebalanceBand = 0 }) {
   const closes = candles.map((c) => c.c);
   const times = candles.map((c) => c.t);
   const engine = freshEngine(cash);
@@ -116,6 +123,15 @@ function runBacktest({ strategy, candles, symbol = 'TEST', cash = 1_000_000, cos
     // no-flip property structural, not an emergent side effect of availableFunds()==equity().
     if (target < 0 && desiredQty > 0) desiredQty = 0;
     if (target > 0 && desiredQty < 0) desiredQty = 0;
+
+    // Skip a same-side sizing drift smaller than the rebalance band (see the
+    // function comment). Entries (curQty 0), exits (desiredQty 0) and flips
+    // change SIDE, not size, so they are never suppressed.
+    if (rebalanceBand > 0 && desiredQty !== curQty
+      && curQty !== 0 && desiredQty !== 0 && (curQty > 0) === (desiredQty > 0)
+      && Math.abs(desiredQty - curQty) * price < rebalanceBand * Math.max(0, equity)) {
+      desiredQty = curQty;
+    }
 
     if (desiredQty !== curQty) {
       const buying = desiredQty > curQty;

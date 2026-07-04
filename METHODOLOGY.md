@@ -66,6 +66,28 @@ are marked.
   returns and are still measured against the T-bill hurdle.
 - Max drawdown is peak-to-trough on the marked-to-market equity curve (open positions valued
   every bar), capped at 100%.
+- **Sortino** follows the same conventions as the Sharpe (excess-of-rf numerator, wiped-account
+  cap) but its denominator penalises only downside deviation.
+
+## The research lab protocol (`backtest/research/`)
+
+New candidate strategies are developed under a fixed discipline, enforced in code by
+`backtest/research/harness.mjs`:
+
+- **A fixed data split, decided before any strategy was run:** in-sample ends **2019-12-31**;
+  the holdout (**2020-01-01 → present**: the COVID crash, the 2021 bull, the 2022 bear) is
+  evaluated **once per strategy**, on explicit go-ahead only — the harness throws on any
+  window touching the holdout unless a deliberate `--holdout` run opts in. Parameters are
+  tuned on in-sample data only.
+- **Full real cost model always on** (the delivery schedule above), the benchmark is Buy & Hold
+  pushed through the same backtester and costs, and indicator warmup bars are excluded from
+  every scored metric.
+- **A ±50% single-parameter perturbation grid** must be reported before any holdout request;
+  an edge that flips sign under a 50% nudge of one parameter is treated as curve-fit.
+- Reported per run: excess Sharpe, `sharpeRf0`, Sortino, CAGR, max drawdown, profit factor,
+  annualized round-trip turnover, trade count and participation flags.
+- **Failures are published like successes** (a strategy that doesn't beat the costed Buy & Hold
+  bar is reported as exactly that), matching the F&O volPremium finding above.
 
 ## Known biases that remain (read before quoting any long-history number)
 

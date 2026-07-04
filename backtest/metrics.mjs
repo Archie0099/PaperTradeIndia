@@ -75,6 +75,27 @@ function sharpe(equity, periodsPerYear = TRADING_DAYS, rfAnnual = RF_ANNUAL) {
   return value;
 }
 
+// Annualised SORTINO ratio: same numerator as `sharpe` (mean per-bar return in
+// EXCESS of the risk-free hurdle), but the denominator penalises only DOWNSIDE
+// deviation — the square root of the mean of squared NEGATIVE excess returns,
+// computed over ALL bars (the standard convention: calm up-bars still dilute the
+// downside average, they just contribute 0 to the sum). Two strategies with the
+// same Sharpe can differ a lot here: the one whose volatility is mostly upside
+// scores higher. Conventions mirror `sharpe` exactly: rf defaults to RF_ANNUAL,
+// zero downside deviation returns 0 (never Infinity), and a WIPED account
+// (equity touched <= 0) can never advertise a positive figure.
+function sortino(equity, periodsPerYear = TRADING_DAYS, rfAnnual = RF_ANNUAL) {
+  const ppy = periodsPerYear > 0 ? periodsPerYear : TRADING_DAYS;
+  const rfBar = (rfAnnual || 0) / ppy;
+  const r = dailyReturns(equity).map((x) => x - rfBar);
+  if (r.length < 2) return 0;
+  const downside = Math.sqrt(r.reduce((a, x) => a + (x < 0 ? x * x : 0), 0) / r.length);
+  if (downside === 0) return 0;
+  const value = (mean(r) / downside) * Math.sqrt(ppy);
+  if (equity.some((e) => !(e > 0))) return Math.min(value, 0);
+  return value;
+}
+
 // Estimate bars-per-year from a series' own timestamps — i.e. how many bars actually
 // elapsed per calendar year. For daily data this is ~252 (so the Sharpe is unchanged);
 // for 60-min NSE bars it lands near ~1600. Self-consistent: annualising per-bar returns
@@ -117,6 +138,7 @@ function summarize(equity, { years, trades = 0, periodsPerYear = TRADING_DAYS } 
     // kept alongside so the two conventions are never silently confused.
     sharpe: +sharpe(equity, periodsPerYear).toFixed(2),
     sharpeRf0: +sharpe(equity, periodsPerYear, 0).toFixed(2),
+    sortino: +sortino(equity, periodsPerYear).toFixed(2),
     maxDrawdownPct: +maxDrawdownPct(equity).toFixed(2),
     trades,
     finalEquity: +(equity[equity.length - 1] || 0).toFixed(2),
@@ -125,6 +147,6 @@ function summarize(equity, { years, trades = 0, periodsPerYear = TRADING_DAYS } 
 
 export {
   dailyReturns, mean, stddev,
-  totalReturnPct, cagrPct, sharpe, maxDrawdownPct,
+  totalReturnPct, cagrPct, sharpe, sortino, maxDrawdownPct,
   summarize, inferPeriodsPerYear, TRADING_DAYS, RF_ANNUAL,
 };
