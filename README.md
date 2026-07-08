@@ -18,6 +18,8 @@ Live demo: https://paper-trade-india.onrender.com
 - **Auto-pilot:** copies the best-performing tournament strategy onto your own virtual account, with an honest walk-forward check of whether following it would have beaten the index.
 - **Terminal UI:** hand-rolled canvas charts, a market-hours status bar in IST, a light and dark theme, keyboard shortcuts, price alerts, multiple watchlists, and a mobile layout.
 
+The Strategy research section below walks through how those backtests are kept honest, with three published failures and one strategy that beat the market out-of-sample.
+
 ## Getting started
 
 You need Node 18 or newer. Then:
@@ -36,6 +38,24 @@ The backend is Node and Express with only two runtime dependencies, `express` an
 The simulation engine, the option pricing (Black-Scholes price, Greeks, and an implied-volatility solver), and all order handling live in the browser as plain ES modules and persist to local storage. There is no build step and no framework, and the charts are drawn by hand on a canvas. The backtester and the tournament reuse the very same browser engine under Node, so a backtest obeys the same money math as live trading. The machine-learning rankers are written from scratch and run locally, with no external model service.
 
 The money model holds one identity exactly across every instrument type: realised plus unrealised P&L equals account equity minus starting cash. The test suite checks it directly, including a five-thousand-sequence fuzz.
+
+## Strategy research
+
+Beyond the terminal, the repository has a small research lab that tries to answer one honest question: do any of these trading ideas actually beat the market after real costs, or do they only look good in a backtest? The discipline matters more than any single result, so it is enforced in code rather than by good intentions. The rules were fixed before any strategy was run:
+
+- **One fixed split:** the in-sample period ends on 31 December 2019, and everything from 2020 onward (the COVID crash, the 2021 bull market, the 2022 bear) is a holdout that each strategy may touch exactly once, and only on a deliberate decision to spend it. The harness refuses to score any window that overlaps the holdout without that opt-in.
+- **Real costs, always on:** every backtest pays the full Indian cost schedule, and the benchmark is a buy-and-hold of the Nifty ETF pushed through the same engine and the same costs.
+- **A sensitivity grid before any holdout:** a strategy has to survive a plus or minus fifty percent nudge of each parameter in-sample before it earns a holdout run. An edge that flips sign under a small parameter change is treated as curve-fitting.
+- **Failures are published:** a strategy that does not clear the costed benchmark is written up as exactly that.
+
+Four studies have run so far. Three failed and one survived, and all four are in the repo.
+
+- **Trend following with volatility targeting (failed in-sample):** a slow trend filter on the Nifty ETF, sized by recent volatility, on the theory that Indian drawdowns trend enough for a timed exit to pay. It did not clear the bar: an excess Sharpe of 0.02 against the market's 0.25, a lower return, and only a slightly smaller drawdown to show for it. The sensitivity grid never lifted it past 0.08, so no parameter choice rescued it and the holdout was never spent.
+- **Cross-sectional momentum (survived out-of-sample):** each month, hold the ten strongest names by their twelve-month return skipping the most recent month, weight them by inverse volatility, and step to cash when the index is below a buffered long-term average. In-sample it scored an excess Sharpe of 0.98 against 0.24, with every cell of the sensitivity grid staying positive. The single holdout run came back at 0.59 against the market's 0.40: the edge decayed out-of-sample, as edges do, but stayed above the bar after full costs. One design element failed along the way, a hard rule to flatten the book permanently on a deep drawdown that tripped at the very bottom of the 2020 crash and would have locked in the loss, so that rule was dropped while the underlying edge stood. It now runs as a live bot in the tournament, which is its real forward test.
+- **Option-premium timing (negative by construction):** sell more index-option premium when it is expensive and stand aside when it is cheap. This one is closed without a backtest, because it cannot be tested on the data available. There is no free historical option-price data, so the simulator prices options from the underlying using trailing realised volatility times a fixed premium, which means "expensive" is only a function of past volatility and any timing signal would just read the pricing formula back to itself. A separate script already quantifies the ceiling: at fair value the option sellers net roughly zero after costs, so the whole apparent edge is that one assumption.
+- **Risk overlays on a momentum basket (failed in-sample):** take the best in-sample basket and add two overlays borrowed from the studies above, reading the regime filter daily instead of monthly and scaling exposure by volatility. Neither cleared the bar. The daily filter scored 0.65 against the base 0.86 because it whipsawed in and out of the whole book roughly twenty times a decade and paid costs each way, and its parameter grid was unstable rather than robust. The volatility overlay was smoother but traded return for drawdown almost one-for-one, which is a dial and not an edge, so the holdout stayed unspent.
+
+Every figure here is an upper bound. The universe is the set of names that are liquid today, held fixed across the whole history, so a company that would have ranked well in 2008 and later collapsed can never be picked, which flatters the long-history numbers by an unknowable amount. Even the one survivor decayed from an in-sample excess Sharpe of 0.98 to 0.59 out-of-sample, and that is still measured against a benchmark carried through the same costs. [METHODOLOGY.md](METHODOLOGY.md) states these biases in full.
 
 ## Tests
 
