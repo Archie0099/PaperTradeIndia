@@ -177,7 +177,7 @@ const SEED_BOTS = [
   {
     id: 'quant-multifactor',
     name: 'Multi-factor basket',
-    note: 'Blend momentum + low-volatility + trend + reversal into one composite rank; hold the top 4. Steps to cash in a confirmed market downturn (a buffered regime filter) — over 20y this ~halves the drawdown (55%→28%) while keeping the Sharpe.',
+    note: 'Blend momentum + low-volatility + trend + reversal into one composite rank; hold the top 4. Steps to cash in a confirmed NIFTY downturn (a buffered regime filter) — crash insurance, not an alpha source. Over the full history with real costs it cut max drawdown by roughly a quarter to a third, but almost all of that benefit is the slow 2008 bear it could dodge. It cannot help in a fast crash like COVID-2020, where it goes to cash near the bottom and gives up the recovery, and it is a mild drag in calm years; risk-adjusted return is roughly unchanged over the full history. In-sample; the Live column is the judge.',
     kind: 'BASKET',
     spec: {
       kind: 'BASKET', name: 'Multi-factor basket', universe: WIDE,
@@ -189,19 +189,24 @@ const SEED_BOTS = [
         { name: 'reversal', expr: ['*', -1, ['rsi', 14]], weight: 0.4 },
       ],
       k: 4, weighting: 'rankw', rebalanceBars: 21,
-      // DOWN-REGIME PROTECTION (the quant "tuning"): step entirely to cash when NIFTY is in a
-      // CONFIRMED downtrend — more than 5% below its 100-day average. The 5% buffer is what
-      // makes this a NET win: a naive "below the 200-DMA" gate whipsaws and hurt the Sharpe
-      // (tested: 1.02→0.92), but this buffered 100-DMA gate only triggers in real declines
-      // (2008/2011/2015/2020/2022), so it protects in the crash and stays invested in the
-      // bull — over 20y it cut max drawdown 55%→28% with the Sharpe slightly UP (1.02→1.04).
+      // DOWN-REGIME PROTECTION: step entirely to cash when NIFTY is in a CONFIRMED downtrend —
+      // more than 5% below its 100-day average. The 5% buffer only triggers in real declines
+      // (2008/2011/2015/2020/2022), so it stays invested through normal bull pullbacks rather
+      // than whipsawing like a naive "below the 200-DMA" gate. Honest framing (re-measured
+      // through the live path with the real delivery-cost model): this is crash insurance, not
+      // an alpha source. It cut max drawdown by ~a quarter-to-a-third over the full history,
+      // but almost all of that benefit is the one slow bear (2008) it could dodge; it cannot
+      // help in a fast crash (COVID-2020 — it goes to cash near the bottom and gives up the
+      // recovery) and is a mild drag in calm years. Risk-adjusted return is roughly unchanged
+      // over the full fair history. (The earlier "55%→28% / Sharpe 1.02→1.04" figures did not
+      // reproduce under real costs.)
       marketGate: ['>', ['price'], ['*', 0.95, ['sma', 100]]],
     },
   },
   {
     id: 'quant-meanvar',
     name: 'Mean-variance basket',
-    note: 'Pick the strongest trending names, then size them by Markowitz mean-variance on a Ledoit-Wolf covariance. Steps to cash in a confirmed market downturn (buffered regime filter) — over 20y this cut the drawdown 48%→30% at no Sharpe cost.',
+    note: 'Pick the strongest trending names, then size them by Markowitz mean-variance on a Ledoit-Wolf covariance. Steps to cash in a confirmed NIFTY downturn (a buffered regime filter) — crash insurance, not an alpha source. Over the full history with real costs it cut max drawdown by roughly a quarter to a third, but almost all of that benefit is the slow 2008 bear it could dodge. It cannot help in a fast crash like COVID-2020, where it goes to cash near the bottom and gives up the recovery, and it is a mild drag in calm years; risk-adjusted return is roughly unchanged over the full history. In-sample; the Live column is the judge.',
     kind: 'BASKET',
     spec: {
       kind: 'BASKET', name: 'Mean-variance basket', universe: WIDE,
@@ -213,7 +218,7 @@ const SEED_BOTS = [
   {
     id: 'quant-riskparity',
     name: 'Risk-parity basket',
-    note: 'Hold a broad set of up-trending names, sized so each contributes EQUALLY to portfolio risk. Steps to cash in a confirmed market downturn (buffered regime filter) — over 20y this cut the drawdown 54%→23% without sacrificing the risk-adjusted return (in-sample; the Live column is the judge).',
+    note: 'Hold a broad set of up-trending names, sized so each contributes EQUALLY to portfolio risk. Steps to cash in a confirmed NIFTY downturn (a buffered regime filter) — crash insurance, not an alpha source. Over the full history with real costs it cut max drawdown by roughly a quarter to a third, but almost all of that benefit is the slow 2008 bear it could dodge. It cannot help in a fast crash like COVID-2020, where it goes to cash near the bottom and gives up the recovery, and it is a mild drag in calm years; risk-adjusted return is roughly unchanged over the full history. This is the most conservative of the three — it gives up the most calm-market return for that insurance. In-sample; the Live column is the judge.',
     kind: 'BASKET',
     spec: {
       kind: 'BASKET', name: 'Risk-parity basket', universe: WIDE,

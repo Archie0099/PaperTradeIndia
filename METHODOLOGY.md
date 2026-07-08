@@ -69,6 +69,38 @@ are marked.
 - **Sortino** follows the same conventions as the Sharpe (excess-of-rf numerator, wiped-account
   cap) but its denominator penalises only downside deviation.
 
+## Regime gates (the quant optimisers' market filter)
+
+Three optimiser baskets (multi-factor, mean-variance, risk-parity) carry a *buffered market gate*:
+they step entirely to cash when NIFTY closes more than 5% below its 100-day average. Measured
+through the live path with the full cost model over the ~20-year history, against the same bot with
+the gate removed, this is honestly **crash insurance, not an alpha source** — and each bot's label
+now says so:
+
+- It cut max drawdown by roughly **a quarter to a third** (full-window drawdown ratios, gated over
+  ungated, ≈ 0.62 / 0.72 / 0.75 for multi-factor / mean-variance / risk-parity), not the "halving"
+  an earlier note claimed.
+- **Almost the entire benefit is one event — the 2008 bear market**, a slow grind a monthly-
+  rebalanced gate can step aside from (it cut the 2008 peak-to-trough from ~50–65% down to ~6–9%).
+  Exclude 2008 and the drawdown benefit is negligible.
+- It **cannot help in a fast crash**: in the 2020 COVID drop the gate cut nothing off the drawdown
+  and cost ~20–30 points of return by sitting in cash through the rebound — a monthly gate is read
+  only at rebalance bars.
+- On risk-adjusted return it is roughly a **wash over the full history** and a mild **drag in calm
+  years**. The excess-Sharpe change is sensitive to how the window is anchored: NIFTY (the gate's
+  proxy) starts later than the oldest basket names, so on the raw full window the gated bots sit in
+  cash through that early stretch, which flatters their drawdown but penalises their Sharpe; measured
+  from a fair common start both bots see, the gate slightly *improves* Sharpe for all three, driven
+  again by the 2008 dodge.
+- Risk-parity is the most conservative of the three — it gives up the most calm-market return for
+  the same insurance.
+
+An earlier version of these notes cited specific "55%→28%"-style before/after drawdowns; those
+figures do not reproduce under the current adjusted-close prices and cost model. The likely reason is
+that they predate the switch to dividend/split-adjusted closes and the data sanitiser (unadjusted
+corporate-action bars used to inflate the un-gated drawdown), but that explanation has **not been
+verified** and is offered only as a hypothesis.
+
 ## The research lab protocol (`backtest/research/`)
 
 New candidate strategies are developed under a fixed discipline, enforced in code by
