@@ -10,8 +10,8 @@
 //       - momentum, low-volatility (gated), and breakout RULE baskets, plus
 //       - TWO genuine local-ML baskets (a ridge regressor and a logistic
 //         classifier) that LEARN which stocks to hold — free, local, no API, plus
-//       - THREE ACTIVE opportunity-hunters (momentum / breakout / dip-buyer) that
-//         rotate WEEKLY into the strongest fresh names across the whole universe, plus
+//       - an ACTIVE opportunity-hunter (a weekly dip-buyer — the survivor after two
+//         cost-losing rotators were removed) that rotates into fresh oversold names, plus
 //       - the QUANT LAB four: a multi-factor composite, a mean-variance (Markowitz)
 //         optimiser, a risk-parity optimiser, and a gradient-boosted-tree ranker —
 //         all free, local, deterministic, look-ahead-safe, plus
@@ -244,29 +244,26 @@ const SEED_BOTS = [
     },
   },
 
-  // --- ACTIVE opportunity-hunters — scan the WIDE 30-name field and ROTATE every
-  // ~5 bars (≈weekly, the fastest the daily-bar engine allows) into the strongest
-  // fresh opportunities.
-  // Higher turnover + higher return potential (and higher drawdown) than the steadier
-  // monthly baskets above. Backtests don't guarantee profit; the Live column is the judge.
-  {
-    id: 'active-momentum',
-    name: 'Active momentum hunter',
-    note: 'Weekly: rotate into the 5 strongest 1-month movers (only names still trending up). Aggressive, high-turnover.',
-    kind: 'BASKET',
-    spec: { kind: 'BASKET', name: 'Active momentum hunter', universe: WIDE, rank: ['mom', 21], k: 5, weighting: 'rankw', rebalanceBars: 5, gate: ['>', ['mom', 63], 0] },
-  },
-  {
-    id: 'active-breakout',
-    name: 'Breakout sprinter',
-    note: 'Weekly: hold the 4 names nearest their 3-month high while above their 50-day average. Chases fresh breakouts.',
-    kind: 'BASKET',
-    spec: { kind: 'BASKET', name: 'Breakout sprinter', universe: WIDE, rank: ['distHigh', 63], k: 4, weighting: 'equal', rebalanceBars: 5, gate: ['>', ['price'], ['sma', 50]] },
-  },
+  // --- ACTIVE opportunity-hunter — scan the WIDE field and ROTATE every ~5 bars
+  // (≈weekly, the fastest the daily-bar engine allows) into fresh opportunities.
+  // Higher turnover and higher drawdown than the steadier monthly baskets above.
+  //
+  // This started as a trio; two were removed after a full-window (~18.8y) backtest
+  // through the real Indian delivery-cost model showed they lost money net of costs —
+  // a momentum rotator that made a nominal +2.2% CAGR but was a risk-adjusted loser
+  // (excess-of-rf Sharpe -0.01, worse than cash, 85.6% drawdown), and a breakout
+  // chaser that was an outright loser (-9.12% CAGR, 89.5% drawdown). Only the dip
+  // buyer survives costs.
   {
     id: 'active-dip',
     name: 'Dip buyer (mean-reversion)',
-    note: 'Weekly: buy the 4 most oversold names (low 5-day RSI) that are still in an up-trend. Active mean-reversion.',
+    // Honest label: kept as the best of the (now-removed) active trio and a genuine
+    // net-of-costs winner over the full ~18.8y window (CAGR 10.75% / excess-Sharpe 0.28
+    // / MaxDD 53% — beats NIFTY buy & hold's 9.39% / 0.24 / 59.9%). BUT high-turnover
+    // (~46x/yr), high-drawdown, and NOT run through the in-sample/holdout research
+    // discipline — "not toxic and best of three", not a validated edge like the
+    // research-lab graduate (cross-sectional momentum). The Live column is the judge.
+    note: 'Weekly: buy the 4 most oversold names (low 5-day RSI) still in an up-trend. Active mean-reversion — kept as the best of the active hunters and a net-of-costs winner in backtest (high turnover / high drawdown, not holdout-validated).',
     kind: 'BASKET',
     spec: { kind: 'BASKET', name: 'Dip buyer', universe: WIDE, rank: ['*', -1, ['rsi', 5]], k: 4, weighting: 'equal', rebalanceBars: 5, gate: ['>', ['price'], ['sma', 100]] },
   },
