@@ -123,6 +123,30 @@ test('every shipped tournament seed bot is a valid, broad line-up', async () => 
   assert.ok(SEED_BOTS.some((b) => /active|hunter|breakout|dip/i.test(b.name)), 'includes the active opportunity-hunters');
 });
 
+test('the research-lab graduate (xsmom) ships as validated: gated, top-10 volinv monthly, NO kill-switch', async () => {
+  // Locks the promotion decision: the one out-of-sample survivor graduates to the
+  // board built from the EXACT research factory (makeXsmomSpec), gated exactly as
+  // validated, and — critically — WITHOUT a kill-switch (the permanent-flatten kill
+  // design was REJECTED on the holdout because it would lock in the loss at the crash
+  // low). A future refactor must not silently re-tune the spec or re-add a kill-switch.
+  const { SEED_BOTS } = await import('../tournament/seed.mjs');
+  const { makeXsmomSpec } = await import('../backtest/research/xsmom.mjs');
+  const { BASKET_UNIVERSE } = await import('../tournament/universe.mjs');
+  const b = SEED_BOTS.find((x) => x.id === 'xsmom-research');
+  assert.ok(b, 'the xsmom research graduate is on the board');
+  assert.equal(validateSpec(b.spec), null, 'its spec is valid');
+  assert.equal(b.spec.kind, 'BASKET');
+  assert.equal(b.spec.k, 10, 'top-10 holdings, as validated');
+  assert.equal(b.spec.weighting, 'volinv', 'inverse-vol weighted');
+  assert.equal(b.spec.rebalanceBars, 21, 'monthly cadence');
+  assert.ok(b.spec.marketGate !== undefined, 'carries the buffered regime gate');
+  // NO kill-switch of any shape (the holdout rejected the permanent-flatten design).
+  assert.ok(!('killDD' in b.spec) && !('killSwitch' in b.spec), 'ships WITHOUT a kill-switch');
+  // Built from the exact research spec (fidelity to what was validated out-of-sample).
+  const { spec: fromFactory } = makeXsmomSpec(BASKET_UNIVERSE.slice(0, 120));
+  assert.deepEqual(b.spec, fromFactory, 'the live spec IS makeXsmomSpec(WIDE) — no drift from the studied strategy');
+});
+
 test('the quant OPTIMISERS carry a regime gate; the ML baskets deliberately do NOT', async () => {
   // Part 2 tuning: a buffered market-regime gate (step to cash in a confirmed downturn)
   // empirically ~halves the optimisers' drawdown at no Sharpe cost, but HURTS the ML

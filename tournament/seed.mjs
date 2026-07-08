@@ -14,7 +14,10 @@
 //         rotate WEEKLY into the strongest fresh names across the whole universe, plus
 //       - the QUANT LAB four: a multi-factor composite, a mean-variance (Markowitz)
 //         optimiser, a risk-parity optimiser, and a gradient-boosted-tree ranker —
-//         all free, local, deterministic, look-ahead-safe.
+//         all free, local, deterministic, look-ahead-safe, plus
+//       - the RESEARCH-LAB GRADUATE: cross-sectional 12-1 momentum, the one strategy
+//         from backtest/research/ whose edge survived a one-shot out-of-sample holdout —
+//         promoted here so the live board is its honest forward test.
 //
 // Evolution (a local genetic algorithm) then breeds challengers across BOTH the
 // strategy AND the basket/ML configuration, so the roster explores what works.
@@ -23,6 +26,7 @@
 // ---------------------------------------------------------------------------
 
 import { BASKET_UNIVERSE, ETF_UNIVERSE } from './universe.mjs';
+import { makeXsmomSpec } from '../backtest/research/xsmom.mjs';
 
 // The seed baskets slice their hunting field from the (~200-name) BASKET_UNIVERSE.
 // A single basket is capped at MAX_BASKET_UNIVERSE (240, see dsl.mjs). Each basket
@@ -42,6 +46,14 @@ import { BASKET_UNIVERSE, ETF_UNIVERSE } from './universe.mjs';
 //  too heavy on the free host.)
 const WIDE = BASKET_UNIVERSE.slice(0, 120);
 const CORE = BASKET_UNIVERSE.slice(0, 40);
+
+// The research-lab graduate's spec, built from the EXACT research factory
+// (backtest/research/xsmom.mjs's makeXsmomSpec) so the live bot IS the studied
+// strategy — no re-derivation that could silently drift from what was validated.
+// WIDE is the full ~105-name field the research ran on (slice(0,120) clamps to the
+// list length). A cheap RANK basket (a single momentum-ratio expression, no ML/
+// optimiser), so it's among the lightest WIDE baskets to add to computeStandings.
+const { spec: XSMOM_SPEC } = makeXsmomSpec(WIDE);
 
 // Sector-clustered subset for the market-neutral PAIRS (stat-arb) bot. Pairs trading
 // needs names that genuinely CO-MOVE, which is where they cluster by sector — two
@@ -331,6 +343,40 @@ const SEED_BOTS = [
       gate: ['>', ['mom', 126], 0],
       marketGate: ['>', ['price'], ['sma', 200]],
     },
+  },
+
+  // --- RESEARCH-LAB GRADUATE (the one out-of-sample survivor) -----------------
+  // Of the four research-lab studies (backtest/research/), this is the ONLY strategy
+  // whose edge survived a one-shot out-of-sample HOLDOUT after full delivery costs —
+  // so it graduates here to the live board, which is now its honest FORWARD test (the
+  // holdout is used up; the tournament is the remaining unbiased judge).
+  //
+  // Strategy: cross-sectional 12-1 momentum. Each month, hold the top-10 names by
+  // close[i-21]/close[i-252]-1 (a 12-month return that SKIPS the last month, which
+  // sidesteps short-term reversal), inverse-vol weighted, and step to cash whenever
+  // NIFTY is below 95% of its 200-DMA (the buffered regime gate — momentum's known
+  // catastrophe is the post-bear rebound crash). Built by makeXsmomSpec, the exact
+  // research factory, so the live bot IS the validated spec.
+  //
+  // Evidence: in-sample (2010-2019, full costs) excess Sharpe 0.98 vs the costed
+  // market's 0.24, and ALL 24 ±50% perturbation cells held excess Sharpe 0.55-1.18;
+  // the one-shot holdout (2020-2026) came in at excess Sharpe 0.59 vs 0.40 — the edge
+  // decayed out-of-sample (as edges do) but stayed clearly above the market bar.
+  //
+  // NO kill-switch: the research holdout REJECTED the as-specified permanent-flatten
+  // kill design — it would have locked in the loss at the exact COVID bottom (a monthly-
+  // gated basket can't dodge a five-week crash). So the bot ships gated but WITHOUT a
+  // circuit-breaker, exactly as the verdict concluded.
+  //
+  // ★ Survivorship caveat: the universe is today's liquid names held fixed across
+  // history, so the research figures above are UPPER BOUNDS (METHODOLOGY.md). The
+  // forward Live column is the only unbiased number.
+  {
+    id: 'xsmom-research',
+    name: 'Cross-sectional momentum (12-1)',
+    note: 'Research-lab graduate — the ONE strategy that beat the costed market OUT-OF-SAMPLE (holdout excess Sharpe 0.59 vs 0.40). Holds the top-10 relative-strength winners (12-month return skipping the last month), inverse-vol weighted, monthly; steps to cash when NIFTY falls below 95% of its 200-DMA. No kill-switch (that design was rejected on the holdout). The live board is now its forward test. In-sample/holdout figures are survivorship upper bounds — the Live column is the judge.',
+    kind: 'BASKET',
+    spec: XSMOM_SPEC,
   },
 
   // --- ETF sleeve -------------------------------------------------------------
