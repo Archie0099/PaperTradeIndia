@@ -88,6 +88,16 @@ New candidate strategies are developed under a fixed discipline, enforced in cod
   annualized round-trip turnover, trade count and participation flags.
 - **Failures are published like successes** (a strategy that doesn't beat the costed Buy & Hold
   bar is reported as exactly that), matching the F&O volPremium finding above.
+- **Negative-by-construction.** A study whose hypothesis the available data cannot test is closed
+  by argument, not by a backtest — and a holdout is never spent on it. The worked example is the
+  F&O premium-*timing* idea ("sell more when option premium is rich"): the backtester never sees
+  real option prices (there is no free historical chain), it PRICES options at trailing realized
+  vol × the constant volPremium (see "F&O is modelled" below), so "richness" is a fixed function
+  of *trailing* vol and carries no independent signal. Any timing edge would just be the pricing
+  rule read back to itself — a model artifact the holdout couldn't separate from a real effect,
+  since it is priced identically. `backtest/fno-sensitivity.mjs` already quantifies the ceiling:
+  at volPremium 1.0 (fair value) the premium sellers net ≈ zero minus costs, so the entire edge is
+  the assumption. Verdict recorded from that argument; no code, no backtest, no holdout.
 
 ## Known biases that remain (read before quoting any long-history number)
 
