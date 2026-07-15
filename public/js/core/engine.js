@@ -251,6 +251,14 @@ class Engine {
         if (inst.kind === 'OPT' && (!(inst.strike > 0) || !['CE', 'PE'].includes(inst.optType))) {
           throw new Error('Invalid portfolio file: a pending order has a bad option strike/type.');
         }
+        // lotSize multiplies into qty on a Modify (qty = lots * lotSize). A truthy
+        // but non-numeric/negative lotSize (e.g. a hand-edited "abc") slips past
+        // modifyOrder's `|| 1` fallback, so a price-only Modify would write
+        // qty = NaN and poison cash on the fill. Reject it here (a well-formed
+        // export omits lotSize or writes a positive number).
+        if (inst.lotSize != null && !(Number.isFinite(inst.lotSize) && inst.lotSize > 0)) {
+          throw new Error('Invalid portfolio file: a pending order has a bad lot size.');
+        }
         if (typeof o.qty !== 'number' || !Number.isFinite(o.qty) || !(o.qty > 0)) {
           throw new Error('Invalid portfolio file: a pending order has a non-finite/non-positive qty.');
         }
@@ -644,7 +652,10 @@ class Engine {
   modifyOrder(id, changes = {}) {
     const order = this.state.orders.find((o) => o.id === id);
     if (!order || order.status !== 'PENDING') return null;
-    const lotSize = order.instrument.lotSize || 1;
+    // A truthy non-numeric/negative lotSize (e.g. from a hand-edited import) must
+    // NOT survive `|| 1` — it would make qty = lots * lotSize a NaN below. Only a
+    // positive finite lotSize is honoured; anything else falls back to 1.
+    const lotSize = Number.isFinite(order.instrument.lotSize) && order.instrument.lotSize > 0 ? order.instrument.lotSize : 1;
     const newLimit = changes.limitPrice != null ? Number(changes.limitPrice) : order.limitPrice;
     const newLots = changes.lots != null ? Math.max(1, Math.floor(changes.lots)) : order.lots;
     if (!Number.isFinite(newLimit) || newLimit <= 0) return order; // ignore an invalid price

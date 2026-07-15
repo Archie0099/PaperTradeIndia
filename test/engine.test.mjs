@@ -320,6 +320,17 @@ test('importJson rejects a NEGATIVE pending limit price (regression: negative re
     () => e.importJson(JSON.stringify({ ...base, orders: [{ id: 3, status: 'PENDING', instrument: { kind: 'EQ', symbol: 'X', lotSize: 1 }, side: 'BUY', qty: 100, limitPrice: 100 }] })),
     /missing\/invalid lots count/
   );
+  // A pending order with a truthy-but-non-numeric lotSize is rejected: it survives
+  // modifyOrder's `|| 1` fallback, so qty = lots * 'abc' = NaN on a price-only Modify
+  // would poison cash on the fill (the same hazard as the missing-lots case above).
+  assert.throws(
+    () => e.importJson(JSON.stringify({ ...base, orders: [{ id: 4, status: 'PENDING', instrument: { kind: 'EQ', symbol: 'X', lotSize: 'abc' }, side: 'BUY', qty: 100, lots: 100, limitPrice: 90 }] })),
+    /bad lot size/
+  );
+  assert.throws(
+    () => e.importJson(JSON.stringify({ ...base, orders: [{ id: 5, status: 'PENDING', instrument: { kind: 'EQ', symbol: 'X', lotSize: -5 }, side: 'BUY', qty: 100, lots: 100, limitPrice: 90 }] })),
+    /bad lot size/
+  );
   // Non-positive lastPrices are rejected (the engine only ever records prices > 0).
   assert.throws(
     () => e.importJson(JSON.stringify({ ...base, lastPrices: { 'EQ:X': -500 } })),
@@ -366,6 +377,15 @@ test('modifyOrder guards a non-finite lots recompute (regression: NaN qty poison
   e.modifyOrder(o.id, { limitPrice: 99 });
   assert.ok(Number.isFinite(o.qty), 'a price-only modify on a lots-less order cannot write NaN qty');
   assert.equal(o.limitPrice, 100, 'the change was ignored outright (original kept)');
+  // Same defense for a truthy-but-non-numeric lotSize (imports now reject it, but a
+  // resting order predating the fix could carry one): qty = lots * lotSize must not
+  // become NaN — the guard honours only a positive finite lotSize, else falls back to 1.
+  const o2 = e.placeOrder(limit(EQ('X'), 'BUY', 10, 100));
+  assert.equal(o2.status, 'PENDING');
+  o2.instrument.lotSize = 'abc';
+  const mod = e.modifyOrder(o2.id, { limitPrice: 98 });
+  assert.ok(mod && Number.isFinite(mod.qty), 'a bad lotSize cannot produce a NaN qty on Modify');
+  assert.equal(mod.qty, 10, 'qty falls back to lots * 1');
 });
 
 test('recordEquitySample COMPACTS the curve instead of FIFO-erasing it (regression: seeded multi-year history gone in hours)', () => {

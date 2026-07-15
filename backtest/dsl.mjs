@@ -204,6 +204,10 @@ function validateBasket(spec) {
   if (u.some((s) => typeof s !== 'string' || !s.trim())) return 'basket.universe symbols must be non-empty strings';
   if (new Set(u.map((s) => s.toUpperCase())).size !== u.length) return 'basket.universe has duplicates';
   if (spec.rank === undefined || !validExpr(spec.rank)) return 'basket.rank must be a valid expression';
+  // `rank` must evaluate to a NUMBER: portfolio.mjs drops every name whose score is
+  // non-finite (Number.isFinite(true) === false), so a boolean/comparison-rooted rank
+  // would silently hold the whole basket in cash forever. Same guard the factors below apply.
+  if (typeof spec.rank === 'boolean' || (Array.isArray(spec.rank) && BOOL_VALUED_OPS.has(spec.rank[0]))) return 'basket.rank must be numeric-valued (not a boolean/comparison)';
   if (!Number.isInteger(spec.k) || spec.k < 1 || spec.k > u.length) return 'basket.k must be 1..universe.length';
   if (!WEIGHTINGS.has(spec.weighting === undefined ? 'equal' : spec.weighting)) return 'basket.weighting must be equal/rankw/volinv/meanvar/riskparity';
   if (!Number.isInteger(spec.rebalanceBars) || spec.rebalanceBars < 5 || spec.rebalanceBars > 63) return 'basket.rebalanceBars must be 5..63';
@@ -314,6 +318,7 @@ function validateSpec(spec) {
   // FNO
   if (!Array.isArray(spec.legs) || spec.legs.length < 1 || spec.legs.length > 8) return 'legs must be 1..8';
   for (const l of spec.legs) {
+    if (!l || typeof l !== 'object') return 'leg must be an object';
     if (l.type !== 'CE' && l.type !== 'PE') return 'leg.type must be CE/PE';
     if (l.side !== 'SELL' && l.side !== 'BUY') return 'leg.side must be SELL/BUY';
     if (!(typeof l.strikePct === 'number' && l.strikePct >= 0.5 && l.strikePct <= 2)) return 'leg.strikePct 0.5..2';

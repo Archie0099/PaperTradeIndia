@@ -38,6 +38,37 @@ test('all example specs compile', () => {
   for (const s of EXAMPLE_SPECS) assert.equal(safeCompile(s).ok, true, `${s.name} compiles`);
 });
 
+test('validateSpec/safeCompile never THROW on a malformed FNO leg — the safety boundary is total (regression)', () => {
+  // A null/undefined leg element used to hit `l.type` and throw a TypeError instead of
+  // returning an error string, crashing every caller (rebuildBots boot, run-generated batch,
+  // evolve scoring). It must be rejected the same way a non-object leg already is.
+  for (const legs of [[null], [undefined], [{ type: 'CE', side: 'SELL', strikePct: 1 }, null]]) {
+    const spec = { kind: 'FNO', name: 'x', legs };
+    let res;
+    assert.doesNotThrow(() => { res = validateSpec(spec); }, 'validateSpec must not throw on a null leg');
+    assert.match(res, /leg must be an object/, 'a null leg is rejected with an error string');
+    assert.doesNotThrow(() => safeCompile(spec), 'safeCompile must not throw either');
+    assert.equal(safeCompile(spec).ok, false, 'a malformed FNO spec is safely rejected, not run');
+  }
+  // A well-formed FNO spec still validates + compiles.
+  const good = { kind: 'FNO', name: 'ok', legs: [{ type: 'CE', side: 'SELL', strikePct: 1 }] };
+  assert.equal(validateSpec(good), null);
+  assert.equal(safeCompile(good).ok, true);
+});
+
+test('validateBasket rejects a boolean/comparison-valued rank but accepts a numeric rank (regression: a boolean rank silently holds cash forever)', () => {
+  const base = { kind: 'BASKET', name: 'b', universe: ['A', 'B', 'C', 'D'], k: 2, weighting: 'equal', rebalanceBars: 21 };
+  // A comparison rank evaluates to a boolean; portfolio.mjs then drops every name
+  // (Number.isFinite(true) === false), so the basket sits in cash on every rebalance.
+  // (The same hazard the `factors` validation already guards against.)
+  assert.match(validateSpec({ ...base, rank: ['>', ['mom', 63], 0] }), /numeric-valued/, 'a comparison rank is rejected by the numeric-valued guard');
+  assert.ok(validateSpec({ ...base, rank: ['and', ['>', ['price'], ['sma', 50]], ['<', ['rsi', 14], 70]] }), 'a logic-rooted rank is rejected');
+  assert.ok(validateSpec({ ...base, rank: true }), 'a bare boolean rank is rejected');
+  // A numeric-valued rank is still accepted (the seed baskets all use these).
+  assert.equal(validateSpec({ ...base, rank: ['mom', 63] }), null, 'a numeric indicator rank is accepted');
+  assert.equal(validateSpec({ ...base, rank: ['*', -1, ['vol', 20]] }), null, 'a numeric expression rank is accepted');
+});
+
 test('EQ side: bearish (short) specs validate, compile, and explain; garbage is rejected', () => {
   // The new directional flag — `side:'short'` makes a bot bearish (it shorts the symbol).
   assert.equal(validateSpec({ kind: 'EQ', name: 's', side: 'short', weight: 1 }), null, 'always-short is valid');
