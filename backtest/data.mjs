@@ -160,7 +160,7 @@ async function fetchYahooWithRetry(symbol, interval, range, tries = 3) {
   for (let i = 0; i < tries; i++) {
     try {
       const res = await freeProvider.getHistory(symbol, { interval, range });
-      const candles = (res.candles || []).filter((c) => Number.isFinite(c.c) && c.c > 0);
+      const candles = (res.candles || []).filter((c) => Number.isFinite(c.c) && c.c > 0 && Number.isFinite(c.t));
       if (candles.length > 50) return candles;
       lastErr = new Error(`too few candles (${candles.length})`);
     } catch (e) {

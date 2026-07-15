@@ -199,7 +199,10 @@ function parseHistory(symbol, result) {
     // omitted the close array entirely. We must NOT emit all-null candles tagged
     // as live data — an empty series lets the orchestrator fall back instead.
     const close = q.close ? q.close[i] : null;
-    if (close == null) continue;
+    // Skip a row with no usable close OR a non-finite timestamp. A misaligned/short
+    // Yahoo `timestamp` array can pair a valid close with an undefined ts -> t = NaN,
+    // which later throws in istDate()'s `new Date(NaN).toISOString()` on the live tick.
+    if (close == null || !Number.isFinite(ts[i])) continue;
     const candle = {
       t: ts[i] * 1000,
       o: q.open ? num2(q.open[i]) : null,

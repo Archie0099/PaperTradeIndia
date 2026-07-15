@@ -444,6 +444,18 @@ test('parseHistory returns an EMPTY series (not all-null candles) when close is 
   assert.deepEqual(candles.map((c) => c.c), [10, 12]);
 });
 
+test('parseHistory drops a row with a non-finite timestamp (regression: a NaN `t` crashes istDate() on the live tick)', () => {
+  // A misaligned/short Yahoo `timestamp` array can pair a VALID close with an undefined
+  // (or NaN) ts. The old filter only checked the close, so t = ts[i] * 1000 = NaN slipped
+  // through and later threw in istDate()'s `new Date(NaN).toISOString()`, silently
+  // stalling the live-forward tick (and a NaN `t` also breaks the seriesFor sort).
+  const bad = { timestamp: [1000, undefined, 3000], indicators: { quote: [{ close: [10, 11, 12] }] } };
+  const candles = freeProvider.parseHistory('X', bad).candles;
+  assert.equal(candles.length, 2, 'the undefined-timestamp row is dropped');
+  assert.deepEqual(candles.map((c) => c.c), [10, 12]);
+  assert.ok(candles.every((c) => Number.isFinite(c.t)), 'no candle carries a non-finite timestamp');
+});
+
 test('market-closed intraday fallback: lastSessionCandles keeps only the most recent trading day', () => {
   // Three UTC days of 5-min bars; the helper must return only the final day's, so
   // the "1D" view shows the last real session instead of a multi-day blob.
