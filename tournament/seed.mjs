@@ -104,7 +104,7 @@ const SEED_BOTS = [
   {
     id: 'defensive-strangle',
     name: 'Defensive far-OTM strangle',
-    note: 'Best backtest Sharpe — sell 8% OTM CE+PE monthly.',
+    note: 'Sell 8% far-OTM CE+PE monthly. Lowest drawdown of the premium sellers, but the far-OTM premium barely clears the real cost model — the worst risk-adjusted return of the three (indicative/modelled option prices).',
     kind: 'FNO',
     symbol: 'NIFTY',
     spec: { kind: 'FNO', name: 'Defensive far-OTM strangle', legs: [{ type: 'CE', side: 'SELL', strikePct: 1.08 }, { type: 'PE', side: 'SELL', strikePct: 0.92 }] },
@@ -112,7 +112,7 @@ const SEED_BOTS = [
   {
     id: 'wide-strangle',
     name: 'Wide 6% strangle',
-    note: 'Top backtest return — sell 6% OTM CE+PE (2 lots each).',
+    note: 'Sell 6% OTM CE+PE (2 lots each). Highest return and least-negative Sharpe of the premium sellers, but a deeper drawdown — still net-negative risk-adjusted once real costs are charged (indicative/modelled option prices).',
     kind: 'FNO',
     symbol: 'BANKNIFTY',
     spec: { kind: 'FNO', name: 'Wide 6% strangle', legs: [{ type: 'CE', side: 'SELL', strikePct: 1.06, lots: 2 }, { type: 'PE', side: 'SELL', strikePct: 0.94, lots: 2 }] },
@@ -307,7 +307,7 @@ const SEED_BOTS = [
   {
     id: 'pairs-statarb',
     name: 'Market-neutral stat-arb',
-    note: 'Long/short co-moving pairs (banks, IT, metals, pharma); profits when a stretched spread reverts. Largely UNCORRELATED with the market — can make money when it falls.',
+    note: 'Long/short co-moving pairs (banks, IT, metals, pharma); profits when a stretched spread reverts — market-neutral, so uncorrelated with the index. Kept as an honest NEGATIVE: measured over the full history it returns less than the risk-free rate even BEFORE costs (gross Sharpe negative), and its high turnover eats the rest. The Live column is the judge.',
     kind: 'PAIRS',
     spec: {
       kind: 'PAIRS', name: 'Market-neutral stat-arb', universe: PAIRS_UNIVERSE,
@@ -323,7 +323,7 @@ const SEED_BOTS = [
   {
     id: 'pairs-statarb-slow',
     name: 'Patient stat-arb (90d)',
-    note: 'A slower, more selective market-neutral pairs bot — longer 90-bar formation, wider ±2.5σ entry, broader universe. Low turnover, uncorrelated with the market.',
+    note: 'A slower, more selective market-neutral pairs bot — longer 90-bar formation, wider ±2.5σ entry, broader universe, lower turnover. Same honest verdict as its faster cousin: it trails the risk-free rate even before costs. Kept as a lesson in how hard market-neutral stat-arb is to run profitably on this universe.',
     kind: 'PAIRS',
     spec: {
       kind: 'PAIRS', name: 'Patient stat-arb (90d)', universe: PAIRS_UNIVERSE_WIDE,
