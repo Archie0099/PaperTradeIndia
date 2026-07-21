@@ -39,6 +39,7 @@ import freeProvider from '../src/dataSources/freeProvider.js';
 import marketHours from '../src/marketHours.js'; // CommonJS -> default import, then destructure
 const { getMarketState } = marketHours;
 import { SEED_BOTS } from './seed.mjs';
+import { createPersistStore } from './persistStore.mjs';
 import { STOCKS, BASKET_UNIVERSE, FNO_INDICES, EQ_SYMBOLS, FNO_SYMBOLS } from './universe.mjs';
 import { evolve, scoreSpec, fitness } from './evolve.mjs';
 import { readFileSync as readFile, existsSync as fileExists } from 'node:fs';
@@ -412,7 +413,13 @@ const asRosterEntry = (b, gen = 0) => ({
   protected: !!b.protected,
 });
 
-async function createTournament({ seed = SEED_BOTS, backfillData = null, persist = true, stateFile = STATE_FILE, retireWeakest = RETIRE_WEAKEST, maxRosterBots = MAX_ROSTER_BOTS, evolutionEnabled = true } = {}) {
+async function createTournament({ seed = SEED_BOTS, backfillData = null, persist = true, stateFile = STATE_FILE, retireWeakest = RETIRE_WEAKEST, maxRosterBots = MAX_ROSTER_BOTS, evolutionEnabled = true, persistStore = createPersistStore() } = {}) {
+  // persistStore: an OPTIONAL remote store (a secret GitHub Gist via fetch — see
+  // persistStore.mjs) that persists the live-forward state ACROSS an ephemeral-disk
+  // redeploy (Render free tier). The default reads the host env (PERSIST_GIST_ID /
+  // PERSIST_GIST_TOKEN); when those are unset it is a strict NO-OP, so the tournament
+  // behaves byte-identically to before and server.js needs no change to opt in — just
+  // set the two env vars. Tests inject an in-memory stub.
   // evolutionEnabled: whether the local genetic algorithm BREEDS + adds challengers. The
   // production server (server.js) passes FALSE — intentionally: the board shows only the
   // CURATED seed line-up, not unproven in-sample GA mutations (a bred bot merely beat the
@@ -467,14 +474,22 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
   const rosterSources = () => sourcesOf(roster);
 
   function save() {
-    if (!persist) return;
-    try {
-      mkdirSync(dirname(stateFile), { recursive: true });
-      state.roster = roster;
-      writeFileSync(stateFile, JSON.stringify(state, null, 2));
-    } catch {
-      /* persistence is best-effort */
+    // Persist to LOCAL disk (persist) AND/OR a REMOTE store (persistStore). The remote
+    // store is what survives an ephemeral-disk redeploy — see persistStore.mjs. Both are
+    // best-effort; a failed save just means that bar isn't durably stored yet. When
+    // NEITHER is configured this is the same early-return no-op as before (so every
+    // existing persist:false path stays byte-identical).
+    if (!persist && !persistStore.enabled) return;
+    state.roster = roster;
+    if (persist) {
+      try {
+        mkdirSync(dirname(stateFile), { recursive: true });
+        writeFileSync(stateFile, JSON.stringify(state, null, 2));
+      } catch {
+        /* local persistence is best-effort */
+      }
     }
+    persistStore.save(state); // fire-and-forget remote mirror (no-op if not configured)
   }
 
   function load() {
@@ -849,6 +864,33 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
 
   async function init() {
     load(); // restore the persisted roster FIRST, so we load data for ITS symbols too
+    // If LOCAL disk had no state (a fresh dyno after an ephemeral-disk redeploy) and a
+    // REMOTE store is configured, restore the forward record from it: the live closes,
+    // the generation/history, and — crucially — the ORIGINAL deploy date, so the forward
+    // clock stays CONTINUOUS across deploys instead of resetting to 0 every ship. Guarded
+    // on !state.deployedAt, so a warm restart that still HAS its local file keeps that
+    // local state and never round-trips the network. No-op (and no await) when unconfigured.
+    if (persistStore.enabled && !state.deployedAt) {
+      try {
+        const remote = await persistStore.load();
+        if (remote && typeof remote === 'object' && remote.deployedAt) {
+          state = {
+            deployedAt: remote.deployedAt,
+            live: remote.live && typeof remote.live === 'object' ? remote.live : {},
+            roster: remote.roster || null,
+            generation: remote.generation || 0,
+            history: Array.isArray(remote.history) ? remote.history : [],
+          };
+          if (Array.isArray(remote.roster) && remote.roster.length) {
+            roster = remote.roster.map((b) => asRosterEntry(b, b.gen || 0));
+            rebuildBots();
+          }
+          save(); // mirror the restored state to local disk for this dyno's lifetime
+        }
+      } catch {
+        /* best-effort — fall through to a fresh forward clock */
+      }
+    }
     // Data sources whose history we preload: the full DAILY universe in production (so
     // evolution can hunt across stocks), or the test-provided keys — ALWAYS unioned
     // with the (post-load) roster sources, so a persisted/evolved bot on any symbol
