@@ -28,12 +28,28 @@ function createPersistStore({
   gistId = (typeof process !== 'undefined' && process.env && process.env.PERSIST_GIST_ID) || '',
   filename = FILENAME,
   fetchImpl = (typeof fetch === 'function' ? fetch : null),
+  timeoutMs = 8000,
 } = {}) {
   const enabled = !!(token && gistId && fetchImpl);
   const headers = {
     Authorization: `Bearer ${token}`,
     Accept: 'application/vnd.github+json',
     'User-Agent': 'paper-trade-india',
+  };
+
+  // A best-effort per-request timeout so a HUNG GitHub fetch can never block the boot path
+  // (init() awaits load()) or stall a save. Uses an UNREF'd timer so it never keeps the
+  // process alive (matters for tests + a clean shutdown). Returns undefined if AbortController
+  // is somehow unavailable (then the request simply has no timeout — no worse than before).
+  const abortAfter = (ms) => {
+    try {
+      const c = new AbortController();
+      const t = setTimeout(() => { try { c.abort(); } catch { /* ignore */ } }, ms);
+      if (t && typeof t.unref === 'function') t.unref();
+      return c.signal;
+    } catch {
+      return undefined;
+    }
   };
 
   // A single blob awaiting a flush, plus an in-flight guard so two saves can never
@@ -46,12 +62,22 @@ function createPersistStore({
   async function load() {
     if (!enabled) return null;
     try {
-      const res = await fetchImpl(`${GH_API}/gists/${gistId}`, { headers });
+      const res = await fetchImpl(`${GH_API}/gists/${gistId}`, { headers, signal: abortAfter(timeoutMs) });
       if (!res || !res.ok) return null;
       const gist = await res.json();
       const file = gist && gist.files && gist.files[filename];
       if (!file || typeof file.content !== 'string') return null;
-      const blob = JSON.parse(file.content);
+      // The Gist API TRUNCATES a file's `content` at 1MB on read (sets file.truncated and
+      // serves the full file only via raw_url). Our state blob crosses 1MB after ~1 year of
+      // forward bars, so a bare JSON.parse(file.content) would then choke on a HALF file and
+      // the whole forward record would silently fail to restore. When truncated, fetch the
+      // full content via raw_url (served up to ~10MB ≈ many years) before parsing.
+      let content = file.content;
+      if (file.truncated && file.raw_url) {
+        const raw = await fetchImpl(file.raw_url, { headers, signal: abortAfter(timeoutMs) });
+        if (raw && raw.ok && typeof raw.text === 'function') content = await raw.text();
+      }
+      const blob = JSON.parse(content);
       return blob && typeof blob === 'object' ? blob : null;
     } catch {
       return null; // best-effort: a fresh forward clock is an acceptable fallback
@@ -68,11 +94,15 @@ function createPersistStore({
         const blob = pending;
         pending = null;
         try {
-          await fetchImpl(`${GH_API}/gists/${gistId}`, {
+          const res = await fetchImpl(`${GH_API}/gists/${gistId}`, {
             method: 'PATCH',
             headers: { ...headers, 'Content-Type': 'application/json' },
             body: JSON.stringify({ files: { [filename]: { content: JSON.stringify(blob) } } }),
+            signal: abortAfter(timeoutMs),
           });
+          // Drain the response body so the underlying socket is released back to the pool
+          // (an un-consumed fetch body can otherwise keep the connection open under undici).
+          if (res && typeof res.text === 'function') await res.text().catch(() => {});
         } catch {
           /* best-effort — drop this attempt; the next save() will retry with fresher state */
         }
@@ -92,7 +122,7 @@ function createPersistStore({
     } catch {
       return; // an unserialisable blob can't be persisted; skip it silently
     }
-    flush();
+    flush().catch(() => {}); // fire-and-forget; flush swallows internally, but guard defensively
   }
 
   return { enabled, load, save, flush };

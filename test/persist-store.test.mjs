@@ -108,3 +108,49 @@ test('with NO store, a redeploy resets the forward clock (documents the gap the 
   await b.init();
   assert.equal(b.getStandings().liveBars, 0, 'without a store the forward record is lost on redeploy');
 });
+
+test('a redeploy does NOT restore the ROSTER — a seed edit (cull) takes effect, forward record still carries over', async () => {
+  const store = memStore();
+  const data = { NIFTY: series() };
+  const OLD = [...SEED, { id: 'cull-me', name: 'Cull me', kind: 'EQ', symbol: 'NIFTY', spec: { kind: 'EQ', name: 'Cull me', weight: 1 } }];
+
+  // First deploy runs the OLD 2-bot line-up and mirrors its state (incl. roster) to the store.
+  const a = await createTournament({ seed: OLD, backfillData: data, persist: false, persistStore: store, evolutionEnabled: false });
+  await a.init();
+  a._appendLiveClose('NIFTY', { t: data.NIFTY[data.NIFTY.length - 1].t + DAY, c: 300 });
+  assert.deepEqual(a.getStandings().bots.map((x) => x.id).sort(), ['buy-hold', 'cull-me']);
+
+  // Redeploy after editing seed.mjs to CULL 'cull-me'. The board must run the NEW seed, not the
+  // roster the store still carries — otherwise every curated board edit would silently revert.
+  const b = await createTournament({ seed: SEED, backfillData: data, persist: false, persistStore: store, evolutionEnabled: false });
+  await b.init();
+  assert.deepEqual(b.getStandings().bots.map((x) => x.id), ['buy-hold'], 'the culled bot must NOT resurrect from the store');
+  assert.equal(b.getStandings().liveBars, 1, 'but the forward record (live closes) still carries over');
+});
+
+test('a corrupt restored live map is sanitised — bad bars and non-array keys are dropped', async () => {
+  const store = {
+    enabled: true,
+    load: async () => ({ deployedAt: 5, live: { NIFTY: [{ t: 1e12, c: 100 }, { t: 'x', c: 2 }, { t: 2e12, c: NaN }], JUNK: 'notarray' }, generation: 0, history: [] }),
+    save: () => {}, flush: async () => {},
+  };
+  const t = await createTournament({ seed: SEED, backfillData: { NIFTY: series() }, persist: false, persistStore: store, evolutionEnabled: false });
+  await t.init();
+  const live = t._state().live.NIFTY;
+  assert.ok(Array.isArray(live) && live.length === 1 && live[0].c === 100, 'only the finite {t,c} bar survives');
+  assert.equal(t._state().live.JUNK, undefined, 'a non-array key is dropped');
+});
+
+test('load() follows raw_url when the gist file is >1MB truncated', async () => {
+  const full = JSON.stringify({ deployedAt: 7, live: { NIFTY: [{ t: 1, c: 2 }] } });
+  let rawFetched = false;
+  const fetchImpl = async (url) => {
+    if (String(url).includes('/gists/')) return { ok: true, json: async () => ({ files: { 'tournament-state.json': { content: full.slice(0, 4), truncated: true, raw_url: 'https://raw.example/xyz' } } }) };
+    rawFetched = true; // raw_url branch
+    return { ok: true, text: async () => full };
+  };
+  const s = createPersistStore({ token: 't', gistId: 'g', fetchImpl });
+  const blob = await s.load();
+  assert.equal(rawFetched, true, 'the full content was fetched via raw_url');
+  assert.equal(blob.deployedAt, 7, 'the un-truncated blob parses correctly');
+});

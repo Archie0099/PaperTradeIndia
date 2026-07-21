@@ -87,6 +87,20 @@ const isIntradayInterval = (interval) => !!interval && interval !== '1d';
 const dataKey = (symbol, interval = '1d') => (isIntradayInterval(interval) ? `${interval}:${symbol}` : symbol);
 const parseKey = (key) => { const i = key.indexOf(':'); return i < 0 ? { interval: '1d', symbol: key } : { interval: key.slice(0, i), symbol: key.slice(i + 1) }; };
 const backfillBarsFor = (interval) => (isIntradayInterval(interval) ? INTRADAY_BACKFILL_BARS : BACKFILL_BARS);
+
+// Keep only well-formed forward bars from a RESTORED remote `live` map. The remote store
+// (a Gist) is externally editable, so a corrupt / hand-edited entry must never inject a bad
+// bar into a backtest: drop any non-array key and any bar without a finite t & c.
+function sanitizeLiveMap(live) {
+  const out = {};
+  if (!live || typeof live !== 'object') return out;
+  for (const [key, arr] of Object.entries(live)) {
+    if (!Array.isArray(arr)) continue;
+    const clean = arr.filter((b) => b && Number.isFinite(b.t) && Number.isFinite(b.c));
+    if (clean.length) out[key] = clean;
+  }
+  return out;
+}
 // How much history to fetch from Yahoo per bar size.
 //   Daily '20y': Yahoo serves DAILY bars for ~20 years (NIFTY from its 2007 inception;
 //     stocks from ~2006 or their IPO). We deliberately do NOT use 'max' — for these
@@ -874,18 +888,22 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       try {
         const remote = await persistStore.load();
         if (remote && typeof remote === 'object' && remote.deployedAt) {
+          // Restore ONLY the forward record: the live closes (sanitised), generation/history,
+          // and the ORIGINAL deploy date so the forward clock stays continuous. Deliberately
+          // do NOT restore the ROSTER. The roster is the CURRENT curated seed (or, with breeding
+          // on, the local-disk-persisted line-up), and adopting a roster written by a PRIOR
+          // deploy would silently revert every seed.mjs edit — a culled bot would resurrect, a
+          // relabel would be ignored — defeating the project's SOLE board-change mechanism.
+          // (Evolved bots already don't persist across an ephemeral-disk redeploy — a separate
+          // deferred concern — so keeping the current seed here is strictly correct.)
           state = {
             deployedAt: remote.deployedAt,
-            live: remote.live && typeof remote.live === 'object' ? remote.live : {},
-            roster: remote.roster || null,
+            live: sanitizeLiveMap(remote.live),
+            roster: null, // save() below stamps the CURRENT roster; never the remote one
             generation: remote.generation || 0,
             history: Array.isArray(remote.history) ? remote.history : [],
           };
-          if (Array.isArray(remote.roster) && remote.roster.length) {
-            roster = remote.roster.map((b) => asRosterEntry(b, b.gen || 0));
-            rebuildBots();
-          }
-          save(); // mirror the restored state to local disk for this dyno's lifetime
+          save(); // mirror the restored forward state (with the CURRENT roster) to local disk
         }
       } catch {
         /* best-effort — fall through to a fresh forward clock */
