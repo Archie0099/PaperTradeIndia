@@ -130,16 +130,54 @@ New candidate strategies are developed under a fixed discipline, enforced in cod
   since it is priced identically. `backtest/fno-sensitivity.mjs` already quantifies the ceiling:
   at volPremium 1.0 (fair value) the premium sellers net ≈ zero minus costs, so the entire edge is
   the assumption. Verdict recorded from that argument; no code, no backtest, no holdout.
+- **★ Beating the index is not evidence; beating the same universe is.** A basket drawn from
+  the survivor universe must be scored against **an equal-weight, no-signal portfolio of that
+  same universe**, because the universe itself carries a ~0.6-Sharpe survivorship premium over
+  the index (quantified under Known biases below). A study that only clears the index bar has
+  demonstrated nothing about its own selection rule. Enforced in practice by an **ablation**:
+  re-run the identical machinery (same holdings count, cadence, weighting, universe, costs,
+  window) with the ranking signal **removed**, and with the signal **inverted**. If the
+  no-signal arm ties the strategy, the strategy is not the source of the result. Where the
+  strategy's own number could plausibly be a lucky draw, also report the **null distribution**
+  of seeded random portfolios of the same size — a result inside that spread is noise.
+  This rule was written *because* a study passed the old bar and failed this one (S6 below).
+
+**Study scoreboard so far** — three published in-sample/by-construction negatives, one
+out-of-sample survivor, and one study killed by its own control:
+
+| # | Strategy | Verdict | Holdout |
+|---|---|---|---|
+| S1 | Time-series momentum + vol target on NIFTYBEES | **Failed in-sample** (xSharpe 0.02 vs 0.25) | not spent |
+| S2 | Cross-sectional 12-1 momentum basket | **Survived out-of-sample** (xSharpe 0.59 vs 0.40) — kill-switch design rejected | **SPENT** |
+| S4 | F&O premium *timing* | **Negative by construction** (untestable on modelled option prices) | not spent |
+| S5 | Risk overlays (daily gate / vol target) on the best basket | **Failed in-sample** (a de-risking dial, not an edge) | not spent |
+| S6 | Cross-sectional **low volatility** | **Not promoted** — cleared the index bar by +0.76 Sharpe, then a *no-signal* control tied it and the null distribution put it at ~the 85th percentile of noise. The apparent edge was survivorship. Volatility does reliably order risk (drawdown 15.8% vs the inverted arm's 34.0%), so it is a de-risking dial like S5's vol target — not alpha. | not spent |
 
 ## Known biases that remain (read before quoting any long-history number)
 
-1. **Survivorship bias — the big one.** The stock universe is ~105 names that are liquid
-   **today**, held fixed across the whole ~20-year replay (`tournament/universe.mjs`). Names
-   that would have ranked well in 2008 and then collapsed or delisted — DHFL, Jet Airways,
-   RCOM, Yes Bank at its peak — can never be picked, so every long-history basket return,
-   Sharpe and drawdown is flattered by an unknowable amount. Free point-in-time index
-   membership doesn't exist, so this is **disclosed rather than fixed**. Treat 20-year
-   basket figures as upper bounds; recent-window columns (1Y/5Y) are less affected.
+1. **Survivorship bias — the big one, and now MEASURED.** The stock universe is ~105 names
+   that are liquid **today**, held fixed across the whole ~20-year replay
+   (`tournament/universe.mjs`). Names that would have ranked well in 2008 and then collapsed
+   or delisted — DHFL, Jet Airways, RCOM, Yes Bank at its peak — can never be picked, so every
+   long-history basket return, Sharpe and drawdown is flattered. Free point-in-time index
+   membership doesn't exist, so this is **disclosed rather than fixed**.
+
+   **How big is it? Roughly 0.6 Sharpe and 9 percentage points of CAGR.** Measured directly
+   (`node backtest/research/lowvol.mjs`, in-sample 2010–2019, full delivery costs): an
+   **equal-weight portfolio of all 104 names — no signal, no selection, no strategy
+   whatsoever** — scores excess-Sharpe **0.85 / CAGR 18.32%**, against the index's
+   **0.24 / 9.33%**. Simply *being in the survivor set* accounts for that entire gap.
+
+   **★ The consequence for reading any number in this project: comparing a basket against
+   the INDEX credits the survivorship premium to the strategy.** The honest null for "does
+   this selection rule add value" is an equal-weight portfolio **of the same universe**,
+   selected with no information — not the index. Every basket-vs-index figure published here
+   inherits the bias, so a basket needs to beat roughly 0.85 Sharpe, not 0.24, before its
+   *selection* has demonstrated anything. This was discovered the hard way: study S6 cleared
+   its pre-registered bar against the index by +0.76 Sharpe and turned out to add nothing at
+   all over a no-signal control (see the research-lab protocol above, and the extended
+   write-up at the top of `backtest/research/lowvol.mjs`). Recent-window columns (1Y/5Y) are
+   less affected than 20-year ones, but not immune.
 2. **The bot line-up is curated survivorship too:** the walk-forward "auto-pick the best
    bot" runs over today's seed strategies. It shows "among these strategies, auto-picking
    beat the market", not "this was buildable in 2008".

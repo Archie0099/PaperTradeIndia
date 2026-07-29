@@ -257,18 +257,38 @@ const SEED_BOTS = [
   // through the real Indian delivery-cost model showed they lost money net of costs —
   // a momentum rotator that made a nominal +2.2% CAGR but was a risk-adjusted loser
   // (excess-of-rf Sharpe -0.01, worse than cash, 85.6% drawdown), and a breakout
-  // chaser that was an outright loser (-9.12% CAGR, 89.5% drawdown). Only the dip
-  // buyer survives costs.
+  // chaser that was an outright loser (-9.12% CAGR, 89.5% drawdown). The dip buyer was
+  // kept at the time as the survivor — but a later, benchmark-corrected re-measurement
+  // (see its own comment below) showed it has no risk-adjusted edge either; it is now
+  // kept only as a labelled negative. So none of the three weekly hunters beat the
+  // market net of real costs.
   {
     id: 'active-dip',
     name: 'Dip buyer (mean-reversion)',
-    // Honest label: kept as the best of the (now-removed) active trio and a genuine
-    // net-of-costs winner over the full ~18.8y window (CAGR 10.75% / excess-Sharpe 0.28
-    // / MaxDD 53% — beats NIFTY buy & hold's 9.39% / 0.24 / 59.9%). BUT high-turnover
-    // (~46x/yr), high-drawdown, and NOT run through the in-sample/holdout research
-    // discipline — "not toxic and best of three", not a validated edge like the
-    // research-lab graduate (cross-sectional momentum). The Live column is the judge.
-    note: 'Weekly: buy the 4 most oversold names (low 5-day RSI) still in an up-trend. Active mean-reversion — kept as the best of the active hunters and a net-of-costs winner in backtest (high turnover / high drawdown, not holdout-validated).',
+    // Re-measured and RE-LABELLED: this is now kept as a published NEGATIVE — a
+    // regime-decay lesson — not as a winner. The earlier "genuine net-of-costs winner
+    // (CAGR 10.75% / excess-Sharpe 0.28 / MaxDD 53% vs NIFTY's 9.39% / 0.24 / 59.9%)"
+    // label was an ARTIFACT of two flaws in that comparison, both now controlled for:
+    //   (1) UNEQUAL START DATES — this basket's curve starts 2006-07-03 but the NIFTY
+    //       price series only starts 2007-09-17, so it banked ~1.2 years of a raging
+    //       bull market the benchmark never saw. On a fair COMMON START (2009-01-02)
+    //       the risk-adjusted edge vanishes: excess-Sharpe 0.400 vs NIFTY's 0.402 —
+    //       dead level — while the drawdown stays far worse (53.0% vs 38.4%).
+    //   (2) THE WRONG BENCHMARK — measured against NIFTYBEES, the dividend-adjusted
+    //       proxy (the honest benchmark, since the price index omits dividends), it
+    //       LOSES on all three: CAGR 13.55% vs 13.40%, Sharpe 0.400 vs 0.442, MaxDD
+    //       53.0% vs 36.3%.
+    // The entire track record is ONE YEAR: 2009 returned +312.5% vs NIFTYBEES's +70.7%
+    // (a post-crash dead-cat bounce is exactly the regime a "buy the most oversold" rule
+    // feeds on). It beat the market in only 7 of 18 calendar years, and has lost to it
+    // five years running. In the MODERN ERA (2015-01-01 on, 11.5y) it earns CAGR 3.71%
+    // vs the market's 10.91% at an excess-Sharpe of -0.014 — WORSE THAN CASH, which is
+    // the identical criterion that removed the momentum rotator above (-0.01). Its 53%
+    // drawdown was not even a crash: a three-year grind, 2010-10-22 -> 2013-08-28.
+    // Kept for the same reason the pairs bots and the option sellers are kept — a
+    // demonstrated, honestly-labelled negative teaches more than a deleted one.
+    // Turnover ~372 fills/yr. NOT holdout-validated. The Live column is the judge.
+    note: 'Weekly: buy the 4 most oversold names (low 5-day RSI) still in an up-trend. Kept as a demonstrated NEGATIVE, not a winner: measured against a dividend-adjusted market proxy from a fair common start it loses on return, risk-adjusted return and drawdown, and since 2015 it has earned less than cash (excess-Sharpe -0.014 over 11.5 years). Almost its entire lifetime gain came from one year, the 2009 post-crash bounce. A lesson in how a mean-reversion edge decays once the regime that fed it ends.',
     kind: 'BASKET',
     spec: { kind: 'BASKET', name: 'Dip buyer', universe: WIDE, rank: ['*', -1, ['rsi', 5]], k: 4, weighting: 'equal', rebalanceBars: 5, gate: ['>', ['price'], ['sma', 100]] },
   },
