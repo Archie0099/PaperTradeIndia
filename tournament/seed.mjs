@@ -383,7 +383,15 @@ const SEED_BOTS = [
   // Evidence: in-sample (2010-2019, full costs) excess Sharpe 0.98 vs the costed
   // market's 0.24, and ALL 24 ±50% perturbation cells held excess Sharpe 0.55-1.18;
   // the one-shot holdout (2020-2026) came in at excess Sharpe 0.59 vs 0.40 — the edge
-  // decayed out-of-sample (as edges do) but stayed clearly above the market bar.
+  // decayed out-of-sample (as edges do) but stayed clearly above the INDEX bar.
+  //
+  // ★ BUT the index was the WRONG bar (the fair-benchmark measurement — reproduce with
+  // `node backtest/research/universe-bench.mjs`): over the SAME holdout window a
+  // NO-INFORMATION portfolio of the same universe scored excess Sharpe 0.87 (inverse-vol)
+  // / 0.91 (equal-weight) — comfortably ABOVE this strategy's 0.59. So the holdout win
+  // vs the index is explained by survivorship (the universe premium), NOT demonstrated
+  // stock-picking skill: the SELECTION has not beaten the universe it selects from.
+  // It stays on the board as the honest forward test of exactly that question.
   //
   // NO kill-switch: the research holdout REJECTED the as-specified permanent-flatten
   // kill design — it would have locked in the loss at the exact COVID bottom (a monthly-
@@ -396,7 +404,7 @@ const SEED_BOTS = [
   {
     id: 'xsmom-research',
     name: 'Cross-sectional momentum (12-1)',
-    note: 'Research-lab graduate — the ONE strategy that beat the costed market OUT-OF-SAMPLE (holdout excess Sharpe 0.59 vs 0.40). Holds the top-10 relative-strength winners (12-month return skipping the last month), inverse-vol weighted, monthly; steps to cash when NIFTY falls below 95% of its 200-DMA. No kill-switch (that design was rejected on the holdout). The live board is now its forward test. In-sample/holdout figures are survivorship upper bounds — the Live column is the judge.',
+    note: 'Research-lab graduate. Beat the costed INDEX out-of-sample (holdout excess Sharpe 0.59 vs 0.40) — but a fairer benchmark measured later shows a no-information portfolio of the same universe did BETTER (0.87-0.91) over that window, so the index win is survivorship, not proven stock-picking. Holds the top-10 relative-strength winners (12-month return skipping the last month), inverse-vol weighted, monthly; steps to cash when NIFTY falls below 95% of its 200-DMA. No kill-switch (rejected on the holdout). Kept as the honest forward test of whether its selection earns anything over the universe. The Live column is the judge.',
     kind: 'BASKET',
     spec: XSMOM_SPEC,
   },
