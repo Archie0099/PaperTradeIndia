@@ -73,6 +73,40 @@ function patchCfg(patch) {
   saveCfg({ ...getCfg(), ...patch });
 }
 
+// --- The ADVISOR panel's own config ("Today's Suggestions") ------------------
+// Separate from the Auto-Pilot cfg because it describes a DIFFERENT account: your
+// REAL capital, traded BY HAND outside the app. The app only suggests — nothing
+// here ever places an order, real or virtual (the paper account and the engine
+// are never touched by this panel).
+//   capital        — the real rupee amount suggestions are scaled to.
+//   ddTolerancePct — the max drawdown you said you can stomach (asked once, on
+//                    first use of the capital input; shown against the live
+//                    drawdown thereafter).
+//   book           — the ASSUMED ledger if every suggestion had been followed:
+//                    { cash, positions:[{key,symbol,qty,avg}], lastAppliedDate,
+//                      lastActions, peakValue, startedDate }. Pure bookkeeping for
+//                    scaling + drawdown display — not an engine account.
+const ADV_KEY = 'paper-trade-india:advisor';
+function defaultAdv() {
+  return { capital: null, ddTolerancePct: null, book: null };
+}
+function getAdv() {
+  try {
+    const raw = localStorage.getItem(ADV_KEY);
+    if (raw) return { ...defaultAdv(), ...JSON.parse(raw) };
+  } catch {
+    /* corrupt -> defaults */
+  }
+  return defaultAdv();
+}
+function saveAdv(adv) {
+  try {
+    localStorage.setItem(ADV_KEY, JSON.stringify(adv));
+  } catch {
+    /* best-effort */
+  }
+}
+
 // --- Module state (UI only — the source of truth is the engine + localStorage) ---
 let lastStandings = null; // last /api/tournament payload (for the champion preview + picker)
 let lastMirror = null; // the followed bot's last mirror (for the holdings table)
@@ -233,6 +267,114 @@ function computeRebalanceOrders({ mirror, current, userEquity, priceFor, botName
   };
   orders.sort((a, b) => rankOf(a) - rankOf(b));
   return orders;
+}
+
+// --- Today's Suggestions: scaling the recorded entry to your capital ---------
+// Turns the advisor log's TODAY entry (the champion's recorded target book) into
+// concrete whole-share suggestions for your real capital, applied to the
+// ASSUMED book. The diff itself is computeRebalanceOrders — the same tested
+// machinery the Auto-Pilot copy uses (whole-lot rounding, flip splitting,
+// funds-freeing-first ordering) — never a re-implementation. The affordability
+// rule mirrors placeMirrorOrders' cap (a funds-consuming buy is clipped to what
+// cash affords, flagged `capped`), applied arithmetically because these orders
+// are never executed anywhere: the book is a paper ledger of "what if I followed
+// every suggestion", kept so tomorrow's diff has a yesterday to diff against.
+// Estimated costs use the server-shipped real delivery rates (incl. slippage).
+function computeSuggestions({ entry, prev = null, book, costRates = { buyRate: 0, sellRate: 0 } }) {
+  const targets = (entry && entry.targets) || [];
+  const mirror = {
+    equity: entry.equity,
+    positions: targets.map((t) => ({ key: instrumentKey({ kind: 'EQ', symbol: t.symbol, lotSize: 1 }), kind: 'EQ', symbol: t.symbol, lotSize: 1, qty: t.qty, price: t.price })),
+  };
+  // The price we can honestly mark a symbol at: today's recorded target price; for a
+  // name the champion DROPPED today, YESTERDAY's recorded price (`prev` — the freshest
+  // real mark the log carries; without it a sell would be priced at the book's stale
+  // cost basis, mis-stating the suggestion AND mis-scaling everything else that day);
+  // the book's own cost only as a last resort (a name absent from both recorded
+  // entries). Never a fabricated number.
+  const prevTargets = (prev && prev.targets) || [];
+  const priceOf = (sym) => {
+    const t = targets.find((x) => x.symbol === sym);
+    if (t) return t.price;
+    const y = prevTargets.find((x) => x.symbol === sym);
+    if (y) return y.price;
+    const p = ((book && book.positions) || []).find((x) => x.symbol === sym);
+    return p && p.avg > 0 ? p.avg : null;
+  };
+  const positions = ((book && book.positions) || []).filter((p) => p.qty !== 0);
+  const current = positions.map((p) => ({ key: p.key, instrument: { kind: 'EQ', symbol: p.symbol, lotSize: 1 }, qty: p.qty }));
+  let cash = book && Number.isFinite(book.cash) ? book.cash : 0;
+  const valueBefore = cash + positions.reduce((s, p) => s + p.qty * (priceOf(p.symbol) || 0), 0);
+  const orders = computeRebalanceOrders({
+    mirror,
+    current,
+    userEquity: valueBefore,
+    priceFor: (key, spec) => (spec && spec.price > 0 ? spec.price : spec && spec.symbol ? priceOf(spec.symbol) : null),
+    botName: entry.botName || 'the champion',
+  });
+  const posByKey = new Map(positions.map((p) => [p.key, { ...p }]));
+  const out = [];
+  for (const o of orders) {
+    let shares = o.lots; // EQ lotSize is 1, so lots == shares
+    const rate = o.side === 'BUY' ? costRates.buyRate || 0 : costRates.sellRate || 0;
+    let capped = false;
+    if (o.side === 'BUY') {
+      // placeMirrorOrders' affordability rule: never suggest a buy the cash can't fund
+      // (price + its estimated costs); clip and say so instead of silently overdrawing.
+      const affordable = Math.floor(Math.max(0, cash) / (o.price * (1 + rate)));
+      if (shares > affordable) { shares = affordable; capped = true; }
+    }
+    const sym = o.instrument.symbol;
+    if (shares < 1) {
+      out.push({ symbol: sym, side: o.side, shares: 0, price: o.price, value: 0, estCost: 0, capped: true, skipped: true, label: `${sym}: suggested ${o.side === 'BUY' ? 'buy' : 'sell'} of ${o.lots} can't be funded at this capital — skipped` });
+      continue;
+    }
+    const value = shares * o.price;
+    const estCost = value * rate;
+    const p = posByKey.get(o.key) || { key: o.key, symbol: sym, qty: 0, avg: 0 };
+    if (o.side === 'BUY') {
+      cash -= value + estCost;
+      p.avg = p.qty + shares > 0 ? (p.avg * p.qty + o.price * shares) / (p.qty + shares) : o.price;
+      p.qty += shares;
+    } else {
+      cash += value - estCost;
+      p.qty -= shares;
+    }
+    posByKey.set(o.key, p);
+    const verb = o.fromQty === 0 ? 'Start a position in' : o.toQty === 0 ? 'Exit' : Math.abs(o.toQty) > Math.abs(o.fromQty) ? 'Add to' : 'Trim';
+    out.push({
+      symbol: sym,
+      side: o.side,
+      shares,
+      price: o.price,
+      value,
+      estCost,
+      capped,
+      skipped: false,
+      label: `${verb} ${sym}: ${o.side === 'BUY' ? 'buy' : 'sell'} ${shares} @ ~₹${o.price.toFixed(2)}${capped ? ` (clipped from ${o.lots} — capital cap)` : ''}`,
+    });
+  }
+  const bookPositions = [...posByKey.values()].filter((p) => p.qty !== 0);
+  const valueAfter = cash + bookPositions.reduce((s, p) => s + p.qty * (priceOf(p.symbol) || 0), 0);
+  return { orders: out, bookAfter: { cash: +cash.toFixed(2), positions: bookPositions }, valueBefore, valueAfter };
+}
+
+// Plain-English weight-level changes between two recorded entries (shown when no
+// real capital is set — a portfolio-level description, not order generation).
+function weightDiffLines(prev, today) {
+  const prevW = new Map(((prev && prev.targets) || []).map((t) => [t.symbol, t.weight]));
+  const lines = [];
+  const seen = new Set();
+  for (const t of (today && today.targets) || []) {
+    seen.add(t.symbol);
+    const was = prevW.get(t.symbol) || 0;
+    const d = (t.weight - was) * 100;
+    if (!prevW.has(t.symbol)) lines.push(`New: ${t.symbol} at ${(t.weight * 100).toFixed(1)}% of the book`);
+    else if (d > 0.5) lines.push(`Increase ${t.symbol} to ${(t.weight * 100).toFixed(1)}% (+${d.toFixed(1)} pts)`);
+    else if (d < -0.5) lines.push(`Trim ${t.symbol} to ${(t.weight * 100).toFixed(1)}% (${d.toFixed(1)} pts)`);
+  }
+  for (const [sym, w] of prevW) if (!seen.has(sym)) lines.push(`Exit ${sym} (was ${(w * 100).toFixed(1)}%)`);
+  return lines;
 }
 
 // ===========================================================================
@@ -890,6 +1032,187 @@ function renderApDetail(app) {
   }
 }
 
+// --- The "Today's Suggestions" panel (real-money guidance, suggestion-only) --
+// Renders the advisor payload (standings.advisor): today's recorded suggestion,
+// the honest banners, and — once you enter a real capital amount — concrete
+// whole-share actions with estimated real costs. Four states: warming-up, F&O/
+// short-champion exclusion, "track record before trust" (< minDays), and normal.
+function renderSuggestions(app) {
+  const root = $('#ap-suggestions');
+  if (!root) return;
+  clear(root);
+  const box = el('div', { style: 'border: 1px solid var(--border); border-radius: 10px; padding: 12px' });
+  root.append(box);
+  box.append(el('div', { class: 'section-head' }, el('h3', {}, "Today's suggestions — real-money guidance")));
+  box.append(el('div', { class: 'muted', style: 'font-size: 11px; margin: 2px 0 8px' },
+    'Suggestions to consider for orders YOU place by hand with your own broker. This app never places a real order — for anyone, ever.'));
+
+  const advisor = lastStandings && lastStandings.advisor;
+  const ap = lastStandings && lastStandings.autopilot;
+  if (!advisor) {
+    box.append(el('div', { class: 'empty-state' }, 'The tournament is still warming up — no suggestions yet.'));
+    return;
+  }
+
+  // The trust clock: no claims until the log has earned its no-hindsight days.
+  if (!advisor.ready) {
+    box.append(el('div', { style: 'border-left: 3px solid var(--accent); padding: 6px 10px; margin: 6px 0; font-size: 12px' },
+      `Track record before trust: ${advisor.logDays} of ${advisor.minDays} days of no-hindsight suggestion history recorded so far. ` +
+      'Every day’s suggestion is logged BEFORE its outcome is known; judge the score below only once the log has earned its days.'));
+  }
+
+  // The fair-benchmark honesty check (measured offline; constants ship with the payload).
+  // The verdict was measured for ONE strategy (bf.measuredFor); if the walk-forward
+  // champion has since switched to a different bot, the copy must not attribute the
+  // measured numbers to it — it degrades to the general (still humbling) statement.
+  const bf = advisor.benchmarkFinding;
+  if (bf && bf.verdict === 'trails-universe') {
+    const champId = ap && ap.currentBot && ap.currentBot.id;
+    const matches = bf.measuredFor && champId === bf.measuredFor;
+    const numbers = `${bf.championStrategySharpe.toFixed(2)} excess Sharpe vs ${bf.universeVolinvSharpe.toFixed(2)}–${bf.universeEqualSharpe.toFixed(2)} for a NO-INFORMATION portfolio of the same stocks (index: ${bf.indexSharpe.toFixed(2)})`;
+    box.append(el('div', { class: 'muted', style: 'font-size: 11px; margin: 4px 0; line-height: 1.5' },
+      matches
+        ? `Honesty check (measured ${bf.measuredAt}): the champion’s index-beating history is NOT proof of stock-picking skill — over ${bf.window}, its strategy scored ${numbers}. ` +
+          'These suggestions track the champion; its selection edge over a fair benchmark is unproven. The forward score below measures the truth from here on.'
+        : `Honesty check (measured ${bf.measuredAt} for ${bf.measuredForName || bf.measuredFor}): over ${bf.window} that strategy scored ${numbers}. ` +
+          `The current champion${ap && ap.currentBot ? ` (${ap.currentBot.name})` : ''} has NOT been measured against that fair bar — treat its index-beating history the same way: its selection edge over a fair benchmark is unproven. The forward score below measures the truth from here on.`));
+  }
+  // Live risk context — always read from the LIVE payload, never a stored number.
+  if (ap && ap.metrics) {
+    const r1y = Number.isFinite(ap.metrics.r1y) ? (ap.metrics.r1y * 100).toFixed(1) + '%' : '–';
+    const b1y = ap.benchMetrics && Number.isFinite(ap.benchMetrics.r1y) ? (ap.benchMetrics.r1y * 100).toFixed(1) + '%' : '–';
+    box.append(el('div', { class: 'muted', style: 'font-size: 11px; margin: 2px 0' },
+      `Champion strategy, live: max drawdown ${fmt(ap.metrics.maxDrawdownPct, 1)}% · last 1Y ${r1y} vs market ${b1y}.`));
+  }
+
+  const today = advisor.today;
+  if (!today) {
+    box.append(el('div', { class: 'empty-state' }, 'No suggestion has been issued yet (the champion’s market data may still be loading).'));
+    return;
+  }
+
+  // The stand-aside (excluded-champion) state: say WHY, never silently scale.
+  if (!today.eligible) {
+    box.append(el('div', { style: 'margin: 8px 0; font-size: 13px' }, [
+      el('strong', {}, 'Stand aside today. '),
+      `No new equity guidance issued: ${today.reason}. Keep whatever you already hold from earlier suggestions — the day still counts toward the track record, scored by holding the previous suggested book unchanged (cash if there was none).`,
+    ]));
+    renderSuggestionScore(box, advisor);
+    return;
+  }
+
+  // Today's target book (the recorded entry — what the log will be scored on).
+  const tbl = el('table', {}, [
+    el('thead', {}, el('tr', {}, [el('th', {}, 'Stock / ETF'), el('th', { class: 'num' }, 'Target weight'), el('th', { class: 'num' }, 'Ref. price')])),
+    el('tbody', {}, today.targets.map((t) => el('tr', {}, [
+      el('td', {}, t.symbol),
+      el('td', { class: 'num' }, (t.weight * 100).toFixed(1) + '%'),
+      el('td', { class: 'num' }, rupee(t.price, 2)),
+    ]))),
+  ]);
+  box.append(el('div', { class: 'muted', style: 'font-size: 11px; margin: 6px 0 2px' }, `The champion (${today.botName}) targets, recorded ${today.date}:`));
+  box.append(el('div', { class: 'table-wrap' }, tbl));
+
+  const adv = getAdv();
+  if (!(adv.capital > 0)) {
+    // No capital set: describe the change vs yesterday at the portfolio level.
+    const lines = weightDiffLines(advisor.prev, today);
+    if (lines.length) {
+      const ul = el('ul', { style: 'margin: 6px 0; padding-left: 18px; font-size: 12px; line-height: 1.6' });
+      for (const l of lines) ul.append(el('li', {}, l));
+      box.append(el('div', { class: 'muted', style: 'font-size: 11px; margin-top: 6px' }, 'Changed since the previous suggestion:'));
+      box.append(ul);
+    } else if (advisor.prev) {
+      box.append(el('div', { class: 'muted', style: 'font-size: 12px; margin: 6px 0' }, 'No change since the previous suggestion — nothing to do today.'));
+    }
+    // The capital input (first use also asks for a drawdown tolerance — a ground rule).
+    const input = el('input', { type: 'number', id: 'adv-capital', placeholder: 'e.g. 500000', min: '1', style: 'width: 140px' });
+    const btn = el('button', { class: 'btn btn-mini', id: 'adv-capital-set', onClick: () => {
+      const capital = Number(input.value);
+      if (!Number.isFinite(capital) || capital <= 0) { alert('Enter the real capital amount (₹) you want suggestions scaled to.'); return; }
+      const raw = prompt('Before real money: what is the MAXIMUM drawdown (%) you could stomach without abandoning the plan? The champion’s live max drawdown has exceeded 40%.', '25');
+      if (raw == null) return; // cancelled — don't store a half-configured capital
+      const dd = Number(raw);
+      if (!Number.isFinite(dd) || dd <= 0 || dd > 100) { alert('Enter a percentage between 1 and 100.'); return; }
+      saveAdv({ capital, ddTolerancePct: dd, book: { cash: capital, positions: [], lastAppliedDate: null, lastActions: [], peakValue: capital, startedDate: today.date } });
+      renderIfVisible(app);
+    } }, 'Scale to my capital');
+    box.append(el('div', { style: 'margin: 8px 0 2px; font-size: 12px' }, [
+      el('span', { class: 'muted' }, 'To size these as real orders, enter your real capital (₹): '), input, ' ', btn,
+    ]));
+    renderSuggestionScore(box, advisor);
+    return;
+  }
+
+  // Capital is set: apply today's suggestions to the ASSUMED book once per date,
+  // then show the concrete whole-share actions with their estimated real costs.
+  // A corrupt/hand-edited stored book (non-object, non-finite cash, missing positions)
+  // is rebuilt fresh rather than allowed to throw mid-render — renderSuggestions runs
+  // inside the whole tab's render, so a throw here would break the entire Auto-Pilot
+  // tab, not just this panel.
+  const freshBook = () => ({ cash: adv.capital, positions: [], lastAppliedDate: null, lastActions: [], peakValue: adv.capital, startedDate: today.date });
+  let book = adv.book;
+  if (!book || typeof book !== 'object' || !Number.isFinite(book.cash) || !Array.isArray(book.positions)) book = freshBook();
+  if (book.lastAppliedDate !== today.date) {
+    const res = computeSuggestions({ entry: today, prev: advisor.prev, book, costRates: advisor.costRates });
+    book = { ...res.bookAfter, lastAppliedDate: today.date, lastActions: res.orders, peakValue: Math.max(book.peakValue || adv.capital, res.valueAfter), startedDate: book.startedDate || today.date };
+    saveAdv({ ...adv, book });
+  }
+  // Same honest price chain as computeSuggestions: today's recorded mark, else
+  // yesterday's, else the book's own cost — for valuing the held book on screen.
+  const prevTargets = (advisor.prev && advisor.prev.targets) || [];
+  const priceOf = (sym) => {
+    const t = today.targets.find((x) => x.symbol === sym);
+    if (t) return t.price;
+    const y = prevTargets.find((x) => x.symbol === sym);
+    if (y) return y.price;
+    const p = book.positions.find((x) => x.symbol === sym);
+    return p && p.avg > 0 ? p.avg : 0;
+  };
+  const value = book.cash + book.positions.reduce((s, p) => s + p.qty * priceOf(p.symbol), 0);
+  const ddPct = book.peakValue > 0 ? Math.max(0, (1 - value / book.peakValue) * 100) : 0;
+  const breached = adv.ddTolerancePct != null && ddPct > adv.ddTolerancePct;
+
+  const actions = book.lastActions || [];
+  if (!actions.length) {
+    box.append(el('div', { class: 'muted', style: 'font-size: 12px; margin: 8px 0' }, 'No actions today — the assumed book already matches the champion’s targets.'));
+  } else {
+    const at = el('table', {}, [
+      el('thead', {}, el('tr', {}, [el('th', {}, 'Suggested action'), el('th', { class: 'num' }, 'Value'), el('th', { class: 'num' }, 'Est. cost')])),
+      el('tbody', {}, actions.map((a) => el('tr', {}, [
+        el('td', { class: a.skipped ? 'muted' : '' }, a.label),
+        el('td', { class: 'num' }, a.skipped ? '–' : rupee(a.value, 0)),
+        el('td', { class: 'num' }, a.skipped ? '–' : rupee(a.estCost, 0)),
+      ]))),
+    ]);
+    box.append(el('div', { class: 'muted', style: 'font-size: 11px; margin: 8px 0 2px' }, `Scaled to your ₹${fmt(adv.capital, 0)} (whole shares, affordability-capped; costs estimated from the real delivery schedule incl. slippage):`));
+    box.append(el('div', { class: 'table-wrap' }, at));
+  }
+  box.append(el('div', { style: `font-size: 12px; margin: 6px 0; ${breached ? 'color: var(--down); font-weight: 600' : ''}` },
+    `If followed since ${book.startedDate}: value ${rupee(value, 0)} · current drawdown ${ddPct.toFixed(1)}%` +
+    (adv.ddTolerancePct != null ? ` vs your ${adv.ddTolerancePct}% tolerance${breached ? ' — BREACHED. Re-read the honesty check above before adding money.' : '.'}` : '.')));
+  box.append(el('button', { class: 'btn btn-mini', id: 'adv-capital-clear', onClick: () => {
+    if (!window.confirm('Clear the capital setting and the assumed real-money book? (The server-side suggestion log is untouched.)')) return;
+    saveAdv(defaultAdv());
+    renderIfVisible(app);
+  } }, 'Change / clear capital'));
+  renderSuggestionScore(box, advisor);
+}
+
+// The forward score: what following every suggestion earned (net of estimated
+// costs) vs NIFTY vs the equal-weight universe — the fair yardstick, measured
+// forward with no hindsight. Text-only on purpose (the log IS the evidence).
+function renderSuggestionScore(box, advisor) {
+  const tr = advisor.track;
+  if (!tr) {
+    box.append(el('div', { class: 'muted', style: 'font-size: 11px; margin-top: 8px' }, 'Forward score: not enough logged days yet (needs 2+).'));
+    return;
+  }
+  box.append(el('div', { class: 'muted', style: 'font-size: 11px; margin-top: 8px; line-height: 1.5' },
+    `Forward score (${tr.from} → ${tr.to}, ${tr.days} suggestion days): following the suggestions ${signed(tr.retPct, 2)}% net of ~${tr.estCostPct}% est. costs · ` +
+    `NIFTY ${signed(tr.niftyPct, 2)}% · equal-weight universe ${signed(tr.universeEqPct, 2)}% (the fair bar) · worst drawdown ${fmt(tr.maxDrawdownPct, 1)}%.`));
+}
+
 function render(app) {
   const cfg = getCfg();
   syncControls(cfg);
@@ -906,6 +1229,9 @@ function render(app) {
 
   const champ = clear($('#ap-champion'));
   if (champ) champ.append(champCard(app, target, cfg));
+
+  // Today's real-money suggestions (suggestion-only — see renderSuggestions).
+  renderSuggestions(app);
 
   // The honest "Auto-Pilot vs the market" multi-year walk-forward track record.
   renderTrackRecord(app, lastStandings && lastStandings.autopilot);
@@ -1002,4 +1328,4 @@ function initAutoPilot(app) {
   syncControls(getCfg());
 }
 
-export { initAutoPilot, renderAutoPilot, autopilotTick, remarkOptionPositions, buildSeededState, pickChampion, computeRebalanceOrders, placeMirrorOrders, mirrorSignature, instrumentFromMirror };
+export { initAutoPilot, renderAutoPilot, autopilotTick, remarkOptionPositions, buildSeededState, pickChampion, computeRebalanceOrders, placeMirrorOrders, mirrorSignature, instrumentFromMirror, computeSuggestions, weightDiffLines };

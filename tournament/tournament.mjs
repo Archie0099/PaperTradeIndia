@@ -40,6 +40,7 @@ import marketHours from '../src/marketHours.js'; // CommonJS -> default import, 
 const { getMarketState } = marketHours;
 import { SEED_BOTS } from './seed.mjs';
 import { createPersistStore } from './persistStore.mjs';
+import { ADVISOR_MIN_DAYS, buildAdvisorEntry, appendAdvisorEntry, sanitizeAdvisorLog, buildAdvisorPayload } from './advisor.mjs';
 import { STOCKS, BASKET_UNIVERSE, FNO_INDICES, EQ_SYMBOLS, FNO_SYMBOLS } from './universe.mjs';
 import { evolve, scoreSpec, fitness } from './evolve.mjs';
 import { readFileSync as readFile, existsSync as fileExists } from 'node:fs';
@@ -427,7 +428,7 @@ const asRosterEntry = (b, gen = 0) => ({
   protected: !!b.protected,
 });
 
-async function createTournament({ seed = SEED_BOTS, backfillData = null, persist = true, stateFile = STATE_FILE, retireWeakest = RETIRE_WEAKEST, maxRosterBots = MAX_ROSTER_BOTS, evolutionEnabled = true, persistStore = createPersistStore() } = {}) {
+async function createTournament({ seed = SEED_BOTS, backfillData = null, persist = true, stateFile = STATE_FILE, retireWeakest = RETIRE_WEAKEST, maxRosterBots = MAX_ROSTER_BOTS, evolutionEnabled = true, persistStore = createPersistStore(), advisorMinDays = ADVISOR_MIN_DAYS } = {}) {
   // persistStore: an OPTIONAL remote store (a secret GitHub Gist via fetch — see
   // persistStore.mjs) that persists the live-forward state ACROSS an ephemeral-disk
   // redeploy (Render free tier). The default reads the host env (PERSIST_GIST_ID /
@@ -445,7 +446,10 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
   const backfill = {}; // symbol -> fixed recent window (the live track record)
   let roster = seed.map((b) => asRosterEntry(b)); // mutable bot definitions
   let bots = []; // compiled view of the roster
-  let state = { deployedAt: null, live: {}, roster: null, generation: 0, history: [] };
+  // advisorLog: the ADVISOR's append-only "Today's Suggestions" record (advisor.mjs) —
+  // one entry per data date, written BEFORE outcomes are knowable. Part of the FORWARD
+  // record, so it persists (and restores) alongside the live closes.
+  let state = { deployedAt: null, live: {}, roster: null, generation: 0, history: [], advisorLog: [] };
   let standings = null;
   let pool = null; // lazily-loaded generated strategy pool (backtest/generated-specs.json)
   let opSeq = 0; // bumped on every control mutation; an in-flight tick() aborts if it changes mid-await
@@ -512,7 +516,11 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       if (existsSync(stateFile)) {
         const s = JSON.parse(readFileSync(stateFile, 'utf8'));
         if (s && typeof s === 'object') {
-          state = { deployedAt: s.deployedAt || null, live: s.live || {}, roster: s.roster || null, generation: s.generation || 0, history: Array.isArray(s.history) ? s.history : [] };
+          // The advisor log is sanitised on the LOCAL path too (not just the remote restore):
+          // scoreAdvisorLog runs inside every standings assembly, so one corrupt entry in a
+          // hand-edited/damaged state file would otherwise throw there and 503 the whole
+          // board until the file is deleted.
+          state = { deployedAt: s.deployedAt || null, live: s.live || {}, roster: s.roster || null, generation: s.generation || 0, history: Array.isArray(s.history) ? s.history : [], advisorLog: sanitizeAdvisorLog(s.advisorLog) };
           if (Array.isArray(s.roster) && s.roster.length) {
             roster = s.roster.map((b) => asRosterEntry(b, b.gen || 0));
             rebuildBots();
@@ -826,8 +834,31 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       // NIFTYBEES (loaded via the ETF bots' sources) is the dividend-adjusted market proxy for
       // the benchTri head-to-head; seriesFor returns [] when it isn't loaded — gracefully null.
       const autopilot = computeAutopilotTrack(apCurves, CASH, seriesFor('NIFTYBEES'));
-      standings = { deployedAt: state.deployedAt, generation: state.generation, liveBars, asOf: Date.now(), startingCash: CASH, atCap, maxBots: maxRosterBots, botCount: rows.length, evolutionEnabled, autopilot, history: state.history.slice(-30), bots: rows };
+      // The ADVISOR payload ("Today's Suggestions") — a pure, cheap read of the append-only
+      // suggestion log + the cost rates + the fair-benchmark finding. Appending to the log
+      // itself happens ONLY in advisorTick() (once per new data date), never here: assembly
+      // must stay read-only so the sync/yielding recomputes and control ops can share it.
+      const advisor = buildAdvisorPayload({ log: state.advisorLog, seriesFor, universe: BASKET_UNIVERSE, minDays: advisorMinDays, costRates: EQ_COSTS });
+      standings = { deployedAt: state.deployedAt, generation: state.generation, liveBars, asOf: Date.now(), startingCash: CASH, atCap, maxBots: maxRosterBots, botCount: rows.length, evolutionEnabled, autopilot, advisor, history: state.history.slice(-30), bots: rows };
       return standings;
+    }
+
+    // Record TODAY's suggestion into the append-only advisor log — called once per new
+    // data date (after a standings recompute, so the walk-forward champion + the champion's
+    // mirror reflect the fresh bar). The entry is written BEFORE its outcome is knowable —
+    // that ordering is the whole point of the log (a no-hindsight forward record). Returns
+    // true when an entry was appended (the caller save()s so the entry is durable, incl.
+    // through the remote store). Skipped while nothing can honestly be issued (no champion
+    // yet / champion's data still loading) — a missing day means "no suggestion was made",
+    // never a back-filled one.
+    function advisorTick() {
+      if (!standings || !standings.autopilot) return false;
+      const entry = buildAdvisorEntry({ autopilot: standings.autopilot, getBotDetail, seriesFor });
+      if (!appendAdvisorEntry(state, entry)) return false;
+      // Refresh the already-published payload so the new entry is visible without waiting
+      // for the next full recompute (standings itself is otherwise untouched).
+      standings.advisor = buildAdvisorPayload({ log: state.advisorLog, seriesFor, universe: BASKET_UNIVERSE, minDays: advisorMinDays, costRates: EQ_COSTS });
+      return true;
     }
 
     // SYNCHRONOUS recompute — used by the control ops (reset/add/remove/evolve/_appendLiveClose)
@@ -902,6 +933,11 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
             roster: null, // save() below stamps the CURRENT roster; never the remote one
             generation: remote.generation || 0,
             history: Array.isArray(remote.history) ? remote.history : [],
+            // The advisor's suggestion log is FORWARD RECORD too — the one artifact that
+            // must never be lost — so it restores with the live closes. Same trust model
+            // as the live map: the Gist is hand-editable, so sanitise it (well-formed
+            // entries, strictly ascending dates) before believing it.
+            advisorLog: sanitizeAdvisorLog(remote.advisorLog),
           };
           save(); // mirror the restored forward state (with the CURRENT roster) to local disk
         }
@@ -998,12 +1034,19 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       save();
     }
     await computeStandingsYielding(); // the board is available now (required bots full; baskets with the pool loaded so far)
+    // Record today's advisor suggestion — but ONLY off a COMPLETE universe. When the boot
+    // deadline fired the pool is still loading, so the champion's mirror could reflect a
+    // thin, partially-loaded universe; recording THAT would put a wrong target book in the
+    // append-only log forever. So: full-pool boots (local, tests) record here; deadline
+    // boots record in the pool-completion continuation below, after the corrective
+    // recompute over the complete universe.
+    if (!deadlineFired && advisorTick()) save();
     // If the deadline fired (pool still loading at that point), recompute once the pool FINISHES
     // so the baskets fill in over the COMPLETE universe. Gated on the pre-recompute `deadlineFired`
     // snapshot, NOT a re-read of poolDone, so the race above can't skip it. Idempotent: if the pool
     // already finished during the recompute above, .then fires immediately and recomputes over the
     // now-full universe (one extra cheap pass over a consistent snapshot).
-    if (deadlineFired) poolLoad.then(async () => { try { await computeStandingsYielding(); save(); } catch { /* best-effort */ } }).catch(() => {});
+    if (deadlineFired) poolLoad.then(async () => { try { await computeStandingsYielding(); advisorTick(); save(); } catch { /* best-effort */ } }).catch(() => {});
     return standings;
   }
 
@@ -1045,6 +1088,10 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     if (changed) {
       save();
       await computeStandingsYielding();
+      // A new daily bar arrived — record today's suggestion off the fresh standings.
+      // save() again only if an entry was actually appended (the log must be durable
+      // the moment it exists — it is the artifact that must never be lost).
+      if (advisorTick()) save();
     }
     return changed;
   }
@@ -1198,6 +1245,10 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     state.live = {};
     state.generation = 0;
     state.history = [];
+    // A full reset deliberately restarts the whole forward experiment, so the advisor's
+    // suggestion log restarts with it (its no-hindsight day count begins again — the
+    // "track record before trust" clock must not survive a reset it didn't earn).
+    state.advisorLog = [];
     state.deployedAt = Date.now();
     save();
     computeStandings();
@@ -1282,6 +1333,7 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     rosterSize: () => roster.length,
     evolutionEnabled, // so the server can skip the daily auto-evolve timer when off
     _appendLiveClose,
+    _advisorTick: () => advisorTick(), // test-only: record today's suggestion on demand
     _state: () => state,
     _roster: () => roster,
     _seriesFor: (sym, interval = '1d') => seriesFor(sym, interval),
