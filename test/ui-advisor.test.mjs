@@ -147,6 +147,10 @@ test('the trust banner counts the no-hindsight days and the honesty check states
   assert.match(txt, /selection edge over a fair benchmark is unproven/i, 'the fair-benchmark honesty copy');
   assert.match(txt, /0\.59/, 'quotes the measured champion figure');
   assert.match(txt, /max drawdown 42\.6%/i, 'live risk context read from the payload, not a stored number');
+  // The walk-forward metrics arrive ALREADY in percent (r1y: -13.6 means -13.6%) —
+  // exactly how the vs-market table shows them. Lock the correct rendering (never
+  // percent-of-percent).
+  assert.match(txt, /last 1Y -13\.6% vs market -3\.4%/, 'the 1Y figures render in percent, not percent-of-percent');
   assert.match(txt, /RELIANCE/, 'today’s target book renders');
   assert.match(txt, /Trim RELIANCE|Increase|New:/, 'the plain-English change vs yesterday');
   assert.match(txt, /Forward score/, 'the forward score line renders');

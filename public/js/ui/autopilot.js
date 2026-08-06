@@ -1078,9 +1078,12 @@ function renderSuggestions(app) {
           `The current champion${ap && ap.currentBot ? ` (${ap.currentBot.name})` : ''} has NOT been measured against that fair bar — treat its index-beating history the same way: its selection edge over a fair benchmark is unproven. The forward score below measures the truth from here on.`));
   }
   // Live risk context — always read from the LIVE payload, never a stored number.
+  // NB: the server's walk-forward metrics arrive ALREADY in percent (r1y: 14.47 means
+  // +14.47%) — exactly how the vs-market table below renders them. Multiplying by 100
+  // again would show "1447.0%".
   if (ap && ap.metrics) {
-    const r1y = Number.isFinite(ap.metrics.r1y) ? (ap.metrics.r1y * 100).toFixed(1) + '%' : '–';
-    const b1y = ap.benchMetrics && Number.isFinite(ap.benchMetrics.r1y) ? (ap.benchMetrics.r1y * 100).toFixed(1) + '%' : '–';
+    const r1y = Number.isFinite(ap.metrics.r1y) ? signed(ap.metrics.r1y, 1) + '%' : '–';
+    const b1y = ap.benchMetrics && Number.isFinite(ap.benchMetrics.r1y) ? signed(ap.benchMetrics.r1y, 1) + '%' : '–';
     box.append(el('div', { class: 'muted', style: 'font-size: 11px; margin: 2px 0' },
       `Champion strategy, live: max drawdown ${fmt(ap.metrics.maxDrawdownPct, 1)}% · last 1Y ${r1y} vs market ${b1y}.`));
   }
