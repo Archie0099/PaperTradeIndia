@@ -57,8 +57,21 @@ const ADVISOR_BENCHMARK_FINDING = {
   universeVolinvSharpe: 0.87, // whole-universe, no signal, inverse-vol weights
   universeEqualSharpe: 0.91, // whole-universe, no signal, equal weights
   championStrategySharpe: 0.59, // the live champion's strategy over the same window
-  edgeVsUniverse: -0.32, // vs the HARDER of the two universe controls
+  edgeVsUniverse: -0.32, // WHOLE SPEC (gate included) vs the HARDER of the two universe controls
   verdict: 'trails-universe', // 'beats-universe' | 'matches-universe' | 'trails-universe'
+  // ...but that -0.32 moves TWO variables at once: the spec carries a marketGate and the
+  // controls do not. Holding the gate FIXED (the single-variable ablation METHODOLOGY.md
+  // requires) the selection effect is -0.10 with the gate off both arms and +0.17 with it on
+  // both — the SIGN FLIPS, because the gate costs the no-information control (-0.49) far more
+  // than it costs momentum (-0.22). So: the whole spec really did trail a passive portfolio of
+  // the same names, and the index-relative win really is survivorship — but the shortfall is
+  // mostly the REGIME GATE, and selection is unproven in EITHER direction. The panel copy
+  // says exactly that ("its selection edge over a fair benchmark is unproven"); never harden
+  // it into "its stock-picking is bad", which this window cannot support.
+  selectionGateOff: -0.10,
+  selectionGateOn: 0.17,
+  gateCostStrategy: -0.22,
+  gateCostControl: -0.49,
 };
 
 // IST calendar date of an epoch-ms timestamp (same formula as tournament.mjs —

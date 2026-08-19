@@ -15,10 +15,11 @@ import { dirname, join } from 'node:path';
 
 import { safeCompile } from './dsl.mjs';
 import { runBacktest } from './backtester.mjs';
-import { equityDeliveryCosts } from './costs.mjs';
+import { equityDeliveryCosts, indexOptionCosts } from './costs.mjs';
 
 // Rank the generated strategies under the REAL Indian cost schedule (see costs.mjs).
 const EQ_COSTS = equityDeliveryCosts();
+const OPT_COSTS = indexOptionCosts();
 import { runFnoBacktest } from './fno.mjs';
 import { loadCandles } from './data.mjs';
 import { STRATEGIES } from './strategies.mjs';
@@ -52,7 +53,13 @@ function scoreSpec(spec) {
   if (c.kind === 'EQ') {
     for (const sym of EQ_UNIVERSE) rows.push(runBacktest({ strategy: c.strategy, candles: data[sym], symbol: sym, cash: CASH, costModel: EQ_COSTS }).metrics);
   } else {
-    for (const [sym, fspec] of Object.entries(FNO_UNIVERSE)) rows.push(runFnoBacktest({ strategy: c.strategy, candles: data[sym], symbol: sym, cash: CASH, ...fspec }).metrics);
+    // costModel is NOT optional here: without it runFnoBacktest fills every leg AT the
+    // Black-Scholes mid for free (no spread, no STT, no exchange charge, no brokerage), while
+    // the EQ branch above pays full delivery costs — so the two halves of this one leaderboard
+    // were ranked on different rules, and the F&O half was flattered (one spec even printed a
+    // profit that is a loss once charged). Every other backtest call site in the project passes
+    // a cost model; this was the only omission.
+    for (const [sym, fspec] of Object.entries(FNO_UNIVERSE)) rows.push(runFnoBacktest({ strategy: c.strategy, candles: data[sym], symbol: sym, cash: CASH, ...fspec, costModel: OPT_COSTS }).metrics);
   }
   return {
     ok: true,

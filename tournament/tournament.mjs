@@ -160,6 +160,21 @@ const STATE_FILE = join(DATA_DIR, 'tournament.json');
 
 const istDate = (ms) => new Date(ms + 5.5 * 3600000).toISOString().slice(0, 10);
 
+// Drop a trailing bar whose own window has NOT finished yet. The free provider emits a
+// candle for the in-progress hour (intraday) or session (daily) whose close is merely the
+// current price — a partial close. Both tick paths already refuse such a bar; this is the
+// same rule for the BOOT backfill, which had no completeness check at all. Only ever
+// removes the LAST bar, and only when it is genuinely unfinished.
+const dropFormingBar = (candles, interval) => {
+  if (!Array.isArray(candles) || !candles.length) return candles;
+  const last = candles[candles.length - 1];
+  if (!last || !Number.isFinite(last.t)) return candles;
+  const unfinished = isIntradayInterval(interval)
+    ? last.t + intervalMs(interval) > Date.now()   // the hour has not elapsed
+    : istDate(last.t) >= istDate(Date.now());      // today's session is still open (or ahead)
+  return unfinished ? candles.slice(0, -1) : candles;
+};
+
 // Run an async `fn` over `items` with at most `limit` in flight at once — used so the
 // cold-boot backfill doesn't fire one fetch per universe symbol all at once (which a
 // free data source may throttle). Preserves per-index results; never rejects as a
@@ -433,6 +448,10 @@ const asRosterEntry = (b, gen = 0) => ({
   // tick; they stay OUT of the daily evolution pools (a separate track).
   interval: b.interval || '1d',
   spec: b.spec,
+  // Does this strategy guarantee it is FLAT by the close? Only then is the intraday (MIS)
+  // cost schedule honest — see runBot. Defaults to false, so an intraday-INTERVAL bot that
+  // can carry a position overnight pays real DELIVERY costs (the conservative direction).
+  squareOffDaily: !!b.squareOffDaily,
   gen: b.gen == null ? gen : b.gen,
   protected: !!b.protected,
 });
@@ -570,6 +589,15 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
   function runBot(bot, candles, recordTrades = false, alignCache = null) {
     const interval = bot.interval || '1d';
     const intraday = isIntradayInterval(interval); // annualise the Sharpe by the bars' own frequency
+    // The COST schedule follows the HOLDING PERIOD, not the bar interval. The intraday (MIS)
+    // schedule — no delivery STT, lighter stamp, no borrow — is only honest for a strategy that
+    // is flat by the close. A 60m BAR says nothing about that: the shipped hourly breakout holds
+    // 88 of its 94 round trips OVERNIGHT (longest 19 days), which in the real market is a CNC
+    // delivery trade. Charging it MIS understated its lifetime loss by ~15pp on the live board.
+    // So DELIVERY is the default for every EQ/basket bot, and a strategy must opt IN by
+    // declaring `squareOffDaily` — the conservative direction, and this board's whole premise
+    // is that no bot ever trades for a made-up cost.
+    const eqCostModel = intraday && bot.squareOffDaily ? EQ_COSTS_INTRADAY : EQ_COSTS;
     if (bot.kind === 'BASKET') {
       // A basket spans many stocks — gather each constituent's [backfill+live]
       // series (at the basket's interval) and run the PORTFOLIO backtester (its own
@@ -580,7 +608,7 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       const dbs = {};
       for (const s of spec.universe) dbs[s] = seriesFor(s, interval);
       const rankSource = spec.mlConfig ? makeRankSource({ spec, dataBySymbol: dbs }) : null;
-      return runPortfolioBacktest({ spec, dataBySymbol: dbs, marketSeries: seriesFor('NIFTY'), cash: CASH, costModel: intraday ? EQ_COSTS_INTRADAY : EQ_COSTS, rankSource, recordTrades, intraday, alignCache });
+      return runPortfolioBacktest({ spec, dataBySymbol: dbs, marketSeries: seriesFor('NIFTY'), cash: CASH, costModel: eqCostModel, rankSource, recordTrades, intraday, alignCache });
     }
     if (bot.kind === 'PAIRS') {
       // A PAIRS bot also spans many stocks (long/short pairs) — gather each
@@ -595,7 +623,7 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       const spec = INDEX_SPECS[bot.symbol] || INDEX_SPECS.NIFTY;
       return runFnoBacktest({ strategy: bot.strategy, candles, symbol: bot.symbol, cash: CASH, ...spec, keepOpen: true, recordTrades, costModel: OPT_COSTS });
     }
-    return runBacktest({ strategy: bot.strategy, candles, symbol: bot.symbol, cash: CASH, costModel: intraday ? EQ_COSTS_INTRADAY : EQ_COSTS, recordTrades, intraday, spec: bot.spec });
+    return runBacktest({ strategy: bot.strategy, candles, symbol: bot.symbol, cash: CASH, costModel: eqCostModel, recordTrades, intraday, spec: bot.spec });
   }
 
   // The deploy-boundary TIMESTAMP for a bot (the last backfill bar at-or-before
@@ -835,7 +863,13 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     // always reads the last COMPLETE board, never a half-built one.
     function assembleStandings(rows, apCurves) {
       rows.sort((a, b) => b.liveReturnPct - a.liveReturnPct || b.trackReturnPct - a.trackReturnPct);
-      const liveBars = Math.max(0, ...rosterSources().map(({ key }) => (state.live[key] || []).length));
+      // Forward DAYS, not bars. This is a MAX over every source's appended-bar count, and the
+      // UI renders it verbatim as "N forward day(s)" — the headline that says how
+      // much genuine no-hindsight evidence exists. An intraday ('60m:SYMBOL') source appends up
+      // to 7 bars per session, and being a MAX it dominates the moment tickIntraday starts, so
+      // the figure was inflated ~7x. Count DISTINCT IST dates instead, which is the same number
+      // as before for daily sources and the honest one for intraday.
+      const liveBars = Math.max(0, ...rosterSources().map(({ key }) => new Set((state.live[key] || []).map((b) => istDate(b.t))).size));
       // atCap tells the POLLED board (not just the per-click POST) that grow-mode
       // evolution has paused because the roster is full — so the live UI can say so.
       const atCap = !retireWeakest && roster.length >= maxRosterBots;
@@ -996,7 +1030,16 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
           candles = backfillData[key];
         } else {
           const loaded = await loadCandles(symbol, { interval, range: rangeFor(interval) });
-          candles = loaded.candles;
+          // DROP a still-forming trailing bar. Yahoo emits a candle for the in-progress
+          // hour/session whose "close" is just the current price, and BOTH tick paths are
+          // cursor-based (`bar.t > cursor`) — so the completed bar, carrying the SAME
+          // timestamp, could never replace it: a boot during market hours froze a partial
+          // mid-session price as that day's close for the whole life of the process, feeding
+          // every bot's signals and (worse) the append-only advisor entry recorded right after
+          // boot. Both ticks already guard this (`istDate(c.t) < today` / `c.t + period <= now`);
+          // the boot path did not. Dropping it here is self-healing — the completed bar simply
+          // arrives through the next tick.
+          candles = dropFormingBar(loaded.candles, interval);
           synthetic = /synthetic/.test(loaded.source || '');
         }
         // Drop a pure basket-pool name with no REAL data (synthetic) — don't pollute baskets. Also
@@ -1366,4 +1409,4 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
   };
 }
 
-export { createTournament, computeAutopilotTrack };
+export { createTournament, computeAutopilotTrack, dropFormingBar };

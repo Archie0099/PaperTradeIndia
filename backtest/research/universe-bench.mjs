@@ -104,19 +104,46 @@ if (isMain) {
   console.log('  ' + fmt({ ...ctrlEqual, name: 'Universe control (equal)' }));
   console.log('  ' + fmt({ ...xsmom, name: 'Momentum 12-1 (the spec)' }));
 
-  // ---- 3. The verdict the advisor banner copy is written from: the edge over the
-  // HARDER of the two no-information controls, not over the index.
-  const hardBar = Math.max(ctrlVolinv.metrics.sharpe, ctrlEqual.metrics.sharpe);
+  // ---- 3. SINGLE-VARIABLE ABLATION of the market gate.
+  //
+  // The spec carries a marketGate; the controls do not. So the headline comparison above
+  // moves TWO things at once — the ranking signal AND the regime gate — and METHODOLOGY.md's
+  // own rule is to "re-run the identical machinery with the ranking signal removed", i.e.
+  // change one variable. Holding the gate fixed matters enormously here: the gate costs the
+  // no-information control far more than it costs the momentum spec, so the sign of the
+  // apparent "selection effect" FLIPS depending on which way you hold it. That is exactly
+  // why the verdict below refuses to attribute the shortfall to selection.
+  const GATE = xsmom.spec ? xsmom.spec.marketGate : makeXsmomSpec(universe).spec.marketGate;
+  const ungate = (sp) => { const c = { ...sp }; delete c.marketGate; return c; };
+  const gate = (sp) => ({ ...sp, marketGate: GATE });
+  const ev = (spec) => evaluateBasket({ spec, dataBySymbol, marketSeries: market, alignCache, ...window }).metrics.sharpe;
+  const xsUngated = ev(ungate(makeXsmomSpec(universe).spec));
+  const ctrlVolinvGated = ev(gate(makeControlSpec(universe, 0, universe.length)));
+  const ctrlEqualGated = ev(gate(makeEqualWeightControl(universe)));
+  const hardBarUngated = Math.max(ctrlVolinv.metrics.sharpe, ctrlEqual.metrics.sharpe);
+  const hardBarGated = Math.max(ctrlVolinvGated, ctrlEqualGated);
+
+  console.log('\nGATE ABLATION (one variable at a time — the gate held FIXED across both arms):');
+  console.log(`  gate OFF both arms:  momentum ${xsUngated.toFixed(2)}  vs control ${hardBarUngated.toFixed(2)}  ->  selection ${(xsUngated - hardBarUngated >= 0 ? '+' : '')}${(xsUngated - hardBarUngated).toFixed(2)}`);
+  console.log(`  gate ON  both arms:  momentum ${xsmom.metrics.sharpe.toFixed(2)}  vs control ${hardBarGated.toFixed(2)}  ->  selection ${(xsmom.metrics.sharpe - hardBarGated >= 0 ? '+' : '')}${(xsmom.metrics.sharpe - hardBarGated).toFixed(2)}`);
+  console.log(`  the gate itself costs: ${(xsmom.metrics.sharpe - xsUngated).toFixed(2)} on the strategy, ${(hardBarGated - hardBarUngated).toFixed(2)} on the control`);
+
+  // ---- 4. The verdict the advisor banner copy is written from. TWO separate statements,
+  // because they answer two different questions and only one of them is settled.
+  const hardBar = hardBarUngated;
   const edgeVsIndex = xsmom.metrics.sharpe - ctrlVolinv.benchmark.metrics.sharpe;
   const edgeVsUniverse = xsmom.metrics.sharpe - hardBar;
+  const selLo = Math.min(xsUngated - hardBarUngated, xsmom.metrics.sharpe - hardBarGated);
+  const selHi = Math.max(xsUngated - hardBarUngated, xsmom.metrics.sharpe - hardBarGated);
   console.log('\nVERDICT:');
   console.log(`  edge vs the index:            ${edgeVsIndex >= 0 ? '+' : ''}${edgeVsIndex.toFixed(2)} xSharpe`);
-  console.log(`  edge vs the universe control: ${edgeVsUniverse >= 0 ? '+' : ''}${edgeVsUniverse.toFixed(2)} xSharpe  (the fair bar)`);
-  if (edgeVsUniverse >= 0.15) {
-    console.log('  → the selection carries a real edge over a fair benchmark out-of-sample.');
-  } else if (edgeVsUniverse >= 0) {
-    console.log('  → the selection roughly MATCHES a no-information universe portfolio — its edge over a fair benchmark is unproven.');
-  } else {
-    console.log('  → the selection TRAILS a no-information universe portfolio — the index-relative edge was survivorship, not selection.');
-  }
+  console.log(`  edge vs the universe control: ${edgeVsUniverse >= 0 ? '+' : ''}${edgeVsUniverse.toFixed(2)} xSharpe  (the fair bar — WHOLE SPEC, gate included)`);
+  console.log('\n  (1) THE WHOLE SPEC — the thing you would actually follow:');
+  if (edgeVsUniverse >= 0.15) console.log('      → beats a no-information portfolio of the same universe out-of-sample.');
+  else if (edgeVsUniverse >= 0) console.log('      → roughly MATCHES a no-information portfolio of the same universe.');
+  else console.log('      → TRAILS a no-information portfolio of the same universe: simply holding the whole\n        universe would have done better over this window. The index-relative edge is\n        survivorship (a no-signal portfolio of these names beats the index by ~0.5 Sharpe).');
+  console.log('\n  (2) THE SELECTION ALONE — gate held fixed, one variable:');
+  if (selLo > 0) console.log(`      → adds ${selLo.toFixed(2)}..${selHi.toFixed(2)} xSharpe whichever way the gate is held: a real selection edge.`);
+  else if (selHi < 0) console.log(`      → costs ${selLo.toFixed(2)}..${selHi.toFixed(2)} xSharpe whichever way the gate is held: selection actively hurts.`);
+  else console.log(`      → UNPROVEN in either direction: ${selLo.toFixed(2)} with the gate off, ${selHi.toFixed(2)} with it on —\n        the sign flips with the gate, so this window cannot settle it. Do NOT claim the\n        shortfall in (1) is a stock-picking failure; most of it is the regime gate.`);
 }

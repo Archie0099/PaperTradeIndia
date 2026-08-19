@@ -14,7 +14,7 @@ import { writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { createTournament } from '../tournament/tournament.mjs';
+import { createTournament, dropFormingBar } from '../tournament/tournament.mjs';
 import freeProvider from '../src/dataSources/freeProvider.js';
 
 // A deterministic, gently-rising DAILY series (for the benchmark + evolution).
@@ -200,4 +200,74 @@ test('evolution leaves the intraday track alone (never bred from, never an evolv
   assert.equal(roster.filter((b) => b.interval === '60m').length, 1, 'still exactly the one (seed) intraday bot — none evolved');
   // ...and none was bred FROM the intraday bot (its name would appear in a challenger's note).
   assert.ok(!roster.some((b) => b.id !== 'intra' && /Intraday breakout/.test(b.note || '')), 'no challenger was bred from the intraday bot');
+});
+
+test('the board reports forward DAYS, not intraday bars', async () => {
+  // Regression: liveBars was a MAX over every source's appended-BAR count, and the UI renders
+  // it verbatim as "N forward day(s)". A 60m source appends up to 7 bars a session, and being a
+  // MAX it dominated the moment tickIntraday started — inflating the headline that tells the
+  // user how much genuine no-hindsight forward evidence exists by up to ~7x.
+  const t = await createTournament({ seed: intradaySeed(), backfillData: intradayData(), persist: false });
+  await t.init();
+  assert.equal(t.getStandings().liveBars, 0, 'nothing forward yet');
+
+  // Six completed hourly bars, all inside ONE IST date starting the day after the backfill ends.
+  const end = t._seriesFor('RELIANCE', '60m').at(-1).t;
+  const base = end + 864e5; // next day, same IST time-of-day -> one calendar date
+  for (let i = 0; i < 6; i++) t._appendLiveClose('RELIANCE', { t: base + i * 3600000, c: 9000 + i }, '60m');
+  assert.equal((t._state().live['60m:RELIANCE'] || []).length, 6, 'six bars really were appended');
+  assert.equal(t.getStandings().liveBars, 1, 'six hourly bars in one session = ONE forward day');
+
+  // A second session adds exactly one more day, not seven.
+  const day2 = base + 864e5;
+  for (let i = 0; i < 7; i++) t._appendLiveClose('RELIANCE', { t: day2 + i * 3600000, c: 9100 + i }, '60m');
+  assert.equal((t._state().live['60m:RELIANCE'] || []).length, 13, 'thirteen bars appended in total');
+  assert.equal(t.getStandings().liveBars, 2, 'two sessions = TWO forward days');
+});
+
+test('an intraday bot that can hold overnight pays DELIVERY costs, not the MIS schedule', async () => {
+  // Regression: the cost schedule was picked off the same boolean as the Sharpe annualisation
+  // (`intraday ? EQ_COSTS_INTRADAY : EQ_COSTS`), but a 60m BAR says nothing about the holding
+  // period. The shipped hourly breakout holds 88 of its 94 round trips overnight (longest 19
+  // days) — a CNC delivery trade in the real market — and charging it MIS understated its
+  // lifetime loss by ~15pp on the live board. Delivery is the default; MIS is opt-in.
+  const runWith = async (squareOffDaily) => {
+    const seed = intradaySeed().map((b) => (b.id === 'intra' ? { ...b, squareOffDaily } : b));
+    const t = await createTournament({ seed, backfillData: intradayData(), persist: false });
+    await t.init();
+    return t.getStandings().bots.find((b) => b.id === 'intra').trackReturnPct;
+  };
+  const asShipped = await runWith(false); // the default: pays delivery costs
+  const optedIn = await runWith(true);    // explicitly flat by the close: MIS is honest
+  assert.notEqual(asShipped, optedIn, 'the two cost schedules give different results (the flag is wired)');
+  assert.ok(asShipped < optedIn, `the default (delivery) must be the MORE expensive, conservative one (got ${asShipped} vs ${optedIn})`);
+});
+
+test('dropFormingBar removes a still-forming trailing bar at BOOT, and only that bar', () => {
+  // Regression: both tick paths refuse an in-progress bar, but the boot backfill had no
+  // completeness check — so a deploy during market hours froze a partial mid-session price as
+  // that day's close for the whole life of the process (the cursor-based ticks can never
+  // replace a bar that carries the same timestamp).
+  const HOUR = 3600000;
+  const now = Date.now();
+  const bars = (ts) => ts.map((t, i) => ({ t, c: 100 + i }));
+
+  // Intraday: the last hour has NOT elapsed.
+  const forming = bars([now - 3 * HOUR, now - 2 * HOUR, now - 0.5 * HOUR]);
+  assert.equal(dropFormingBar(forming, '60m').length, 2, 'the in-progress hour is dropped');
+  assert.equal(dropFormingBar(forming, '60m').at(-1).t, now - 2 * HOUR, 'the completed bars survive untouched');
+
+  // Intraday: every bar's hour has elapsed — nothing is removed.
+  const complete = bars([now - 3 * HOUR, now - 2 * HOUR - 1]);
+  assert.equal(dropFormingBar(complete, '60m').length, 2, 'a fully-elapsed series is returned intact');
+
+  // Daily: today's session is still open (or ahead) -> dropped; yesterday's is kept.
+  const daily = bars([now - 3 * 864e5, now - 864e5, now]);
+  assert.equal(dropFormingBar(daily, '1d').length, 2, "today's still-forming daily bar is dropped");
+  assert.equal(dropFormingBar(bars([now - 3 * 864e5, now - 864e5]), '1d').length, 2, 'a series ending yesterday is intact');
+
+  // Degenerate inputs must never throw or fabricate.
+  assert.deepEqual(dropFormingBar([], '1d'), []);
+  assert.equal(dropFormingBar(null, '1d'), null);
+  assert.equal(dropFormingBar([{ t: NaN, c: 1 }], '1d').length, 1, 'a non-finite timestamp is left alone, never dropped blindly');
 });
