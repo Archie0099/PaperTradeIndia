@@ -69,7 +69,14 @@ function ar1(s) {
 
 // The trailing log-price window for one symbol on the master grid, ending at gi
 // (length `lookback`). Returns null if any bar is missing/non-positive (so a not-yet
-// fully-listed name is simply skipped — no fake forward-filled zeros poison the stats).
+// fully-listed name is simply skipped — no fake pre-listing zeros poison the stats).
+// NOTE what this does NOT exclude: `priceGrid` is forward-filled, so an INTERIOR gap
+// (a name that didn't print on a day the master timeline has) enters the window as a
+// repeated close, i.e. a zero log-return. That slightly deflates the spread's stdev and
+// so slightly inflates |z|. Disclosed in METHODOLOGY.md ("negligible on liquid large
+// caps") and it is the honest reading here — both PAIRS bots are published NEGATIVES,
+// so no claim on the board rests on it. Do not "fix" it by rejecting repeated closes:
+// a genuinely unchanged close is real data.
 function logWindow(priceGrid, sym, gi, lookback) {
   const out = new Array(lookback);
   for (let k = 0; k < lookback; k++) {

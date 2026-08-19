@@ -31,7 +31,10 @@ test('scoreAdvisorLog: hand-computed net return, benchmarks, and cost accounting
   const T1 = START, T2 = START + DAY;
   const log = [
     { date: '2017-07-14', t: T1, eligible: true, equity: 1000, targets: [{ symbol: 'AAA', qty: 5, price: 100, weight: 0.5 }] },
-    { date: '2017-07-15', t: T2, eligible: true, equity: 1010, targets: [{ symbol: 'AAA', qty: 5, price: 110, weight: 0.55 }] },
+    // equity 1050 = the book marked at the new price (5 x 110) + the 500 it never invested.
+    // A real entry ALWAYS marks to market, and turnover is measured between the previous book
+    // drifted to this bar and these weights — an inconsistent fixture would invent a trade.
+    { date: '2017-07-15', t: T2, eligible: true, equity: 1050, targets: [{ symbol: 'AAA', qty: 5, price: 110, weight: 0.523810 }] },
   ];
   const data = { AAA: [{ t: T1, c: 100 }, { t: T2, c: 110 }], NIFTY: [{ t: T1, c: 200 }, { t: T2, c: 210 }] };
   const seriesFor = (sym) => data[sym] || [];
@@ -277,10 +280,13 @@ test('scoreAdvisorLog charges NO cost when the champion holds the same shares wh
   const expected = +(((1 - 0.0017) * (1 + gross / 100) - 1) * 100).toFixed(2);
   assert.ok(Math.abs(track.retPct - expected) < 0.02, `net return should be gross minus the entry cost only (got ${track.retPct}, expected ~${expected})`);
 
-  // A REAL rebalance (the share count actually changes) still pays.
-  const traded = log.map((e, i) => (i < N / 2 ? e : { ...e, targets: [{ ...e.targets[0], qty: QTY * 2, weight: 2 }] }));
+  // A REAL rebalance still pays. Rotating the whole book into a DIFFERENT name is a
+  // genuine 100% turnover (unlike "hold twice as many shares of the one name you already
+  // hold 100% in", which no account can actually do — weights are what the follower trades).
+  data.BBB = closes.map((p) => ({ t: p.t, c: p.c }));
+  const traded = log.map((e, i) => (i < N / 2 ? e : { ...e, targets: [{ ...e.targets[0], symbol: 'BBB' }] }));
   const tradedTrack = scoreAdvisorLog(traded, { seriesFor: (s) => data[s] || [], universe: ['AAA'], costRates: { buyRate: 0.0017, sellRate: 0.0015 } });
-  assert.ok(tradedTrack.estCostPct > track.estCostPct, 'doubling the position is a real trade and is charged');
+  assert.ok(tradedTrack.estCostPct > track.estCostPct + 0.2, `rotating the whole book into another name is charged (got ${tradedTrack.estCostPct}% vs ${track.estCostPct}%)`);
 });
 
 test('buildAdvisorPayload ships the freshest recorded MARK per symbol and the last entry that issued guidance', () => {
@@ -302,4 +308,35 @@ test('buildAdvisorPayload ships the freshest recorded MARK per symbol and the la
   assert.equal(p.prev.date, '2026-08-12', 'prev is still the literal previous entry');
   assert.equal(p.prevEligible.date, '2026-08-11', 'prevEligible skips the stand-aside day');
   assert.equal(p.logDays, 4);
+});
+
+test('a CHAMPION SWITCH between bots of very different size is not read as a giant trade (regression)', () => {
+  // The walk-forward switches champions, so two consecutive entries can belong to different
+  // bots whose equities differ by 2x or more (live: quant-riskparity at ~Rs 107cr handing over
+  // to xsmom-research at ~Rs 59cr). Measuring turnover in SHARES and dividing the previous
+  // book's notional by the NEXT bot's equity reported "sells 157% of the account" for that
+  // handover — impossible for a long-only book, and it overcharged the switch. Turnover is
+  // measured between weight vectors now, so the size of the bot cancels out entirely.
+  const T = (i) => START + i * DAY;
+  const closes = (base) => [{ t: T(0), c: base }, { t: T(1), c: base }];
+  const data = { AAA: closes(100), BBB: closes(50), NIFTY: closes(1000) };
+  const rates = { buyRate: 0.0017, sellRate: 0.0015 };
+
+  // Same 50/50 book, handed from a big bot to a bot a fifth its size. Nothing to trade.
+  const sameBook = [
+    { date: 'd0', t: T(0), eligible: true, equity: 1_000_000_000, targets: [{ symbol: 'AAA', qty: 5_000_000, price: 100, weight: 0.5 }, { symbol: 'BBB', qty: 10_000_000, price: 50, weight: 0.5 }] },
+    { date: 'd1', t: T(1), eligible: true, equity: 200_000_000, targets: [{ symbol: 'AAA', qty: 1_000_000, price: 100, weight: 0.5 }, { symbol: 'BBB', qty: 2_000_000, price: 50, weight: 0.5 }] },
+  ];
+  const same = scoreAdvisorLog(sameBook, { seriesFor: (s) => data[s] || [], universe: [], costRates: rates });
+  const entryCost = 0.17; // buying the first day's fully-invested book
+  assert.ok(same.estCostPct <= entryCost + 1e-9, `an identical-weights handover trades nothing (got ${same.estCostPct}%)`);
+
+  // A handover that DOES change the book pays a real, BOUNDED cost — never >2x the account.
+  const rotated = [
+    sameBook[0],
+    { ...sameBook[1], targets: [{ symbol: 'AAA', qty: 2_000_000, price: 100, weight: 1 }] },
+  ];
+  const rot = scoreAdvisorLog(rotated, { seriesFor: (s) => data[s] || [], universe: [], costRates: rates });
+  assert.ok(rot.estCostPct > same.estCostPct, 'a real reallocation across the handover is charged');
+  assert.ok(rot.estCostPct < entryCost + 0.2 * 100, 'and the charge stays within a full round trip of the account');
 });

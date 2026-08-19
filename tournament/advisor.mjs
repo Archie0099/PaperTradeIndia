@@ -236,23 +236,43 @@ function scoreAdvisorLog(log, { seriesFor, universe = [], costRates = { buyRate:
   // benchmarks. It also contradicted the panel's own advice: on those days it says "no
   // change since the previous suggestion — nothing to do today". Only a real change in
   // the champion's share count is a trade, so only that is charged.
-  const switchCost = (prev, next) => {
-    const prevQty = new Map();
-    for (const p of prev.targets || []) prevQty.set(p.symbol, (prevQty.get(p.symbol) || 0) + p.qty);
-    // Price the turnover against the book we are moving INTO (its own recorded prices and
-    // equity are consistent with each other: qty*price/equity is exactly that name's weight).
-    const equity = next.equity || prev.equity || 0;
-    if (!(equity > 0)) return 0;
+  // Turnover is measured between the previous book DRIFTED FORWARD to this bar and the new
+  // book's target weights. Both sides are weights (fractions of the follower's account), so
+  // the measure is SCALE-FREE — which matters because consecutive entries can belong to
+  // DIFFERENT champions whose equities differ by 2x or more (the walk-forward switches bots),
+  // and an earlier share-count version divided the previous book's notional by the NEXT bot's
+  // equity: on a champion switch that reported "sells 157% of the account", impossible for a
+  // long-only book. Drifting also keeps the property that motivated moving off raw weights in
+  // the first place: if the champion did not trade a single share, the drifted weights EQUAL
+  // the new recorded weights, so turnover is exactly zero and no phantom cost is charged.
+  const switchCost = (prev, next, tNext) => {
+    if (prev === next) return 0; // a carried-forward (stand-aside) book trades nothing, by construction
+    // The previous book, marked at THIS bar: each holding's shares at the new close, plus its
+    // untouched cash. That is what the follower actually owns before rebalancing.
+    const prevTargets = prev.targets || [];
+    let driftedTotal = 0;
+    const drifted = new Map();
+    let investedAtPrev = 0;
+    for (const p of prevTargets) {
+      investedAtPrev += p.qty * p.price;
+      const c = closeAt(p.symbol, tNext);
+      const v = p.qty * (c != null ? c : p.price); // no close at this bar -> hold it flat, never fabricate
+      drifted.set(p.symbol, (drifted.get(p.symbol) || 0) + v);
+      driftedTotal += v;
+    }
+    // Cash the previous book was not holding in stock rides along undrifted.
+    driftedTotal += Math.max(0, (prev.equity || 0) - investedAtPrev);
     let buys = 0, sells = 0;
     const seen = new Set();
     for (const p of next.targets || []) {
       seen.add(p.symbol);
-      const dq = p.qty - (prevQty.get(p.symbol) || 0);
-      if (dq > 0) buys += (dq * p.price) / equity;
-      else if (dq < 0) sells += (-dq * p.price) / equity;
+      const wNext = p.weight;
+      const wPrev = driftedTotal > 0 ? (drifted.get(p.symbol) || 0) / driftedTotal : 0;
+      if (wNext > wPrev) buys += wNext - wPrev;
+      else if (wPrev > wNext) sells += wPrev - wNext;
     }
-    // A DROPPED name is sold in full, priced at the last mark the log recorded for it.
-    for (const p of prev.targets || []) if (!seen.has(p.symbol)) sells += (p.qty * p.price) / equity;
+    // A DROPPED name is sold in full, at its drifted weight.
+    if (driftedTotal > 0) for (const [sym, v] of drifted) if (!seen.has(sym)) sells += v / driftedTotal;
     return buys * (costRates.buyRate || 0) + sells * (costRates.sellRate || 0);
   };
 
@@ -260,7 +280,7 @@ function scoreAdvisorLog(log, { seriesFor, universe = [], costRates = { buyRate:
   const curve = [{ t: entries[0].t, c: 1 }];
   const niftyCurve = [{ t: entries[0].t, c: 1 }];
   const universeCurve = [{ t: entries[0].t, c: 1 }];
-  let costPaidPct = switchCost({ targets: [], equity: 0 }, effective[0]); // entering the first day's book
+  let costPaidPct = switchCost({ targets: [], equity: 0 }, effective[0], entries[0].t); // entering the first day's book
   adv *= 1 - costPaidPct;
 
   for (let i = 0; i + 1 < entries.length; i++) {
@@ -275,7 +295,7 @@ function scoreAdvisorLog(log, { seriesFor, universe = [], costRates = { buyRate:
     adv *= 1 + r;
     // Rebalancing INTO entry b's effective book pays the switch cost at t_b (zero
     // across a stand-aside day — the held book IS the previous book).
-    const cost = switchCost(effective[i], effective[i + 1]);
+    const cost = switchCost(effective[i], effective[i + 1], b.t);
     adv *= 1 - cost;
     costPaidPct += cost;
     peak = Math.max(peak, adv);
