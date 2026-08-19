@@ -19,7 +19,7 @@
 //                           (expiring in-the-money) LONG option
 //   * Exchange transaction charge (NSE):
 //       - equity (cash):    ~0.00297% of value
-//       - index options:    ~0.3503% of PREMIUM  (charged on premium, both sides)
+//       - index options:    ~0.03503% of PREMIUM (charged on premium, both sides)
 //   * SEBI turnover fee:    0.0001% (₹10/crore), all segments
 //   * Stamp duty (buy side only): 0.015% delivery, 0.003% intraday, 0.003% options
 //   * GST: 18% on (brokerage + exchange charge + SEBI fee)
@@ -48,6 +48,10 @@ const SEBI_FEE = 0.000001; // 0.0001% turnover fee
 // One NSE cash-equity exchange transaction charge, GST-inclusive (brokerage is 0
 // for delivery at discount brokers, so GST applies to the exchange+SEBI part).
 const EQ_EXCH = 0.0000297 * (1 + GST);
+// NSE equity-derivatives OPTION transaction charge: ₹3,503 per crore of PREMIUM
+// turnover (SEBI's uniform schedule) = 0.03503%. Named so the published schedule has
+// ONE home and a future change is a one-line edit the cost test asserts against.
+const OPT_EXCH_RATE = 0.0003503;
 
 // --- Equity, DELIVERY (held overnight — the baskets, pairs legs, EQ bots) ----
 // All-in per-side fractions of trade value. With the default 5bps slippage this
@@ -77,13 +81,17 @@ function equityIntradayCosts({ slippageBps = 3 } = {}) {
 }
 
 // --- Index OPTIONS (the F&O premium-selling bots) ----------------------------
-// Charged on PREMIUM (that's how options work): the NSE transaction charge alone
-// is ~0.35% of premium — 100x the equity rate — plus STT on the sell side, plus
-// crossing a real bid-ask spread that the Black-Scholes MID price doesn't show.
-// All-in ≈ 0.42% of premium buy-side + half-spread; ≈ 0.51% sell-side + half-
+// Charged on PREMIUM (that's how options work): the NSE transaction charge is
+// ₹3,503 per crore of premium turnover = 0.03503% (SEBI's uniform schedule) —
+// about 12x the equity rate — plus STT on the sell side, plus crossing a real
+// bid-ask spread that the Black-Scholes MID price doesn't show.
+// All-in ≈ 0.044% of premium buy-side + half-spread; ≈ 0.141% sell-side + half-
 // spread; ₹20/order flat brokerage on top (charged via harness.chargeFee).
 function indexOptionCosts({ halfSpreadPct = 0.005, tick = 0.05, brokeragePerOrder = 20 } = {}) {
-  const exch = 0.003503 * (1 + GST); // NSE option transaction charge, GST-inclusive
+  // NOTE THE DECIMAL PLACE: 0.03503% of premium, NOT 0.3503%. This was wrong by a
+  // factor of 10 until it was caught — an inflated charge that made every modelled
+  // F&O return here (and on the live board) worse than the real schedule allows.
+  const exch = OPT_EXCH_RATE * (1 + GST); // NSE option transaction charge, GST-inclusive
   return {
     kind: 'index-opt',
     buyRate: 0.00003 /* stamp */ + exch + SEBI_FEE,
@@ -133,5 +141,5 @@ function borrowFee(notional, ratePA, ms) {
 
 export {
   equityDeliveryCosts, equityIntradayCosts, indexOptionCosts, flatCosts,
-  eqFillPrice, optFillPrice, borrowFee, GST, SEBI_FEE,
+  eqFillPrice, optFillPrice, borrowFee, GST, SEBI_FEE, OPT_EXCH_RATE,
 };

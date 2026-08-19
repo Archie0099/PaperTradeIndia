@@ -95,3 +95,26 @@ test('Auto-Pilot returns null with too little history (< ~1 year to score a Shar
   const short = [{ id: 'bh', name: 'Buy & Hold', kind: 'EQ', symbol: 'NIFTY', protected: true, times: Array.from({ length: 100 }, (_, i) => i * 864e5), eq: Array.from({ length: 100 }, (_, i) => CASH * Math.pow(1.001, i)) }];
   assert.equal(computeAutopilotTrack(short, CASH), null, 'not enough history -> null (no fabricated track)');
 });
+
+test('a followed bot that BLOWS UP takes the track down with it (the loss is booked, not skipped)', () => {
+  // Regression: the bar-return guard required `chosen.a[i] > 0`, so the exact bar on which
+  // the followed bot's equity crossed to zero/negative was SKIPPED — the walk-forward kept
+  // its pre-blow-up equity, the next quarterly re-pick resumed compounding from that frozen
+  // figure, and the headline "beating the market / better risk" numbers never saw the
+  // disaster (maxDrawdown read 0.00% through a total loss of capital).
+  const KILL = 400;
+  const seller = { id: 'seller', name: 'Premium seller', kind: 'FNO', symbol: 'NIFTY', times: TIMES.slice(), eq: Array.from({ length: N }, (_, i) => (i < KILL ? CASH * Math.pow(1.0006, i) : -2 * CASH)) };
+  const bh = { id: 'bh', name: 'Buy & Hold', kind: 'EQ', symbol: 'NIFTY', protected: true, times: TIMES.slice(), eq: Array.from({ length: N }, (_, i) => CASH * Math.pow(1.0002, i)) };
+  const healthy = { id: 'safe', name: 'Steady', kind: 'BASKET', symbol: '8 stocks', times: TIMES.slice(), eq: Array.from({ length: N }, (_, i) => CASH * Math.pow(1.0003, i) * (1 + 0.03 * Math.sin(i / 5))) };
+
+  const t = computeAutopilotTrack([seller, bh, healthy], CASH);
+  assert.ok(t, 'a track is produced');
+  // (the published curve is THINNED, so read the first point at or after the blow-up bar)
+  const atKill = t.curve.find((p) => p.t >= TIMES[KILL]);
+  assert.ok(atKill, 'the curve reaches the blow-up bar');
+  assert.ok(atKill.c <= 0, `the blow-up is booked, not skipped (got ${atKill.c})`);
+  // Once wiped there is nothing left to trade with — no later bot can revive the account.
+  assert.ok(t.curve[t.curve.length - 1].c <= 0, 'a wiped track stays wiped for the rest of its life');
+  assert.ok(t.metrics.maxDrawdownPct >= 100, `a total loss must show as a >=100% drawdown (got ${t.metrics.maxDrawdownPct})`);
+  assert.ok(t.metrics.finalEquity <= 0, 'the final equity reflects the blow-up');
+});

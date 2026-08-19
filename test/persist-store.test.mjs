@@ -154,3 +154,89 @@ test('load() follows raw_url when the gist file is >1MB truncated', async () => 
   assert.equal(rawFetched, true, 'the full content was fetched via raw_url');
   assert.equal(blob.deployedAt, 7, 'the un-truncated blob parses correctly');
 });
+
+// --- FAIL CLOSED: an UNREADABLE store must never be overwritten --------------
+test('persistStore refuses to WRITE after a failed read, but a genuinely EMPTY gist stays writable', async () => {
+  // The data-loss bug: load() returned null for BOTH "the gist is empty" and "the read
+  // failed", so one transient 503/timeout/truncated read made the tournament stamp a fresh
+  // forward clock and PATCH that empty state over the only durable copy — destroying the
+  // live closes, the deploy date and the append-only advisor log, self-perpetuatingly.
+  const patched = [];
+  const failing = (kind) => async (url, opts = {}) => {
+    if ((opts.method || 'GET') === 'PATCH') { patched.push(JSON.parse(opts.body)); return { ok: true, text: async () => '' }; }
+    if (kind === 'notok') return { ok: false };
+    if (kind === 'throw') throw new Error('socket hang up');
+    if (kind === 'truncated') return { ok: true, json: async () => ({ files: { 'tournament-state.json': { content: '{"deployedAt":5,"li', truncated: true, raw_url: 'https://raw/x' } } }) };
+    return { ok: true, json: async () => ({ files: { 'tournament-state.json': { content: '{bad json' } } }) };
+  };
+  for (const kind of ['notok', 'throw', 'truncated', 'badjson']) {
+    patched.length = 0;
+    const fetchImpl = kind === 'truncated'
+      ? async (url, opts = {}) => (String(url).startsWith('https://raw/') ? { ok: false } : failing('truncated')(url, opts))
+      : failing(kind);
+    const s = createPersistStore({ token: 't', gistId: 'g', fetchImpl });
+    assert.equal(await s.load(), null, `${kind}: nothing is returned`);
+    assert.equal(s.readFailed(), true, `${kind}: the read is known to have FAILED`);
+    s.save({ deployedAt: 1, live: {}, advisorLog: [] });
+    await s.flush();
+    assert.equal(patched.length, 0, `${kind}: an unreadable store is never overwritten`);
+  }
+
+  // A gist that exists but holds no file yet = the first-ever boot. That is an honest
+  // empty read, and it MUST stay writable or persistence could never bootstrap.
+  patched.length = 0;
+  const empty = createPersistStore({
+    token: 't', gistId: 'g',
+    fetchImpl: async (url, opts = {}) => {
+      if ((opts.method || 'GET') === 'PATCH') { patched.push(JSON.parse(opts.body)); return { ok: true, text: async () => '' }; }
+      return { ok: true, json: async () => ({ files: {} }) };
+    },
+  });
+  assert.equal(await empty.load(), null);
+  assert.equal(empty.readFailed(), false, 'an empty gist read FINE — it is simply empty');
+  empty.save({ deployedAt: 1, live: {} });
+  await empty.flush();
+  assert.equal(patched.length, 1, 'the first-ever boot can still bootstrap the store');
+});
+
+test('a transient store read failure does NOT wipe the forward record (the whole-tournament path)', async () => {
+  // End-to-end through the REAL store adapter against a fake gist backend.
+  // Deploy 1 writes a real forward record. Deploy 2 boots on a fresh disk but its READ of
+  // the gist fails; it must not push its fresh empty state over that record — so deploy 3,
+  // whose read works, still finds the ORIGINAL deploy date and the live bar.
+  let gistContent = null; // what the fake gist holds
+  let failRead = false;
+  const makeStore = () => createPersistStore({
+    token: 't', gistId: 'g',
+    fetchImpl: async (url, opts = {}) => {
+      if ((opts.method || 'GET') === 'PATCH') {
+        gistContent = JSON.parse(opts.body).files['tournament-state.json'].content;
+        return { ok: true, text: async () => '' };
+      }
+      if (failRead) return { ok: false }; // the transient failure (503 / rate limit / abort)
+      return { ok: true, json: async () => ({ files: gistContent == null ? {} : { 'tournament-state.json': { content: gistContent } } }) };
+    },
+  });
+  const data = { NIFTY: series() };
+
+  const a = await createTournament({ seed: SEED, backfillData: data, persist: false, persistStore: makeStore(), evolutionEnabled: false });
+  await a.init();
+  const deployA = a.getStandings().deployedAt;
+  a._appendLiveClose('NIFTY', { t: data.NIFTY[data.NIFTY.length - 1].t + DAY, c: 321 });
+  await new Promise((r) => setTimeout(r, 0)); // let the fire-and-forget PATCH land
+  const saved = gistContent;
+  assert.ok(saved && JSON.parse(saved).live.NIFTY.length === 1, 'deploy 1 stored a forward bar');
+
+  failRead = true;
+  const b = await createTournament({ seed: SEED, backfillData: data, persist: false, persistStore: makeStore(), evolutionEnabled: false });
+  await b.init();
+  b._appendLiveClose('NIFTY', { t: data.NIFTY[data.NIFTY.length - 1].t + 2 * DAY, c: 322 });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(gistContent, saved, 'a boot that could not READ the store must not WRITE to it');
+
+  failRead = false;
+  const c = await createTournament({ seed: SEED, backfillData: data, persist: false, persistStore: makeStore(), evolutionEnabled: false });
+  await c.init();
+  assert.equal(c.getStandings().deployedAt, deployA, 'the original deploy clock survived the bad boot');
+  assert.equal(c.getStandings().liveBars, 1, 'so did the forward bar');
+});

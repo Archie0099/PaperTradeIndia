@@ -63,6 +63,7 @@ function initStrategy(app) {
   ['strat-spot', 'strat-days', 'strat-symbol'].forEach((id) =>
     document.getElementById(id).addEventListener('input', () => {
       readHeader();
+      syncFollowingDays(); // keep the leg rows honest about the expiry the stats now use
       recompute(app);
     })
   );
@@ -132,7 +133,25 @@ function render(app) {
   recompute(app);
 }
 
+// The Days inputs of legs that FOLLOW the header (leg.days == null). recompute()
+// deliberately does not rebuild the legs table (that would steal input focus on every
+// keystroke), so changing the header "Days" left these fields DISPLAYING the old number
+// while the payoff/breakevens/Greeks were already computed at the new one — and nudging
+// such a stale field then pinned the leg to that stale value, silently turning a plain
+// straddle into a calendar spread. Keeping the references lets us refresh just those
+// values in place, no rebuild, no focus loss.
+let followingDaysInputs = [];
+
+// Push the new header Days into every leg still following it (display only — a leg that
+// was given its own days keeps it).
+function syncFollowingDays() {
+  for (const { lg, input } of followingDaysInputs) {
+    if (lg.days == null) input.value = String(strat.days);
+  }
+}
+
 function renderLegs(app) {
+  followingDaysInputs = [];
   const root = clear($('#legs-table'));
   if (strat.legs.length === 0) {
     root.append(el('div', { class: 'empty-state' }, 'No legs. Click "+ Leg" or load a template.'));
@@ -171,6 +190,7 @@ function legRow(app, lg, i) {
   // Per-leg days-to-expiry — edit a leg to a different expiry to build a
   // calendar/diagonal. Disabled for futures (a future has no option expiry here).
   const daysIn = intInput(lg.days != null ? lg.days : strat.days, (v) => (lg.days = v), onEdit);
+  if (lg.days == null) followingDaysInputs.push({ lg, input: daysIn }); // follows the header until edited
   if (lg.type === 'FUT') daysIn.disabled = true;
   const del = el('button', { class: 'btn btn-mini' }, '×');
   del.addEventListener('click', () => {

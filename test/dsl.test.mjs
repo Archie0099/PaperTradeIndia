@@ -69,6 +69,21 @@ test('validateBasket rejects a boolean/comparison-valued rank but accepts a nume
   assert.equal(validateSpec({ ...base, rank: ['*', -1, ['vol', 20]] }), null, 'a numeric expression rank is accepted');
 });
 
+test('validateBasket rejects a NUMBER-valued gate/marketGate (regression: a numeric gate silently holds cash forever)', () => {
+  const base = { kind: 'BASKET', name: 'b', universe: ['A', 'B', 'C', 'D'], rank: ['mom', 63], k: 2, weighting: 'equal', rebalanceBars: 21 };
+  // The mirror of the rank guard above. portfolio.mjs tests a gate with a strict
+  // `evalNode(...) !== true`, so ['regime', 100] — which returns 1 or 0, never the
+  // boolean true — excludes EVERY name on EVERY rebalance: 0 trades, permanently flat,
+  // while explainSpec still describes the basket as "only names where ...".
+  assert.match(validateSpec({ ...base, gate: ['regime', 100] }), /boolean-valued/, 'a numeric gate is rejected');
+  assert.match(validateSpec({ ...base, marketGate: ['sma', 100] }), /boolean-valued/, 'a numeric marketGate is rejected');
+  assert.match(validateSpec({ ...base, gate: 1 }), /boolean-valued/, 'a bare number gate is rejected');
+  // The real gates the seeds use are still accepted, both shapes.
+  assert.equal(validateSpec({ ...base, gate: ['>', ['price'], ['sma', 100]] }), null, 'a comparison gate is accepted');
+  assert.equal(validateSpec({ ...base, marketGate: ['>', ['price'], ['*', 0.95, ['sma', 100]]] }), null, 'the seeds\' regime marketGate is accepted');
+  assert.equal(validateSpec({ ...base, gate: ['and', ['>', ['price'], ['sma', 50]], ['<', ['rsi', 14], 70]] }), null, 'a logic-rooted gate is accepted');
+});
+
 test('EQ side: bearish (short) specs validate, compile, and explain; garbage is rejected', () => {
   // The new directional flag — `side:'short'` makes a bot bearish (it shorts the symbol).
   assert.equal(validateSpec({ kind: 'EQ', name: 's', side: 'short', weight: 1 }), null, 'always-short is valid');

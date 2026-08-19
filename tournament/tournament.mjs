@@ -293,12 +293,21 @@ function computeAutopilotTrack(curves, cash, triSeries = null) {
   for (let i = 0; i < master.length; i++) {
     // (1) Earn the CURRENT pick's return for this bar, BEFORE any switch (so a re-pick
     //     applies only from the NEXT bar — no switch-bar return leakage).
-    if (started && chosen && i > 0 && chosen.a[i] != null && chosen.a[i] > 0 && chosen.a[i - 1] != null && chosen.a[i - 1] > 0) {
+    // The followed bot's bar is taken as it comes — INCLUDING the bar it blows up on.
+    // (Skipping a non-positive `chosen.a[i]` used to let the Auto-Pilot walk away from a
+    // blow-up at its PRE-blow-up equity: the loss was never booked, the next quarterly
+    // re-pick resumed compounding from the frozen figure, and maxDrawdown read 0 through
+    // a >100% loss of capital. The track record must wear its champion's disasters.)
+    if (started && chosen && i > 0 && apEq > 0 && chosen.a[i] != null && chosen.a[i - 1] != null && chosen.a[i - 1] > 0) {
       apEq *= chosen.a[i] / chosen.a[i - 1];
     }
     if (started) ap[i] = apEq;
     // (2) (re)pick at a rebalance bar (or the very first eligible bar), using ONLY data ≤ i.
-    if (i - lastRebal >= AP_REBAL_BARS || !started) {
+    // A WIPED account (apEq ≤ 0) has nothing left to trade with, so no re-pick can revive
+    // it — the track holds the wiped value for the rest of its life, honestly.
+    if (started && apEq <= 0) {
+      // dead account: no re-pick
+    } else if (i - lastRebal >= AP_REBAL_BARS || !started) {
       const eligible = aligned.filter((c) => c.a[i] != null && c.a[i] > 0 && i - c.firstIdx >= AP_MIN_HISTORY);
       if (eligible.length) {
         let best = null, bestS = -Infinity;
@@ -520,7 +529,7 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
           // scoreAdvisorLog runs inside every standings assembly, so one corrupt entry in a
           // hand-edited/damaged state file would otherwise throw there and 503 the whole
           // board until the file is deleted.
-          state = { deployedAt: s.deployedAt || null, live: s.live || {}, roster: s.roster || null, generation: s.generation || 0, history: Array.isArray(s.history) ? s.history : [], advisorLog: sanitizeAdvisorLog(s.advisorLog) };
+          state = { deployedAt: s.deployedAt || null, live: s.live || {}, roster: s.roster || null, generation: s.generation || 0, history: Array.isArray(s.history) ? s.history : [], advisorLog: sanitizeAdvisorLog(s.advisorLog), advisorLogArchive: sanitizeAdvisorLog(s.advisorLogArchive) };
           if (Array.isArray(s.roster) && s.roster.length) {
             roster = s.roster.map((b) => asRosterEntry(b, b.gen || 0));
             rebuildBots();
@@ -938,6 +947,9 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
             // as the live map: the Gist is hand-editable, so sanitise it (well-formed
             // entries, strictly ascending dates) before believing it.
             advisorLog: sanitizeAdvisorLog(remote.advisorLog),
+            // The pre-reset archive (see reset()) rides along so a suggestion log wiped by
+            // a stray reset stays recoverable across a redeploy, not just in this process.
+            advisorLogArchive: sanitizeAdvisorLog(remote.advisorLogArchive),
           };
           save(); // mirror the restored forward state (with the CURRENT roster) to local disk
         }
@@ -1248,6 +1260,16 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     // A full reset deliberately restarts the whole forward experiment, so the advisor's
     // suggestion log restarts with it (its no-hindsight day count begins again — the
     // "track record before trust" clock must not survive a reset it didn't earn).
+    //
+    // But it is ARCHIVED, not destroyed. This route needs no password — the tournament
+    // POSTs are open because it is all virtual money, a rationale written before the
+    // advisor existed. The suggestion log is the one artifact that cannot be
+    // recomputed from data: it is a no-hindsight FORWARD record, and a single stray POST
+    // used to erase it from the only durable copy (save() mirrors straight to the Gist).
+    // Archiving keeps the reset honest — the clock really does restart, the panel really
+    // does show 0 days — while leaving the record recoverable. Only the most recent
+    // non-empty log is kept, so this cannot grow without bound.
+    if (Array.isArray(state.advisorLog) && state.advisorLog.length) state.advisorLogArchive = state.advisorLog;
     state.advisorLog = [];
     state.deployedAt = Date.now();
     save();

@@ -207,12 +207,13 @@ function scoreAdvisorLog(log, { seriesFor, universe = [], costRates = { buyRate:
   if (entries.length < 2) return null;
   const nifty = seriesFor('NIFTY');
   // The EFFECTIVE book at each entry: its own targets when eligible, else the last
-  // eligible book carried forward (the same array object — so switchCost sees no diff).
+  // eligible book carried forward (the same object — so switchCost sees no diff).
+  // `equity` rides along because turnover is priced against the book it belongs to.
   const effective = [];
   {
-    let held = [];
+    let held = { targets: [], equity: 0 };
     for (const e of entries) {
-      if (e.eligible) held = e.targets || [];
+      if (e.eligible) held = { targets: e.targets || [], equity: e.equity };
       effective.push(held);
     }
   }
@@ -225,19 +226,33 @@ function scoreAdvisorLog(log, { seriesFor, universe = [], costRates = { buyRate:
   };
 
   // Estimated cost (as a fraction of account value) of moving from the previous
-  // entry's weights to this one's — buys pay buyRate, sells pay sellRate.
-  const switchCost = (prevTargets, targets) => {
-    const w = new Map();
-    for (const p of prevTargets || []) w.set(p.symbol, (w.get(p.symbol) || 0) + p.weight);
+  // entry's book to this one's — buys pay buyRate, sells pay sellRate.
+  //
+  // TURNOVER IS MEASURED IN SHARES, NOT WEIGHTS. A recorded weight is qty*price/equity,
+  // so it moves EVERY single day purely because prices moved — even when the champion
+  // did not trade one share. Charging on the weight delta therefore billed a pure
+  // buy-and-hold champion roughly half a percent a year of costs it never paid, and the
+  // panel prints that figure ("net of ~X% est. costs") right beside two GROSS
+  // benchmarks. It also contradicted the panel's own advice: on those days it says "no
+  // change since the previous suggestion — nothing to do today". Only a real change in
+  // the champion's share count is a trade, so only that is charged.
+  const switchCost = (prev, next) => {
+    const prevQty = new Map();
+    for (const p of prev.targets || []) prevQty.set(p.symbol, (prevQty.get(p.symbol) || 0) + p.qty);
+    // Price the turnover against the book we are moving INTO (its own recorded prices and
+    // equity are consistent with each other: qty*price/equity is exactly that name's weight).
+    const equity = next.equity || prev.equity || 0;
+    if (!(equity > 0)) return 0;
     let buys = 0, sells = 0;
     const seen = new Set();
-    for (const p of targets || []) {
+    for (const p of next.targets || []) {
       seen.add(p.symbol);
-      const d = p.weight - (w.get(p.symbol) || 0);
-      if (d > 0) buys += d;
-      else sells += -d;
+      const dq = p.qty - (prevQty.get(p.symbol) || 0);
+      if (dq > 0) buys += (dq * p.price) / equity;
+      else if (dq < 0) sells += (-dq * p.price) / equity;
     }
-    for (const [sym, prevW] of w) if (!seen.has(sym)) sells += prevW; // dropped names are sold
+    // A DROPPED name is sold in full, priced at the last mark the log recorded for it.
+    for (const p of prev.targets || []) if (!seen.has(p.symbol)) sells += (p.qty * p.price) / equity;
     return buys * (costRates.buyRate || 0) + sells * (costRates.sellRate || 0);
   };
 
@@ -245,14 +260,14 @@ function scoreAdvisorLog(log, { seriesFor, universe = [], costRates = { buyRate:
   const curve = [{ t: entries[0].t, c: 1 }];
   const niftyCurve = [{ t: entries[0].t, c: 1 }];
   const universeCurve = [{ t: entries[0].t, c: 1 }];
-  let costPaidPct = switchCost([], effective[0]); // entering the first day's book
+  let costPaidPct = switchCost({ targets: [], equity: 0 }, effective[0]); // entering the first day's book
   adv *= 1 - costPaidPct;
 
   for (let i = 0; i + 1 < entries.length; i++) {
     const a = entries[i], b = entries[i + 1];
     // The suggested portfolio's return over [t_a, t_b] from the EFFECTIVE book at a.
     let r = 0;
-    for (const p of effective[i]) {
+    for (const p of effective[i].targets) {
       const c0 = closeAt(p.symbol, a.t);
       const c1 = closeAt(p.symbol, b.t);
       if (c0 != null && c1 != null) r += p.weight * (c1 / c0 - 1);
@@ -304,12 +319,33 @@ function scoreAdvisorLog(log, { seriesFor, universe = [], costRates = { buyRate:
 // cost schedule; the benchmark finding fixes what the banner may claim.
 function buildAdvisorPayload({ log, seriesFor, universe = [], minDays = ADVISOR_MIN_DAYS, costRates = { buyRate: 0, sellRate: 0 } }) {
   const entries = Array.isArray(log) ? log : [];
+  // The FRESHEST recorded price for every symbol the log has ever carried, with the date
+  // it was recorded on. The client needs this to price a name the champion has DROPPED.
+  // Without it, a name absent from BOTH today's and the previous entry's targets fell all
+  // the way back to the assumed book's own COST BASIS: a stock bought at ₹20 and now worth
+  // ₹100 was suggested as "sell 2 @ ~₹20", which also mis-scaled every OTHER suggestion
+  // that day (the book's value sets the capital ratio) and corrupted the persisted ledger.
+  // Two ordinary situations reach it: the panel only advances its assumed book while the
+  // tab is OPEN (so any gap longer than a day skips the entry that still listed the name),
+  // and a single stand-aside day records no targets at all.
+  const marks = {};
+  for (const e of entries) for (const p of e.targets || []) marks[p.symbol] = { price: p.price, date: e.date, t: e.t };
+  // The last entry BEFORE today that actually ISSUED guidance. Stand-aside entries record
+  // targets: [], so diffing today against the raw previous entry announced every name the
+  // user already holds as "New". The server's own scoring carries the last ELIGIBLE book
+  // forward; the panel must describe the same book.
+  let prevEligible = null;
+  for (let i = entries.length - 2; i >= 0; i--) {
+    if (entries[i].eligible && (entries[i].targets || []).length) { prevEligible = entries[i]; break; }
+  }
   return {
     minDays,
     logDays: entries.length,
     ready: entries.length >= minDays,
     today: entries.length ? entries[entries.length - 1] : null,
     prev: entries.length > 1 ? entries[entries.length - 2] : null,
+    prevEligible,
+    marks,
     track: scoreAdvisorLog(entries, { seriesFor, universe, costRates }),
     costRates: { buyRate: costRates.buyRate || 0, sellRate: costRates.sellRate || 0 },
     benchmarkFinding: ADVISOR_BENCHMARK_FINDING,

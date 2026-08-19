@@ -10,7 +10,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTournament } from '../tournament/tournament.mjs';
-import { scoreAdvisorLog, sanitizeAdvisorLog, closeAtOrBefore, buildAdvisorEntry, ADVISOR_BENCHMARK_FINDING } from '../tournament/advisor.mjs';
+import { scoreAdvisorLog, sanitizeAdvisorLog, closeAtOrBefore, buildAdvisorEntry, buildAdvisorPayload, ADVISOR_BENCHMARK_FINDING } from '../tournament/advisor.mjs';
 
 const DAY = 86_400_000;
 const START = 1_500_000_000_000;
@@ -36,12 +36,16 @@ test('scoreAdvisorLog: hand-computed net return, benchmarks, and cost accounting
   const data = { AAA: [{ t: T1, c: 100 }, { t: T2, c: 110 }], NIFTY: [{ t: T1, c: 200 }, { t: T2, c: 210 }] };
   const seriesFor = (sym) => data[sym] || [];
   const track = scoreAdvisorLog(log, { seriesFor, universe: ['AAA'], costRates: { buyRate: 0.001, sellRate: 0.001 } });
-  // Entry cost 0.5×0.1% = 5bp, then 0.5 × (+10%) = +5%, then the 0.05 weight top-up pays
-  // 0.005bp: 0.9995 × 1.05 × 0.99995 = 1.0494225 → +4.94% net.
-  assert.equal(track.retPct, 4.94);
+  // Entry cost 0.5×0.1% = 5bp, then 0.5 × (+10%) = +5%: 0.9995 × 1.05 = 1.049475 → +4.95%.
+  // Day 2 holds the SAME 5 shares — its weight rose from 0.50 to 0.55 only because AAA's
+  // price rose. That is not a trade and is not charged. (This test previously expected the
+  // 0.05 weight drift to pay a top-up; charging price drift as turnover billed a champion
+  // that never trades ~0.5%/yr of phantom cost, printed as "net of est. costs"
+  // beside two GROSS benchmarks. Turnover is measured in SHARES now.)
+  assert.equal(track.retPct, 4.95);
   assert.equal(track.niftyPct, 5); // gross index
   assert.equal(track.universeEqPct, 10); // gross equal-weight universe (only AAA)
-  assert.equal(track.estCostPct, 0.055); // (0.0005 + 0.00005) as %
+  assert.equal(track.estCostPct, 0.05); // the entry only — day 2 traded nothing
   assert.equal(track.maxDrawdownPct, 0);
   assert.equal(track.currentDrawdownPct, 0);
   assert.equal(track.days, 2);
@@ -64,10 +68,13 @@ test('scoreAdvisorLog: an ineligible (stand-aside) entry scores as cash; a missi
 test('scoreAdvisorLog HOLDS the previous book through a stand-aside day — no phantom liquidation, no cost (regression)', () => {
   const T = (i) => START + i * DAY;
   const A = (t, w) => ({ symbol: 'A', qty: 1, price: 100, weight: w });
+  // equity 100 keeps the fixture SELF-CONSISTENT: a real entry always records
+  // weight === qty*price/equity (buildAdvisorEntry), and cost is now priced off the
+  // share count, so an inconsistent fixture would assert a number the app can't produce.
   const log = [
-    { date: '2017-07-14', t: T(0), eligible: true, equity: 1000, targets: [A(T(0), 1)] },
-    { date: '2017-07-15', t: T(1), eligible: false, equity: 1000, targets: [] }, // champion flipped to F&O for a day
-    { date: '2017-07-16', t: T(2), eligible: true, equity: 1000, targets: [A(T(2), 1)] },
+    { date: '2017-07-14', t: T(0), eligible: true, equity: 100, targets: [A(T(0), 1)] },
+    { date: '2017-07-15', t: T(1), eligible: false, equity: 100, targets: [] }, // champion flipped to F&O for a day
+    { date: '2017-07-16', t: T(2), eligible: true, equity: 100, targets: [A(T(2), 1)] },
   ];
   const data = { A: [{ t: T(0), c: 100 }, { t: T(1), c: 110 }, { t: T(2), c: 121 }], NIFTY: [{ t: T(0), c: 1 }, { t: T(2), c: 1 }] };
   const track = scoreAdvisorLog(log, { seriesFor: (s) => data[s] || [], universe: [], costRates: { buyRate: 0.001, sellRate: 0.001 } });
@@ -220,9 +227,16 @@ test('reset() restarts the trust clock: the suggestion log is cleared with the f
   const t = await mkTournament();
   await t.init();
   assert.equal(t.getStandings().advisor.logDays, 1);
+  const before = t._state().advisorLog.slice();
   t.reset();
   assert.equal(t._state().advisorLog.length, 0);
   assert.equal(t.getStandings().advisor.logDays, 0);
+  // ...but the record is ARCHIVED, not destroyed. /api/tournament/reset needs no password
+  // (all virtual money), and the suggestion log is the one artifact that cannot be
+  // recomputed from data — a stray POST must not erase it from the only durable copy.
+  assert.deepEqual(t._state().advisorLogArchive, before, 'the pre-reset log is recoverable');
+  t.reset();
+  assert.deepEqual(t._state().advisorLogArchive, before, 'a second reset does not overwrite the archive with an empty log');
 });
 
 test('advisorMinDays is a config knob: ready flips when the log reaches it', async () => {
@@ -233,4 +247,59 @@ test('advisorMinDays is a config knob: ready flips when the log reaches it', asy
   t._appendLiveClose('NIFTY', { t: START + 400 * DAY, c: 130 });
   t._advisorTick();
   assert.equal(t.getStandings().advisor.ready, true, '2 of 2 days — the banner may drop');
+});
+
+test('scoreAdvisorLog charges NO cost when the champion holds the same shares while prices move (regression)', () => {
+  // A recorded weight is qty*price/equity, so it drifts every single day purely because
+  // prices moved. Charging the weight delta as turnover billed a buy-and-hold champion
+  // roughly half a percent a YEAR of costs it never paid — and that phantom figure was
+  // both subtracted from the headline return and printed as "net of ~X% est. costs" beside
+  // a GROSS NIFTY and a GROSS equal-weight universe. Only a share-count change is a trade.
+  const N = 250;
+  const px = (i) => +(100 * (1 + 0.35 * Math.sin(i / 11) + 0.0008 * i)).toFixed(2); // it moves a lot
+  const QTY = 20;
+  const log = [];
+  const closes = [];
+  for (let i = 0; i < N; i++) {
+    const t = START + i * DAY;
+    const price = px(i);
+    const equity = QTY * price; // fully invested in one name, never traded
+    closes.push({ t, c: price });
+    log.push({ date: `d${i}`, t, eligible: true, equity, targets: [{ symbol: 'AAA', qty: QTY, price, weight: +((QTY * price) / equity).toFixed(6) }] });
+  }
+  const data = { AAA: closes, NIFTY: closes.map((p) => ({ t: p.t, c: 100 })) };
+  const track = scoreAdvisorLog(log, { seriesFor: (s) => data[s] || [], universe: ['AAA'], costRates: { buyRate: 0.0017, sellRate: 0.0015 } });
+
+  // The only cost that may be charged in 250 days is buying the book on day one.
+  assert.ok(track.estCostPct <= 0.17 + 1e-9, `holding must not accrue turnover costs (got ${track.estCostPct}%)`);
+  // ...and the net track must match the name's own gross move minus exactly that entry cost.
+  const gross = (px(N - 1) / px(0) - 1) * 100;
+  const expected = +(((1 - 0.0017) * (1 + gross / 100) - 1) * 100).toFixed(2);
+  assert.ok(Math.abs(track.retPct - expected) < 0.02, `net return should be gross minus the entry cost only (got ${track.retPct}, expected ~${expected})`);
+
+  // A REAL rebalance (the share count actually changes) still pays.
+  const traded = log.map((e, i) => (i < N / 2 ? e : { ...e, targets: [{ ...e.targets[0], qty: QTY * 2, weight: 2 }] }));
+  const tradedTrack = scoreAdvisorLog(traded, { seriesFor: (s) => data[s] || [], universe: ['AAA'], costRates: { buyRate: 0.0017, sellRate: 0.0015 } });
+  assert.ok(tradedTrack.estCostPct > track.estCostPct, 'doubling the position is a real trade and is charged');
+});
+
+test('buildAdvisorPayload ships the freshest recorded MARK per symbol and the last entry that issued guidance', () => {
+  // The client cannot price a name the champion dropped days ago from `today`/`prev`
+  // alone, and it must not fall back to the assumed book's cost basis. `marks` carries
+  // the freshest price the whole log ever recorded; `prevEligible` is the last entry
+  // that actually said something, so a stand-aside day doesn't make held names look new.
+  const T = (i) => START + i * DAY;
+  const log = [
+    { date: '2026-08-10', t: T(0), eligible: true, equity: 1000, targets: [{ symbol: 'A', qty: 5, price: 100, weight: 0.5 }, { symbol: 'B', qty: 2, price: 90, weight: 0.18 }] },
+    { date: '2026-08-11', t: T(1), eligible: true, equity: 1000, targets: [{ symbol: 'A', qty: 5, price: 105, weight: 0.52 }, { symbol: 'B', qty: 2, price: 100, weight: 0.2 }] },
+    { date: '2026-08-12', t: T(2), eligible: false, equity: 1000, reason: 'the champion is an options (F&O) bot', targets: [] },
+    { date: '2026-08-13', t: T(3), eligible: true, equity: 1000, targets: [{ symbol: 'A', qty: 5, price: 110, weight: 0.55 }] }, // B dropped
+  ];
+  const p = buildAdvisorPayload({ log, seriesFor: () => [], universe: [] });
+
+  assert.deepEqual(p.marks.B, { price: 100, date: '2026-08-11', t: T(1) }, 'B keeps its freshest recorded mark after being dropped');
+  assert.deepEqual(p.marks.A, { price: 110, date: '2026-08-13', t: T(3) }, 'a still-held name marks at today');
+  assert.equal(p.prev.date, '2026-08-12', 'prev is still the literal previous entry');
+  assert.equal(p.prevEligible.date, '2026-08-11', 'prevEligible skips the stand-aside day');
+  assert.equal(p.logDays, 4);
 });

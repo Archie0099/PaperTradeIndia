@@ -42,7 +42,7 @@ are marked.
 | Component | Equity delivery | Equity intraday | Index options |
 |---|---|---|---|
 | STT | 0.10% buy + sell | 0.025% sell only | 0.10% of premium, sell only |
-| Exchange txn charge (+18% GST) | ~0.0035% | ~0.0035% | ~0.41% of premium |
+| Exchange txn charge (+18% GST) | ~0.0035% | ~0.0035% | ~0.041% of premium |
 | Stamp duty (buy) | 0.015% | 0.003% | 0.003% |
 | SEBI fee | 0.0001% | 0.0001% | 0.0001% |
 | Brokerage | ₹0 (discount broker) | ₹0 | ₹20/order (flat) |

@@ -58,14 +58,35 @@ function createPersistStore({
   let pending = null;
   let flushing = false;
 
+  // Did the last load() attempt FAIL TO READ the store — as opposed to reading it fine
+  // and finding nothing there?
+  //
+  // Collapsing those two cases into a bare `null` was a DATA-LOSS bug. A transient 503,
+  // an 8s timeout, or a >1MB truncated read all looked identical to "this gist is empty",
+  // so the tournament stamped a FRESH forward clock and then save()d that empty state
+  // straight over the only durable copy — wiping the live closes, the deploy date and the
+  // append-only advisor log. And it was self-perpetuating: the next boot faithfully
+  // restored the wiped blob. On an ephemeral-disk host there is no second copy to recover
+  // from.
+  //
+  // So the store FAILS CLOSED: while this flag is set it refuses to WRITE. An unreadable
+  // store is never overwritten. A genuinely empty gist (the first ever boot) reads fine,
+  // leaves the flag clear, and stays writable. The flag lives for this process only — the
+  // next boot retries the read from scratch.
+  let readFailed = false;
+  let warnedReadFailed = false;
+
   // Fetch the persisted blob (or null if unconfigured / missing / unreadable).
   async function load() {
     if (!enabled) return null;
+    readFailed = false;
     try {
       const res = await fetchImpl(`${GH_API}/gists/${gistId}`, { headers, signal: abortAfter(timeoutMs) });
-      if (!res || !res.ok) return null;
+      if (!res || !res.ok) { readFailed = true; return null; }
       const gist = await res.json();
       const file = gist && gist.files && gist.files[filename];
+      // No file (or no content) is an HONEST empty read — a gist we created but never
+      // wrote to. That is the first-boot bootstrap case, and it must stay writable.
       if (!file || typeof file.content !== 'string') return null;
       // The Gist API TRUNCATES a file's `content` at 1MB on read (sets file.truncated and
       // serves the full file only via raw_url). Our state blob crosses 1MB after ~1 year of
@@ -75,12 +96,19 @@ function createPersistStore({
       let content = file.content;
       if (file.truncated && file.raw_url) {
         const raw = await fetchImpl(file.raw_url, { headers, signal: abortAfter(timeoutMs) });
-        if (raw && raw.ok && typeof raw.text === 'function') content = await raw.text();
+        // A failed raw fetch leaves `content` as the HALF file — parsing that would throw
+        // below and (before the fail-closed flag) looked like an empty store. It is a read
+        // failure, not an empty store.
+        if (!raw || !raw.ok || typeof raw.text !== 'function') { readFailed = true; return null; }
+        content = await raw.text();
       }
       const blob = JSON.parse(content);
-      return blob && typeof blob === 'object' ? blob : null;
+      if (blob === null) return null; // the file literally holds `null` — an honest empty read
+      if (typeof blob !== 'object') { readFailed = true; return null; } // junk we don't understand: don't clobber it
+      return blob;
     } catch {
-      return null; // best-effort: a fresh forward clock is an acceptable fallback
+      readFailed = true; // network/abort/parse — we do NOT know what the store holds
+      return null;
     }
   }
 
@@ -117,6 +145,16 @@ function createPersistStore({
   // by the tournament — persistence must never block the board.
   function save(blob) {
     if (!enabled) return;
+    // FAIL CLOSED: we could not read the store this boot, so we do not know what is in it
+    // — writing would replace a forward record we never saw. Local disk saves continue
+    // (tournament.save() does those separately); the next boot retries the read.
+    if (readFailed) {
+      if (!warnedReadFailed) {
+        warnedReadFailed = true;
+        console.warn('persistStore: the remote store could not be READ this boot — refusing to overwrite it. The forward record is untouched; it will restore on the next successful boot.');
+      }
+      return;
+    }
     try {
       pending = JSON.parse(JSON.stringify(blob));
     } catch {
@@ -125,7 +163,7 @@ function createPersistStore({
     flush().catch(() => {}); // fire-and-forget; flush swallows internally, but guard defensively
   }
 
-  return { enabled, load, save, flush };
+  return { enabled, load, save, flush, readFailed: () => readFailed };
 }
 
 export { createPersistStore, FILENAME };

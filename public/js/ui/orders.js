@@ -56,13 +56,21 @@ function renderEstimate(app) {
     return;
   }
   const qty = t.lots * t.instrument.lotSize;
-  const { margin, breakdown } = app.engine.estimateMargin(t.instrument, t.side, qty, price);
+  // Fund only the NEW-exposure part of the order, exactly as placeOrder does. Estimating
+  // the FULL quantity priced a pure close as if it were opening a fresh opposite position,
+  // so selling shares you already own was shown in red as "INSUFFICIENT" (and described as
+  // a "Short proxy") — and then filled instantly when submitted. The two must agree.
+  const newQty = app.engine.exposureIncreaseQty(t.instrument, t.side, qty);
+  const { margin, breakdown } = newQty > 0
+    ? app.engine.estimateMargin(t.instrument, t.side, newQty, price)
+    : { margin: 0, breakdown: 'Closes an existing position — no new margin required' };
   const available = app.engine.availableFunds();
   const ok = margin <= available + 1e-6;
+  const partial = newQty > 0 && newQty < qty; // a flip: part closes, the rest opens new
   box.innerHTML = '';
   box.append(
     el('div', {}, `Quantity: ${qty} unit(s)  •  Estimated requirement: ${rupee(margin, 0)}`),
-    el('div', { class: 'muted' }, breakdown + '  (ESTIMATE, not broker-accurate)'),
+    el('div', { class: 'muted' }, breakdown + (partial ? ` — ${qty - newQty} of ${qty} unit(s) just close the existing position` : '') + '  (ESTIMATE, not broker-accurate)'),
     el('div', { class: ok ? 'up' : 'down' }, `Available funds: ${rupee(available, 0)} — ${ok ? 'OK' : 'INSUFFICIENT'}`)
   );
 }

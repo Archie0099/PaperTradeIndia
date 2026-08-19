@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 
 import {
   equityDeliveryCosts, equityIntradayCosts, indexOptionCosts, flatCosts,
-  eqFillPrice, optFillPrice, borrowFee,
+  eqFillPrice, optFillPrice, borrowFee, OPT_EXCH_RATE,
 } from '../backtest/costs.mjs';
 import { runBacktest } from '../backtest/backtester.mjs';
 import { runFnoBacktest, FNO_STRATEGIES } from '../backtest/fno.mjs';
@@ -57,8 +57,11 @@ test('equity intraday schedule: STT sell-side only, lighter stamp', () => {
 
 test('index option schedule: premium-based charges + half-spread + tick floor + dust clamp', () => {
   const m = indexOptionCosts();
-  const buy = 0.00003 + 0.003503 * 1.18 + 0.000001;          // stamp + exchange(GST) + SEBI
-  const sell = 0.001 + 0.003503 * 1.18 + 0.000001;           // STT on sell premium instead of stamp
+  // Assert against the NAMED schedule constant, not a copied literal: the literal was
+  // once 0.003503 (10x the published rate) and this test happily locked the error in.
+  assert.equal(OPT_EXCH_RATE, 0.0003503, 'NSE option txn charge = 3,503 per crore of premium = 0.03503%');
+  const buy = 0.00003 + OPT_EXCH_RATE * 1.18 + 0.000001;     // stamp + exchange(GST) + SEBI
+  const sell = 0.001 + OPT_EXCH_RATE * 1.18 + 0.000001;      // STT on sell premium instead of stamp
   assert.ok(Math.abs(m.buyRate - buy) < 1e-12);
   assert.ok(Math.abs(m.sellRate - sell) < 1e-12);
   // ₹100 mid: half-spread = max(0.5% of 100, one tick) = ₹0.50 crossed each way.

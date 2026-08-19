@@ -214,6 +214,17 @@ function validateBasket(spec) {
   if (spec.gross !== undefined && !(Number.isFinite(spec.gross) && spec.gross > 0 && spec.gross <= 1)) return 'basket.gross must be in (0,1]';
   if (spec.gate !== undefined && !validExpr(spec.gate)) return 'basket.gate must be a valid expression';
   if (spec.marketGate !== undefined && !validExpr(spec.marketGate)) return 'basket.marketGate must be a valid expression';
+  // The MIRROR of the `rank` guard above, in the other direction: a gate must evaluate
+  // to a BOOLEAN. portfolio.mjs applies both gates with a strict `evalNode(...) !== true`
+  // test, so a numeric-valued expression (say ['regime',100], which returns 1 or 0 — never
+  // the boolean `true`) fails for EVERY name on EVERY rebalance: the basket silently holds
+  // cash forever while explainSpec still describes it as filtering names. Reject it here.
+  for (const g of ['gate', 'marketGate']) {
+    const e = spec[g];
+    if (e === undefined) continue;
+    if (typeof e === 'boolean') continue; // a literal true/false gate is honest (and works)
+    if (!(Array.isArray(e) && BOOL_VALUED_OPS.has(e[0]))) return `basket.${g} must be boolean-valued (a comparison or and/or/not expression)`;
+  }
   // A FACTOR model (optional) replaces the single `rank` score with a weighted
   // composite of cross-sectionally z-scored factors (backtest/factors.mjs). It is
   // MUTUALLY EXCLUSIVE with mlConfig — a basket is rule-driven, OR factor-driven, OR

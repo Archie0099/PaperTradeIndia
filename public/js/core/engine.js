@@ -371,7 +371,16 @@ class Engine {
       const price = this.state.lastPrices[key] || p.avgPrice;
       const qty = Math.abs(p.qty);
       if (p.instrument.kind === 'FUT') {
-        total += this.estimateMargin(p.instrument, 'BUY', qty, price).margin;
+        // A future's margin is re-priced at the CURRENT price, so it SHRINKS as a long
+        // future falls — while the loss itself never touches cash (holdingsValue carries
+        // futures as mark-to-market only). Left alone, that made a LOSING future hand you
+        // MORE buying power than you had before it lost: available funds could exceed the
+        // account's own equity and fund a trade the account can't afford. A real broker
+        // debits the mark-to-market loss daily, so block it here too — "margin used" then
+        // grows as the position bleeds, exactly like a margin call. Gains are NOT credited
+        // (the conservative direction: unrealised profit doesn't buy new leverage here).
+        const mtm = (price - p.avgPrice) * p.qty;
+        total += this.estimateMargin(p.instrument, 'BUY', qty, price).margin + Math.max(0, -mtm);
       } else if (p.instrument.kind === 'OPT' && isShort) {
         total += this.estimateMargin(p.instrument, 'SELL', qty, price).margin;
       } else if (p.instrument.kind === 'EQ' && isShort) {

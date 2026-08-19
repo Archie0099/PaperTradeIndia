@@ -116,6 +116,42 @@ test('a name the champion DROPPED is priced at yesterday’s recorded price, nev
   assert.equal(res.valueBefore, 210, 'the book is valued at the recorded mark');
 });
 
+test('a name dropped MORE THAN ONE log-day ago still prices at the last recorded mark, not the cost basis (regression)', () => {
+  // The panel only advances its assumed book while the Auto-Pilot tab is OPEN, and only
+  // one suggestion date per render. So a name the champion dropped two suggestion-days
+  // before the panel is next opened is in NEITHER today's targets NOR the previous entry's —
+  // and it used to fall all the way back to what it was BOUGHT for. That mis-stated the
+  // sell price, mis-scaled every other suggestion that day (the book's value sets the
+  // capital ratio) and corrupted the persisted ledger for good. `marks` — the freshest
+  // price the whole log ever recorded — closes the gap.
+  const entry = { botName: 'X', equity: 1000, targets: [{ symbol: 'A', qty: 10, price: 50, weight: 0.5 }] };
+  const book = { cash: 10, positions: [{ key: 'EQ:B', symbol: 'B', qty: 2, avg: 20 }] };
+  const marks = { A: { price: 50, date: '2026-08-19' }, B: { price: 100, date: '2026-08-14' } };
+  const rates = { buyRate: 0.001, sellRate: 0.001 };
+
+  // WITHOUT marks (the old behaviour) B prices at its ₹20 cost basis and the A buy starves.
+  const bad = computeSuggestions({ entry, prev: null, book, costRates: rates });
+  assert.equal(bad.orders[0].price, 20, 'baseline: the un-marked path still falls back to cost');
+  assert.equal(bad.valueBefore, 50);
+
+  // WITH marks the sell is priced honestly and everything else scales off the right value.
+  const res = computeSuggestions({ entry, prev: null, marks, book, costRates: rates });
+  const sell = res.orders.find((o) => o.symbol === 'B');
+  assert.equal(sell.price, 100, 'the sell references the last recorded mark');
+  assert.equal(sell.value, 200);
+  assert.equal(res.valueBefore, 210, 'the book is valued at the recorded mark, not the cost basis');
+  assert.equal(sell.label, 'Exit B: sell 2 @ ~₹100.00 (last recorded price, 2026-08-14 — check the live quote)');
+  assert.equal(sell.priceAsOf, '2026-08-14');
+  const buy = res.orders.find((o) => o.symbol === 'A');
+  assert.ok(buy && !buy.skipped && buy.shares >= 2, 'the A buy is funded by the correctly-priced sale');
+  assert.equal(buy.priceAsOf, null, 'a name priced from TODAY carries no stale-price note');
+
+  // A single STAND-ASIDE day empties prev.targets — the same hole, same fix.
+  const standAside = computeSuggestions({ entry, prev: { eligible: false, targets: [] }, marks, book, costRates: rates });
+  assert.equal(standAside.orders.find((o) => o.symbol === 'B').price, 100);
+  assert.equal(standAside.valueBefore, 210);
+});
+
 test('weightDiffLines describes the change vs yesterday in plain English', () => {
   const prev = { targets: [{ symbol: 'A', weight: 0.6 }, { symbol: 'B', weight: 0.4 }] };
   const today = { targets: [{ symbol: 'A', weight: 0.3 }, { symbol: 'C', weight: 0.7 }] };

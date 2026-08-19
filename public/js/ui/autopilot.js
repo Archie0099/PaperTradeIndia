@@ -280,26 +280,37 @@ function computeRebalanceOrders({ mirror, current, userEquity, priceFor, botName
 // are never executed anywhere: the book is a paper ledger of "what if I followed
 // every suggestion", kept so tomorrow's diff has a yesterday to diff against.
 // Estimated costs use the server-shipped real delivery rates (incl. slippage).
-function computeSuggestions({ entry, prev = null, book, costRates = { buyRate: 0, sellRate: 0 } }) {
+function computeSuggestions({ entry, prev = null, marks = null, book, costRates = { buyRate: 0, sellRate: 0 } }) {
   const targets = (entry && entry.targets) || [];
   const mirror = {
     equity: entry.equity,
     positions: targets.map((t) => ({ key: instrumentKey({ kind: 'EQ', symbol: t.symbol, lotSize: 1 }), kind: 'EQ', symbol: t.symbol, lotSize: 1, qty: t.qty, price: t.price })),
   };
-  // The price we can honestly mark a symbol at: today's recorded target price; for a
-  // name the champion DROPPED today, YESTERDAY's recorded price (`prev` — the freshest
-  // real mark the log carries; without it a sell would be priced at the book's stale
-  // cost basis, mis-stating the suggestion AND mis-scaling everything else that day);
-  // the book's own cost only as a last resort (a name absent from both recorded
-  // entries). Never a fabricated number.
+  // The price we can honestly mark a symbol at: today's recorded target price; then, for a
+  // name the champion DROPPED, the previous entry's price; then `marks` — the freshest
+  // price the WHOLE log ever recorded for that symbol. The book's own average COST is the
+  // true last resort, and it is a bad one: the panel only advances its assumed book while
+  // the tab is open, and a stand-aside entry records no targets at all, so a name dropped
+  // more than one log-day ago used to price at what it was BOUGHT for. That mis-stated the
+  // sell, mis-scaled every other suggestion that day (the book's value sets the capital
+  // ratio) and corrupted the persisted ledger for good. Never a fabricated number.
   const prevTargets = (prev && prev.targets) || [];
+  const markOf = (sym) => (marks && marks[sym] && marks[sym].price > 0 ? marks[sym] : null);
   const priceOf = (sym) => {
     const t = targets.find((x) => x.symbol === sym);
     if (t) return t.price;
     const y = prevTargets.find((x) => x.symbol === sym);
     if (y) return y.price;
+    const m = markOf(sym);
+    if (m) return m.price;
     const p = ((book && book.positions) || []).find((x) => x.symbol === sym);
     return p && p.avg > 0 ? p.avg : null;
+  };
+  // Is this price an OLDER recorded mark rather than a current one? If so the order line
+  // says so — an honest "this is the last price we have" beats a confident wrong number.
+  const staleMarkFor = (sym) => {
+    if (targets.some((x) => x.symbol === sym) || prevTargets.some((x) => x.symbol === sym)) return null;
+    return markOf(sym);
   };
   const positions = ((book && book.positions) || []).filter((p) => p.qty !== 0);
   const current = positions.map((p) => ({ key: p.key, instrument: { kind: 'EQ', symbol: p.symbol, lotSize: 1 }, qty: p.qty }));
@@ -342,6 +353,7 @@ function computeSuggestions({ entry, prev = null, book, costRates = { buyRate: 0
     }
     posByKey.set(o.key, p);
     const verb = o.fromQty === 0 ? 'Start a position in' : o.toQty === 0 ? 'Exit' : Math.abs(o.toQty) > Math.abs(o.fromQty) ? 'Add to' : 'Trim';
+    const stale = staleMarkFor(sym);
     out.push({
       symbol: sym,
       side: o.side,
@@ -351,7 +363,8 @@ function computeSuggestions({ entry, prev = null, book, costRates = { buyRate: 0
       estCost,
       capped,
       skipped: false,
-      label: `${verb} ${sym}: ${o.side === 'BUY' ? 'buy' : 'sell'} ${shares} @ ~₹${o.price.toFixed(2)}${capped ? ` (clipped from ${o.lots} — capital cap)` : ''}`,
+      priceAsOf: stale ? stale.date : null,
+      label: `${verb} ${sym}: ${o.side === 'BUY' ? 'buy' : 'sell'} ${shares} @ ~₹${o.price.toFixed(2)}${capped ? ` (clipped from ${o.lots} — capital cap)` : ''}${stale ? ` (last recorded price, ${stale.date} — check the live quote)` : ''}`,
     });
   }
   const bookPositions = [...posByKey.values()].filter((p) => p.qty !== 0);
@@ -1119,13 +1132,17 @@ function renderSuggestions(app) {
   const adv = getAdv();
   if (!(adv.capital > 0)) {
     // No capital set: describe the change vs yesterday at the portfolio level.
-    const lines = weightDiffLines(advisor.prev, today);
+    // Diff against the last entry that actually ISSUED guidance, not the raw previous one:
+    // a stand-aside entry records no targets, so diffing against it announced every name
+    // already held as "New" — the opposite of "keep whatever you already hold".
+    const prevGuidance = advisor.prevEligible || advisor.prev;
+    const lines = weightDiffLines(prevGuidance, today);
     if (lines.length) {
       const ul = el('ul', { style: 'margin: 6px 0; padding-left: 18px; font-size: 12px; line-height: 1.6' });
       for (const l of lines) ul.append(el('li', {}, l));
       box.append(el('div', { class: 'muted', style: 'font-size: 11px; margin-top: 6px' }, 'Changed since the previous suggestion:'));
       box.append(ul);
-    } else if (advisor.prev) {
+    } else if (prevGuidance) {
       box.append(el('div', { class: 'muted', style: 'font-size: 12px; margin: 6px 0' }, 'No change since the previous suggestion — nothing to do today.'));
     }
     // The capital input (first use also asks for a drawdown tolerance — a ground rule).
@@ -1157,18 +1174,23 @@ function renderSuggestions(app) {
   let book = adv.book;
   if (!book || typeof book !== 'object' || !Number.isFinite(book.cash) || !Array.isArray(book.positions)) book = freshBook();
   if (book.lastAppliedDate !== today.date) {
-    const res = computeSuggestions({ entry: today, prev: advisor.prev, book, costRates: advisor.costRates });
+    const res = computeSuggestions({ entry: today, prev: advisor.prev, marks: advisor.marks, book, costRates: advisor.costRates });
     book = { ...res.bookAfter, lastAppliedDate: today.date, lastActions: res.orders, peakValue: Math.max(book.peakValue || adv.capital, res.valueAfter), startedDate: book.startedDate || today.date };
     saveAdv({ ...adv, book });
   }
-  // Same honest price chain as computeSuggestions: today's recorded mark, else
-  // yesterday's, else the book's own cost — for valuing the held book on screen.
+  // The SAME honest price chain computeSuggestions uses, for valuing the held book on
+  // screen: today's recorded mark, else the previous entry's, else the freshest mark the
+  // whole log holds for that symbol, and only then the book's own cost.
   const prevTargets = (advisor.prev && advisor.prev.targets) || [];
   const priceOf = (sym) => {
     const t = today.targets.find((x) => x.symbol === sym);
     if (t) return t.price;
     const y = prevTargets.find((x) => x.symbol === sym);
     if (y) return y.price;
+    // The freshest price the WHOLE log holds for this symbol, before the cost basis —
+    // falling straight to cost understated a dropped winner's value permanently.
+    const m = advisor.marks && advisor.marks[sym];
+    if (m && m.price > 0) return m.price;
     const p = book.positions.find((x) => x.symbol === sym);
     return p && p.avg > 0 ? p.avg : 0;
   };

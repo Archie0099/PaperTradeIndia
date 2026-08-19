@@ -146,6 +146,38 @@ test('the live estimate flips to INSUFFICIENT when the order exceeds funds', () 
   assert.match(box, /INSUFFICIENT/);
 });
 
+test('the estimate for an order that merely CLOSES a position asks for no margin (never INSUFFICIENT)', () => {
+  // Regression: the estimate box priced the FULL order quantity, while placeOrder funds
+  // only the new-exposure part. Selling shares you already own was therefore shown in red
+  // as "INSUFFICIENT" (and labelled a "Short proxy") — and then filled instantly on submit.
+  const dom = setupDom();
+  const app = mountOrders(dom);
+  app.engine.reset(1_000_000);
+  app.engine.placeOrder({ instrument: { kind: 'EQ', symbol: 'RELIANCE', lotSize: 1 }, side: 'BUY', orderType: 'MARKET', lots: 500, price: 1300 });
+  assert.equal(app.engine.state.positions['EQ:RELIANCE'].qty, 500);
+
+  dom.setValue(dom.$('#t-kind'), 'EQ');
+  dom.setValue(dom.$('#t-symbol'), 'RELIANCE');
+  dom.setValue(dom.$('#t-side'), 'SELL');
+  dom.setValue(dom.$('#t-lots'), '500');
+  dom.setValue(dom.$('#t-price'), '1300');
+  renderEstimate(app);
+
+  const box = dom.$('#ticket-estimate').textContent;
+  assert.match(box, /Quantity: 500 unit\(s\)/, 'the full quantity is still shown');
+  assert.match(box, /Estimated requirement: ₹0/, 'a pure close needs no margin');
+  assert.match(box, /Closes an existing position — no new margin required/);
+  assert.doesNotMatch(box, /INSUFFICIENT/, 'exiting a position you own is never unaffordable');
+  assert.doesNotMatch(box, /Short proxy/, 'a close is not a short');
+
+  // A FLIP still funds the part that opens brand-new exposure, and says how much closes.
+  dom.setValue(dom.$('#t-lots'), '600');
+  renderEstimate(app);
+  const flip = dom.$('#ticket-estimate').textContent;
+  assert.match(flip, /Estimated requirement: ₹1,30,000/, 'only the 100 new short units are margined');
+  assert.match(flip, /500 of 600 unit\(s\) just close the existing position/);
+});
+
 test('loadTicket (click-to-trade from the chain) prefills the ticket and switches tab', () => {
   const dom = setupDom();
   const app = mountOrders(dom);

@@ -300,3 +300,28 @@ test('"Load my positions" honours a copied leg\'s stamped expiryMs (cyc legs are
   const days = Number(rs[0].querySelector('td:nth-child(8) input').value);
   assert.ok(days >= 44 && days <= 46, `the leg carries its true ~45-day horizon, not the ~7-day fallback (got ${days})`);
 });
+
+test('changing the header Days updates the leg rows that follow it (and leaves a pinned leg alone)', () => {
+  // Regression: recompute() deliberately does not rebuild the legs table, so the header
+  // Days change recomputed the payoff/breakevens/Greeks at the NEW expiry while every
+  // leg row still displayed the OLD number. Reading the table then implied the
+  // Greeks were for a 7-day straddle when they were for a 60-day one — and nudging the
+  // stale spinner pinned that leg, silently making the position a calendar spread.
+  const dom = setupDom();
+  mount(dom, { days: 7 });
+  loadTemplate(dom, 'straddle');
+  const daysCell = (r) => rows(dom)[r].querySelectorAll('td')[7].querySelector('input');
+  assert.equal(daysCell(0).value, '7');
+  assert.equal(daysCell(1).value, '7');
+
+  setNum(dom, dom.$('#strat-days'), 60);
+  assert.equal(daysCell(0).value, '60', 'a leg following the header shows the new expiry');
+  assert.equal(daysCell(1).value, '60');
+
+  // Pin ONE leg to its own expiry (a calendar), then move the header again: the pinned
+  // leg must keep its own value while the other keeps following.
+  setNum(dom, daysCell(1), 30);
+  setNum(dom, dom.$('#strat-days'), 45);
+  assert.equal(daysCell(0).value, '45', 'the following leg tracks the header');
+  assert.equal(daysCell(1).value, '30', 'a leg given its own expiry is never overwritten');
+});

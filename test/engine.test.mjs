@@ -142,6 +142,31 @@ test('Fix 1: long option does not drop account value; futures mark-to-market wor
   assert.equal(f.equity(), 1007500);
 });
 
+test('a LOSING future must never increase buying power (available funds stay within equity)', () => {
+  // Regression: futures margin is re-priced at the current price, so a falling long
+  // future used to SHRINK the blocked margin while its loss never touched cash — the
+  // account reported MORE available funds than it had equity, and would fund a trade
+  // it could not afford. The mark-to-market loss is blocked now.
+  const f = makeEngine();
+  f.placeOrder(market(FUT(), 'BUY', 1, 23500));
+  const blocked0 = f.blockedMargin();
+  const avail0 = f.availableFunds();
+
+  f.onPriceUpdate('FUT:NIFTY:26-Jun-2026', 20000); // -3,500 x 75 = -2,62,500
+  assert.equal(f.equity(), 1000000 - 262500, 'the loss is real in equity');
+  assert.ok(f.blockedMargin() > blocked0, 'margin used GROWS as the position bleeds (margin-call-like)');
+  assert.ok(f.availableFunds() < avail0, 'a loss must REDUCE buying power, never raise it');
+  assert.ok(f.availableFunds() <= f.equity() + 0.01, 'available funds can never exceed account equity');
+
+  // The other direction is deliberately NOT credited: an unrealised gain does not
+  // hand out fresh leverage (the conservative choice for a learning account).
+  const g = makeEngine();
+  g.placeOrder(market(FUT(), 'BUY', 1, 23500));
+  const availFlat = g.availableFunds();
+  g.onPriceUpdate('FUT:NIFTY:26-Jun-2026', 23600);
+  assert.ok(g.availableFunds() <= availFlat + 1, 'an unrealised profit does not buy new leverage');
+});
+
 // ===========================================================================
 // FIX 2: orders that flip through zero must fund the NEW exposure portion.
 // ===========================================================================
