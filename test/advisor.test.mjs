@@ -340,3 +340,65 @@ test('a CHAMPION SWITCH between bots of very different size is not read as a gia
   assert.ok(rot.estCostPct > same.estCostPct, 'a real reallocation across the handover is charged');
   assert.ok(rot.estCostPct < entryCost + 0.2 * 100, 'and the charge stays within a full round trip of the account');
 });
+
+test('the scored book is MARKED as shares held, never re-levered to its recorded weights (regression)', () => {
+  // The return path used to be `r += p.weight * (c1/c0 - 1)`, which re-applies the recorded
+  // weights at EVERY period — i.e. it silently rebalances the book back to target each bar,
+  // for free. That was self-consistent while costs were also weight-based, but once turnover
+  // moved to share counts the two halves of one calculation modelled opposite things: the cost
+  // side said "nothing traded", the return side kept trading. This fixture is the classic
+  // case: two names that whipsaw, so a daily-rebalanced book collects a free bonus that a
+  // buy-and-hold book does not.
+  const T = (i) => START + i * DAY;
+  const mk = (t, pa, pb, eq) => ({
+    date: `d${t}`, t: T(t), eligible: true, equity: eq,
+    targets: [
+      { symbol: 'AAA', qty: 50, price: pa, weight: +((50 * pa) / eq).toFixed(6) },
+      { symbol: 'BBB', qty: 50, price: pb, weight: +((50 * pb) / eq).toFixed(6) },
+    ],
+  });
+  // Shares NEVER change, so turnover is zero and only the entry cost applies.
+  const log = [mk(0, 1.0, 1.0, 100), mk(1, 1.2, 0.8, 100), mk(2, 0.96, 0.96, 96)];
+  const data = {
+    AAA: [{ t: T(0), c: 1.0 }, { t: T(1), c: 1.2 }, { t: T(2), c: 0.96 }],
+    BBB: [{ t: T(0), c: 1.0 }, { t: T(1), c: 0.8 }, { t: T(2), c: 0.96 }],
+    NIFTY: [{ t: T(0), c: 100 }, { t: T(2), c: 100 }],
+  };
+  const track = scoreAdvisorLog(log, { seriesFor: (s) => data[s] || [], universe: [], costRates: { buyRate: 0, sellRate: 0 } });
+
+  // Holding 50 of each: 100 -> (50x1.2 + 50x0.8) = 100 -> (50x0.96 + 50x0.96) = 96, i.e. -4%.
+  // Re-applying the recorded weights each period would score 0.5x(+20%) + 0.5x(-20%) = 0 twice
+  // over, i.e. 0.00% — a 4-point phantom gain from a rebalance nobody was ever told to make.
+  assert.equal(track.retPct, -4, `a held book must score its real -4% (got ${track.retPct}%)`);
+  assert.equal(track.estCostPct, 0, 'and unchanged share counts still trade nothing');
+});
+
+test('a stand-aside stretch compounds the HELD book, not a daily re-levering (regression)', () => {
+  // WHERE THE TWO MODELS ACTUALLY DIVERGE. Within a chain of ELIGIBLE entries they are
+  // algebraically identical: each entry re-records w = qty*price/equity at its own bar, so
+  // sum(w * (c1/c0 - 1)) == v1/v0 - 1 exactly. The difference appears only when a book is
+  // CARRIED across ineligible days — then the OLD entry's weights get re-applied at every
+  // later bar, silently re-levering a book the panel explicitly said to leave alone
+  // ("keep whatever you already hold"). Two names that diverge make it visible; one name at
+  // weight 1 does not (re-levering a single full position is a no-op).
+  const T = (i) => START + i * DAY;
+  const log = [
+    { date: 'd0', t: T(0), eligible: true, equity: 100, targets: [
+      { symbol: 'AAA', qty: 50, price: 1.0, weight: 0.5 },
+      { symbol: 'BBB', qty: 50, price: 1.0, weight: 0.5 },
+    ] },
+    { date: 'd1', t: T(1), eligible: false, equity: 100, targets: [] }, // champion went F&O
+    { date: 'd2', t: T(2), eligible: false, equity: 100, targets: [] },
+  ];
+  const data = {
+    AAA: [{ t: T(0), c: 1.0 }, { t: T(1), c: 1.2 }, { t: T(2), c: 1.44 }],
+    BBB: [{ t: T(0), c: 1.0 }, { t: T(1), c: 0.8 }, { t: T(2), c: 0.64 }],
+    NIFTY: [{ t: T(0), c: 1 }, { t: T(2), c: 1 }],
+  };
+  const track = scoreAdvisorLog(log, { seriesFor: (s) => data[s] || [], universe: [], costRates: { buyRate: 0, sellRate: 0 } });
+  // Holding 50 of each: 100 -> (50x1.2 + 50x0.8) = 100 -> (50x1.44 + 50x0.64) = 104, i.e. +4%.
+  // Re-applying the STALE 50/50 weights at each bar scores 0% twice over — a 4-point error,
+  // and it grows with the length of the stand-aside stretch.
+  assert.equal(track.retPct, 4, `a carried book must compound as held shares (got ${track.retPct}%)`);
+  assert.equal(track.estCostPct, 0, 'and a carried book trades nothing at any point');
+});

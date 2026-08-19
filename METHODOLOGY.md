@@ -39,6 +39,11 @@ All tournament results, CLIs and headline figures run the full Indian cost sched
 Statutory rates are the published NSE/SEBI/GoI schedules (FY 2024-25 onward); assumptions
 are marked.
 
+Which column applies is decided by HOLDING PERIOD, not by the bar interval: a bot pays the
+intraday (MIS) schedule only if it declares `squareOffDaily`, i.e. it is guaranteed flat by the
+close. Everything else — including bots trading 60-minute bars — pays delivery, because an
+overnight position is a delivery trade in the real market.
+
 | Component | Equity delivery | Equity intraday | Index options |
 |---|---|---|---|
 | STT | 0.10% buy + sell | 0.025% sell only | 0.10% of premium, sell only |
@@ -149,7 +154,7 @@ own control. No study has yet produced a selection edge proven against a fair be
 | # | Strategy | Verdict | Holdout |
 |---|---|---|---|
 | S1 | Time-series momentum + vol target on NIFTYBEES | **Failed in-sample** (xSharpe 0.02 vs 0.25) | not spent |
-| S2 | Cross-sectional 12-1 momentum basket | **Beat the INDEX out-of-sample** (xSharpe 0.59 vs 0.41) — but the index is the WRONG bar (see rule above): against a no-information portfolio of the same universe (0.87–0.91) the whole spec **trailed**, so the index-relative win is survivorship. A single-variable gate ablation puts the SELECTION effect at −0.10 (gate off both arms) to +0.17 (gate on both) — unproven in either direction; most of the shortfall is the regime gate. Kill-switch design rejected. Reproduce: `node backtest/research/universe-bench.mjs` | **SPENT** |
+| S2 | Cross-sectional 12-1 momentum basket | **Beat the INDEX out-of-sample** (xSharpe 0.59 vs 0.41) — but the index is the WRONG bar (see rule above): against a no-information portfolio of the same universe (0.87–0.91) the whole spec **trailed**, so the index-relative win is survivorship. The ablation this document prescribes (identical machinery, signal replaced by noise, k-matched, plus a null distribution of same-size random portfolios) puts the SELECTION effect at +0.06 (gate off both arms) to +0.24 (gate on both) — non-negative, but 7 of 20 random 10-name portfolios beat it ungated, so it sits inside the noise band and stays UNPROVEN. Most of the −0.32 shortfall is the k=104 diversification premium and the regime gate, neither of which is selection. Kill-switch design rejected. Reproduce: `node backtest/research/universe-bench.mjs` | **SPENT** |
 | S4 | F&O premium *timing* | **Negative by construction** (untestable on modelled option prices) | not spent |
 | S5 | Risk overlays (daily gate / vol target) on the best basket | **Failed in-sample** (a de-risking dial, not an edge) | not spent |
 | S6 | Cross-sectional **low volatility** | **Not promoted** — cleared the index bar by +0.76 Sharpe, then a *no-signal* control tied it and the null distribution put it at ~the 85th percentile of noise. The apparent edge was survivorship. Volatility does reliably order risk (drawdown 15.8% vs the inverted arm's 34.0%), so it is a de-risking dial like S5's vol target — not alpha. | not spent |

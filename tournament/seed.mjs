@@ -303,7 +303,7 @@ const SEED_BOTS = [
   {
     id: 'intraday-breakout-60m',
     name: 'Intraday breakout (60m)',
-    note: 'Hourly bars on RELIANCE: go long on a 12-bar (~2-session) breakout, exit on a 12-bar breakdown. Active, short-horizon.',
+    note: 'Hourly bars on RELIANCE: go long on a 12-bar (~2-session) breakout, exit on a 12-bar breakdown. NOT an intraday-squared-off strategy despite the 60m bars: 88 of its 94 round trips are held OVERNIGHT (longest 19 days), so it is charged the real DELIVERY cost schedule, not the lighter intraday one. A published NEGATIVE — it loses money net of those costs.',
     kind: 'EQ',
     symbol: 'RELIANCE',
     interval: '60m',
@@ -382,7 +382,7 @@ const SEED_BOTS = [
   //
   // Evidence: in-sample (2010-2019, full costs) excess Sharpe 0.98 vs the costed
   // market's 0.24, and ALL 24 ±50% perturbation cells held excess Sharpe 0.55-1.18;
-  // the one-shot holdout (2020-2026) came in at excess Sharpe 0.59 vs 0.40 — the edge
+  // the one-shot holdout (2020-2026) came in at excess Sharpe 0.59 vs 0.41 — the edge
   // decayed out-of-sample (as edges do) but stayed clearly above the INDEX bar.
   //
   // ★ BUT the index was the WRONG bar (the fair-benchmark measurement — reproduce with
@@ -404,7 +404,7 @@ const SEED_BOTS = [
   {
     id: 'xsmom-research',
     name: 'Cross-sectional momentum (12-1)',
-    note: 'Research-lab graduate. Beat the costed INDEX out-of-sample (holdout excess Sharpe 0.59 vs 0.40) — but a fairer benchmark measured later shows a no-information portfolio of the same universe did BETTER (0.87-0.91) over that window, so the index win is survivorship, not proven stock-picking. Holds the top-10 relative-strength winners (12-month return skipping the last month), inverse-vol weighted, monthly; steps to cash when NIFTY falls below 95% of its 200-DMA. No kill-switch (rejected on the holdout). Kept as the honest forward test of whether its selection earns anything over the universe. The Live column is the judge.',
+    note: 'Research-lab graduate. Beat the costed INDEX out-of-sample (holdout excess Sharpe 0.59 vs 0.41) — but a fairer benchmark measured later shows a no-information portfolio of the same universe did BETTER (0.87-0.91) over that window, so the index win is survivorship, not proven stock-picking. Holds the top-10 relative-strength winners (12-month return skipping the last month), inverse-vol weighted, monthly; steps to cash when NIFTY falls below 95% of its 200-DMA. No kill-switch (rejected on the holdout). Kept as the honest forward test of whether its selection earns anything over the universe. The Live column is the judge.',
     kind: 'BASKET',
     spec: XSMOM_SPEC,
   },

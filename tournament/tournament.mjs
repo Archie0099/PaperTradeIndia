@@ -26,7 +26,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-import { loadCandles } from '../backtest/data.mjs';
+import { loadCandles, dropFormingBar } from '../backtest/data.mjs';
 import { runBacktest } from '../backtest/backtester.mjs';
 import { runFnoBacktest } from '../backtest/fno.mjs';
 import { runPortfolioBacktest } from '../backtest/portfolio.mjs';
@@ -159,21 +159,6 @@ const DATA_DIR = join(HERE, '..', 'data');
 const STATE_FILE = join(DATA_DIR, 'tournament.json');
 
 const istDate = (ms) => new Date(ms + 5.5 * 3600000).toISOString().slice(0, 10);
-
-// Drop a trailing bar whose own window has NOT finished yet. The free provider emits a
-// candle for the in-progress hour (intraday) or session (daily) whose close is merely the
-// current price — a partial close. Both tick paths already refuse such a bar; this is the
-// same rule for the BOOT backfill, which had no completeness check at all. Only ever
-// removes the LAST bar, and only when it is genuinely unfinished.
-const dropFormingBar = (candles, interval) => {
-  if (!Array.isArray(candles) || !candles.length) return candles;
-  const last = candles[candles.length - 1];
-  if (!last || !Number.isFinite(last.t)) return candles;
-  const unfinished = isIntradayInterval(interval)
-    ? last.t + intervalMs(interval) > Date.now()   // the hour has not elapsed
-    : istDate(last.t) >= istDate(Date.now());      // today's session is still open (or ahead)
-  return unfinished ? candles.slice(0, -1) : candles;
-};
 
 // Run an async `fn` over `items` with at most `limit` in flight at once — used so the
 // cold-boot backfill doesn't fire one fetch per universe symbol all at once (which a
@@ -597,6 +582,12 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     // So DELIVERY is the default for every EQ/basket bot, and a strategy must opt IN by
     // declaring `squareOffDaily` — the conservative direction, and this board's whole premise
     // is that no bot ever trades for a made-up cost.
+    // DISCLOSURE: this swaps the whole model, so it also changes an ASSUMPTION, not just the
+    // statutory taxes — equityDeliveryCosts defaults to 5bps slippage where equityIntradayCosts
+    // defaults to 3bps. Of the ~15pp lifetime move this produced on the 60m bot, ~12.8pp is the
+    // statutory correction (delivery STT both sides, heavier stamp) and ~2.4pp is that slippage
+    // assumption. Slippage is not a function of holding period, so if that ever needs separating,
+    // pass equityDeliveryCosts({ slippageBps: 3 }) here and say so.
     const eqCostModel = intraday && bot.squareOffDaily ? EQ_COSTS_INTRADAY : EQ_COSTS;
     if (bot.kind === 'BASKET') {
       // A basket spans many stocks — gather each constituent's [backfill+live]

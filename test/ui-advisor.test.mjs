@@ -180,7 +180,15 @@ test('the trust banner counts the no-hindsight days and the honesty check states
   await renderAutoPilot(app);
   const txt = dom.$('#ap-suggestions').textContent;
   assert.match(txt, /3 of 90 days/, 'the trust clock');
-  assert.match(txt, /selection edge over a fair benchmark is unproven/i, 'the fair-benchmark honesty copy');
+  // The honesty check must carry BOTH statements. The SETTLED one first — a reader placing
+  // real money must not have to derive it from two Sharpe numbers — and the UNPROVEN one
+  // second, clearly separated. The panel previously stated only the hedge and propped it up
+  // with the whole-universe comparison, which differs in signal, gate AND holdings count and
+  // therefore cannot support any claim about selection.
+  assert.match(txt, /simply holding the whole universe would have done BETTER than the strategy/, 'the SETTLED finding is stated outright, not left as arithmetic');
+  assert.match(txt, /index-beating history is NOT proof of stock-picking skill/i, 'and its consequence');
+  assert.match(txt, /Whether its stock SELECTION adds anything is a separate question, and it is UNPROVEN/, 'the unproven half is separated from the settled half');
+  assert.match(txt, /inside the noise band/, 'and says WHY it is unproven (a noise band), never that the sign flips');
   assert.match(txt, /0\.59/, 'quotes the measured champion figure');
   assert.match(txt, /max drawdown 42\.6%/i, 'live risk context read from the payload, not a stored number');
   // The walk-forward metrics arrive ALREADY in percent (r1y: -13.6 means -13.6%) —

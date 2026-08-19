@@ -33,20 +33,21 @@
 // per instance via createTournament({ advisorMinDays }).
 const ADVISOR_MIN_DAYS = 90;
 
-// --- The fair-benchmark finding (measured 2026-08-05; reproduce any time) ----
+// --- The fair-benchmark finding (measured 2026-08-20; reproduce any time) ----
 // `node backtest/research/universe-bench.mjs` — the holdout window (2020-01-01 →
 // data end), full delivery costs, validation anchors reproduced first. Result:
-// the champion strategy's out-of-sample edge over the INDEX (+0.18 xSharpe) is
-// entirely SURVIVORSHIP — a no-information portfolio of the same universe beat
-// it (0.87 volinv / 0.91 equal-weight vs its 0.59). So the panel must NOT claim
+// the champion strategy's out-of-sample edge over the INDEX (+0.18 xSharpe) does
+// NOT establish stock-picking skill — a no-information portfolio of the same
+// universe beat it (0.87 volinv / 0.91 equal-weight vs its 0.59), and a k-matched
+// null distribution puts its selection inside the noise band. So the panel must NOT claim
 // the champion "beats the market" as evidence of skill: it tracks the champion,
 // and the champion's selection edge over a fair benchmark is unproven (it
 // TRAILED the fair bar out-of-sample). Recorded as constants because the
 // research lab is offline-only (nothing live imports backtest/research/); the
 // forward log above is what measures this claim from here on.
 const ADVISOR_BENCHMARK_FINDING = {
-  measuredAt: '2026-08-05',
-  window: '2020-01-01 → data end',
+  measuredAt: '2026-08-20', // the gate ablation + k-matched null distribution
+  window: '2020-01-01 → 2026-07-03', // the data end AT measurement — a literal date, so the figure is reproducible
   reproduce: 'node backtest/research/universe-bench.mjs',
   // WHO this was measured for. The walk-forward champion can switch bots over time;
   // the banner must not quote a verdict measured for one strategy as if it described
@@ -57,21 +58,34 @@ const ADVISOR_BENCHMARK_FINDING = {
   universeVolinvSharpe: 0.87, // whole-universe, no signal, inverse-vol weights
   universeEqualSharpe: 0.91, // whole-universe, no signal, equal weights
   championStrategySharpe: 0.59, // the live champion's strategy over the same window
-  edgeVsUniverse: -0.32, // WHOLE SPEC (gate included) vs the HARDER of the two universe controls
+  edgeVsUniverse: -0.32, // WHOLE SPEC (gate included) vs the HARDER of the two WHOLE-universe controls
   verdict: 'trails-universe', // 'beats-universe' | 'matches-universe' | 'trails-universe'
-  // ...but that -0.32 moves TWO variables at once: the spec carries a marketGate and the
-  // controls do not. Holding the gate FIXED (the single-variable ablation METHODOLOGY.md
-  // requires) the selection effect is -0.10 with the gate off both arms and +0.17 with it on
-  // both — the SIGN FLIPS, because the gate costs the no-information control (-0.49) far more
-  // than it costs momentum (-0.22). So: the whole spec really did trail a passive portfolio of
-  // the same names, and the index-relative win really is survivorship — but the shortfall is
-  // mostly the REGIME GATE, and selection is unproven in EITHER direction. The panel copy
-  // says exactly that ("its selection edge over a fair benchmark is unproven"); never harden
-  // it into "its stock-picking is bad", which this window cannot support.
-  selectionGateOff: -0.10,
-  selectionGateOn: 0.17,
-  gateCostStrategy: -0.22,
-  gateCostControl: -0.49,
+  //
+  // ...but −0.32 is NOT a measurement of selection, and neither was the first attempt to
+  // correct it. The whole-universe controls differ from the spec in THREE ways at once:
+  // the ranking signal, the marketGate, and the holdings count (k=104 vs k=10). Fixing only
+  // the gate still left the k mismatch, and a k=104 portfolio carries a diversification
+  // premium worth ~0.1–0.2 Sharpe that has nothing to do with stock picking — which is what
+  // produced the earlier "the sign flips" reading. That reading was an artifact; do not
+  // restore it.
+  //
+  // The comparison METHODOLOGY.md §139-142 actually prescribes — identical machinery (same
+  // k, weighting, cadence, costs, window, gate), ranking signal replaced by noise, plus the
+  // NULL DISTRIBUTION of seeded random portfolios of the same size — gives:
+  //   gate OFF both arms: strategy 0.81 vs null median 0.76  ->  +0.06, and 7 of 20 random
+  //                       draws BEAT the strategy (~65th percentile: inside the noise band)
+  //   gate ON  both arms: strategy 0.59 vs null median 0.35  ->  +0.24, 1 of 20 draws beat it
+  // So selection is NON-NEGATIVE both ways but NOT significant ungated. "Unproven" stands;
+  // the reason is that the effect sits inside the noise band, NOT that its sign flips.
+  //
+  // What remains settled and is safe to state: the WHOLE SPEC trailed a passive portfolio of
+  // the same names over this window. Note even that comparison is not bias-free — part of the
+  // ~0.5 gap between those controls and the index is equal-weight and breadth premia, which
+  // are not survivorship. Never harden any of this into "its stock-picking is bad".
+  selectionVsNullGateOff: 0.06,
+  selectionVsNullGateOn: 0.24,
+  nullDrawsBeatingStrategyUngated: 7, // of 20 seeded k-matched random portfolios
+  nullSampleSize: 20,
 };
 
 // IST calendar date of an epoch-ms timestamp (same formula as tournament.mjs —
@@ -200,21 +214,22 @@ function thinCurve(points, max = 400) {
 
 // --- Scoring the log ---------------------------------------------------------
 // The no-hindsight forward track: chain each day's recorded targets over the NEXT
-// day's actual closes. Entry i's weights were written at bar t_i using only data
-// ≤ t_i; the return over [t_i, t_(i+1)] is then measured with the later closes —
-// so by construction nothing in the track could see the future. Costs: every
-// weight CHANGE pays the estimated real delivery schedule on the turnover (the
-// track is net-of-costs; both benchmarks are gross — the conservative direction).
-// A symbol with no close at either end of a period contributes 0 (held as cash),
-// never a fabricated return. Returns null until there are 2+ entries to score.
+// day's actual closes. Entry i's book was written at bar t_i using only data ≤ t_i;
+// the return over [t_i, t_(i+1)] is then measured with the later closes — so by
+// construction nothing in the track could see the future. The book is marked as SHARES
+// HELD (never as weights re-applied, which would silently rebalance to target every
+// period for free), and turnover is the previous book DRIFTED to this bar versus the new
+// target weights — the two halves must model the same thing or the track is incoherent.
+// A symbol with no close at either end of a period is held FLAT (contributes nothing to
+// the move), never a fabricated return. Returns null until there are 2+ entries to score.
 //
 // STAND-ASIDE SEMANTICS (must match the panel's advice): an INELIGIBLE entry means
 // "no new equity guidance today — keep what you hold". So the score carries the
 // PREVIOUS eligible entry's book through ineligible days unchanged (marked, no
 // trade, no cost) — never a phantom sell-everything-and-rebuy round trip the panel
-// never suggested. Cash only until the FIRST eligible entry. (Weight-based chaining
-// re-applies the held weights each period — a small daily re-weighting drift vs
-// holding literal shares; costless here and tiny at daily steps.)
+// never suggested. Cash only until the FIRST eligible entry. The carried book is marked
+// as literal shares across those days, so a stand-aside stretch is a genuine hold, not a
+// daily re-levering to a stale target.
 function scoreAdvisorLog(log, { seriesFor, universe = [], costRates = { buyRate: 0, sellRate: 0 } }) {
   const entries = Array.isArray(log) ? log : [];
   if (entries.length < 2) return null;
@@ -241,14 +256,6 @@ function scoreAdvisorLog(log, { seriesFor, universe = [], costRates = { buyRate:
   // Estimated cost (as a fraction of account value) of moving from the previous
   // entry's book to this one's — buys pay buyRate, sells pay sellRate.
   //
-  // TURNOVER IS MEASURED IN SHARES, NOT WEIGHTS. A recorded weight is qty*price/equity,
-  // so it moves EVERY single day purely because prices moved — even when the champion
-  // did not trade one share. Charging on the weight delta therefore billed a pure
-  // buy-and-hold champion roughly half a percent a year of costs it never paid, and the
-  // panel prints that figure ("net of ~X% est. costs") right beside two GROSS
-  // benchmarks. It also contradicted the panel's own advice: on those days it says "no
-  // change since the previous suggestion — nothing to do today". Only a real change in
-  // the champion's share count is a trade, so only that is charged.
   // Turnover is measured between the previous book DRIFTED FORWARD to this bar and the new
   // book's target weights. Both sides are weights (fractions of the follower's account), so
   // the measure is SCALE-FREE — which matters because consecutive entries can belong to
@@ -298,13 +305,31 @@ function scoreAdvisorLog(log, { seriesFor, universe = [], costRates = { buyRate:
 
   for (let i = 0; i + 1 < entries.length; i++) {
     const a = entries[i], b = entries[i + 1];
-    // The suggested portfolio's return over [t_a, t_b] from the EFFECTIVE book at a.
-    let r = 0;
-    for (const p of effective[i].targets) {
-      const c0 = closeAt(p.symbol, a.t);
-      const c1 = closeAt(p.symbol, b.t);
-      if (c0 != null && c1 != null) r += p.weight * (c1 / c0 - 1);
-    }
+    // The suggested portfolio's return over [t_a, t_b] from the EFFECTIVE book at a —
+    // marked as SHARES HELD, not as weights re-applied.
+    //
+    // This used to be `r += p.weight * (c1/c0 - 1)`, which silently rebalanced the book back
+    // to its recorded target every single period, for free. That was consistent while costs
+    // were also weight-based, but once turnover was moved to share counts the two halves of
+    // one calculation modelled opposite things: the cost side said "nothing traded", the
+    // return side kept trading. Measured error: ~17bp across one day with ordinary
+    // dispersion, and ~100bp across a two-day carry — against a ~0.5%/yr phantom cost the
+    // move to share counts existed to remove. The "tiny at daily steps" defence also does
+    // not hold: this log records ~4 entries per 14 days, so the steps are 3–5 days, and a
+    // stand-aside stretch re-levers a stale target at every bar.
+    const bookValueAt = (eff, t) => {
+      let invested = 0, held = 0;
+      for (const p of eff.targets || []) {
+        invested += p.qty * p.price;
+        const c = closeAt(p.symbol, t);
+        held += p.qty * (c != null ? c : p.price); // no close -> hold it FLAT, never fabricate
+      }
+      // Whatever the book was not holding in stock rides along as cash, undrifted.
+      return held + Math.max(0, (eff.equity || 0) - invested);
+    };
+    const v0 = bookValueAt(effective[i], a.t);
+    const v1 = bookValueAt(effective[i], b.t);
+    const r = v0 > 0 ? v1 / v0 - 1 : 0;
     adv *= 1 + r;
     // Rebalancing INTO entry b's effective book pays the switch cost at t_b (zero
     // across a stand-aside day — the held book IS the previous book).

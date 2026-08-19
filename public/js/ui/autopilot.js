@@ -1082,13 +1082,19 @@ function renderSuggestions(app) {
   if (bf && bf.verdict === 'trails-universe') {
     const champId = ap && ap.currentBot && ap.currentBot.id;
     const matches = bf.measuredFor && champId === bf.measuredFor;
-    const numbers = `${bf.championStrategySharpe.toFixed(2)} excess Sharpe vs ${bf.universeVolinvSharpe.toFixed(2)}–${bf.universeEqualSharpe.toFixed(2)} for a NO-INFORMATION portfolio of the same stocks (index: ${bf.indexSharpe.toFixed(2)})`;
+    // TWO statements, in this order, because only the first is settled — and the panel is the
+    // ONE surface read before real money is placed by hand, so it must not leave the blunt
+    // finding as arithmetic for the reader to do. It also must not present the whole-universe
+    // numbers as the BASIS for the selection claim: that comparison differs in signal, gate AND
+    // holdings count, which is exactly why selection is judged against a k-matched null instead.
+    const settled = `${bf.championStrategySharpe.toFixed(2)} excess Sharpe while a NO-INFORMATION portfolio of the same stocks scored ${bf.universeVolinvSharpe.toFixed(2)}–${bf.universeEqualSharpe.toFixed(2)} (index: ${bf.indexSharpe.toFixed(2)}) — simply holding the whole universe would have done BETTER than the strategy`;
+    const unproven = 'Whether its stock SELECTION adds anything is a separate question, and it is UNPROVEN: compared like-for-like against random portfolios of the same size, it sits inside the noise band.';
     box.append(el('div', { class: 'muted', style: 'font-size: 11px; margin: 4px 0; line-height: 1.5' },
       matches
-        ? `Honesty check (measured ${bf.measuredAt}): the champion’s index-beating history is NOT proof of stock-picking skill — over ${bf.window}, its strategy scored ${numbers}. ` +
-          'These suggestions track the champion; its selection edge over a fair benchmark is unproven. The forward score below measures the truth from here on.'
-        : `Honesty check (measured ${bf.measuredAt} for ${bf.measuredForName || bf.measuredFor}): over ${bf.window} that strategy scored ${numbers}. ` +
-          `The current champion${ap && ap.currentBot ? ` (${ap.currentBot.name})` : ''} has NOT been measured against that fair bar — treat its index-beating history the same way: its selection edge over a fair benchmark is unproven. The forward score below measures the truth from here on.`));
+        ? `Honesty check (measured ${bf.measuredAt}): over ${bf.window} this strategy scored ${settled}. So its index-beating history is NOT proof of stock-picking skill. ` +
+          `${unproven} These suggestions track the champion; the forward score below measures the truth from here on.`
+        : `Honesty check (measured ${bf.measuredAt} for ${bf.measuredForName || bf.measuredFor}): over ${bf.window} that strategy scored ${settled}. ` +
+          `${unproven} The current champion${ap && ap.currentBot ? ` (${ap.currentBot.name})` : ''} has NOT been measured against that fair bar at all — treat its index-beating history the same way. The forward score below measures the truth from here on.`));
   }
   // Live risk context — always read from the LIVE payload, never a stored number.
   // NB: the server's walk-forward metrics arrive ALREADY in percent (r1y: 14.47 means

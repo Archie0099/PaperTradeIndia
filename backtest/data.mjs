@@ -104,6 +104,42 @@ function trailingSuspectJump(candles) {
   return false;
 }
 
+// --- Bar completeness -------------------------------------------------------
+// The free provider emits a candle for the session/hour STILL IN PROGRESS: its "close" is
+// merely the current price. That partial bar must never reach the cache, because the cache
+// file has no date and no TTL (the only re-fetch trigger is a >40% trailing jump), so a
+// mid-session price written once is served as that day's close for as long as the file lives
+// — permanently on a dev machine, which is where every research CLI and published number is
+// measured. It must also never reach the tournament, whose ticks are cursor-based and so can
+// never replace a bar carrying the same timestamp.
+//
+// "Complete" is a SESSION question, not clock arithmetic:
+//   * daily    — done when that IST date's session has CLOSED (15:30 IST). Asking "is it still
+//                today?" instead would discard a finished session on any evening boot.
+//   * intraday — done at bar start + interval, OR at the session close, whichever comes FIRST:
+//                NSE's final 60m bar spans 15:15–15:30 and is only 15 minutes long, so a plain
+//                +1h rule withheld the day's last bar until 16:15 — and since the intraday tick
+//                is market-hours gated, that meant losing Friday's close for the whole weekend.
+const IST_SHIFT = 5.5 * 3600000;
+const istDayOf = (ms) => new Date(ms + IST_SHIFT).toISOString().slice(0, 10);
+const NSE_CLOSE_UTC = 'T10:00:00.000Z'; // 15:30 IST
+const intervalMsOf = (interval) => {
+  const m = /^(\d+)(m|h)$/.exec(interval || '');
+  return m ? +m[1] * (m[2] === 'h' ? 3600000 : 60000) : 3600000;
+};
+
+function dropFormingBar(candles, interval, now = Date.now()) {
+  if (!Array.isArray(candles) || candles.length < 2) return candles; // never empty a series
+  const last = candles[candles.length - 1];
+  if (!last || !Number.isFinite(last.t)) return candles;
+  let close;
+  try { close = Date.parse(istDayOf(last.t) + NSE_CLOSE_UTC); } catch { return candles; }
+  if (!Number.isFinite(close)) return candles; // unparseable timestamp: leave it alone
+  const isIntraday = /^\d+(m|h)$/.test(interval || '');
+  const doneAt = isIntraday ? Math.min(last.t + intervalMsOf(interval), close) : close;
+  return now >= doneAt ? candles : candles.slice(0, -1);
+}
+
 // Clean a daily series of data/corporate-action artifacts, two ways:
 //   (1) TRIM a leading artifact era (a frozen-flat placeholder run, or an EARLY >40% split/
 //       demerger/bad-print), leaving the longest clean suffix — only EARLY (first ~60%), since a
@@ -236,7 +272,7 @@ async function loadCandles(symbol, { interval = '1d', range = '5y', refresh = fa
         // availability is never sacrificed for this hygiene pass.
         if (interval === '1d' && trailingSuspectJump(cc)) {
           try {
-            const fresh = await fetchYahooWithRetry(symbol, interval, range);
+            const fresh = dropFormingBar(await fetchYahooWithRetry(symbol, interval, range), interval);
             writeFileSync(file, JSON.stringify({ symbol: symbol.toUpperCase(), source: 'yahoo', candles: fresh }));
             console.log(`data: re-fetched ${symbol.toUpperCase()} (${interval}/${range}) — a trailing >40% jump in the cache needed re-confirmation.`);
             return clean(fresh, 'yahoo (live, re-confirmed)');
@@ -253,7 +289,9 @@ async function loadCandles(symbol, { interval = '1d', range = '5y', refresh = fa
 
   // 2. Live Yahoo via the free provider (with retry/backoff for the wide-universe cold boot).
   try {
-    const candles = await fetchYahooWithRetry(symbol, interval, range);
+    // Drop the in-progress bar BEFORE the cache write. Doing it any later (e.g. in the
+    // tournament's loadOne) hides the symptom in memory and leaves the partial close on disk.
+    const candles = dropFormingBar(await fetchYahooWithRetry(symbol, interval, range), interval);
     writeFileSync(file, JSON.stringify({ symbol: symbol.toUpperCase(), source: 'yahoo', candles }));
     return clean(candles, 'yahoo (live, now cached)');
   } catch {
@@ -265,4 +303,4 @@ async function loadCandles(symbol, { interval = '1d', range = '5y', refresh = fa
   return clean(syn.candles, 'synthetic (offline — wiring only)');
 }
 
-export { loadCandles, sanitizeCandles, trailingSuspectJump, toAdjusted };
+export { loadCandles, sanitizeCandles, trailingSuspectJump, toAdjusted, dropFormingBar };
