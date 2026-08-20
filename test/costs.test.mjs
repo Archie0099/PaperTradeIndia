@@ -19,7 +19,8 @@ import assert from 'node:assert/strict';
 
 import {
   equityDeliveryCosts, equityIntradayCosts, indexOptionCosts, flatCosts,
-  eqFillPrice, optFillPrice, borrowFee, OPT_EXCH_RATE,
+  eqFillPrice, optFillPrice, borrowFee, OPT_EXCH_RATE, EQ_EXCH,
+  EQ_STT_DELIVERY, EQ_STAMP_DELIVERY, EQ_STT_INTRADAY_SELL, EQ_STAMP_INTRADAY,
 } from '../backtest/costs.mjs';
 import { runBacktest } from '../backtest/backtester.mjs';
 import { runFnoBacktest, FNO_STRATEGIES } from '../backtest/fno.mjs';
@@ -36,8 +37,10 @@ const T0 = 1600000000000;
 test('equity delivery schedule matches the hand-computed all-in rates', () => {
   const m = equityDeliveryCosts(); // default 5bps slippage
   // buy: STT 0.10% + stamp 0.015% + exchange 0.00297%×1.18 GST + SEBI 0.0001% + 5bps slip
-  const buy = 0.001 + 0.00015 + 0.0000297 * 1.18 + 0.000001 + 0.0005;
-  const sell = 0.001 + 0.0000297 * 1.18 + 0.000001 + 0.0005; // no stamp on sell
+  assert.equal(EQ_STT_DELIVERY, 0.001, 'STT on equity delivery = 0.10% of value, both sides (GoI)');
+  assert.equal(EQ_STAMP_DELIVERY, 0.00015, 'stamp duty on delivery = 0.015%, buy side only');
+  const buy = EQ_STT_DELIVERY + EQ_STAMP_DELIVERY + EQ_EXCH + 0.000001 + 0.0005;
+  const sell = EQ_STT_DELIVERY + EQ_EXCH + 0.000001 + 0.0005; // no stamp on sell
   assert.ok(Math.abs(m.buyRate - buy) < 1e-12, `buyRate ${m.buyRate} != hand-computed ${buy}`);
   assert.ok(Math.abs(m.sellRate - sell) < 1e-12, `sellRate ${m.sellRate} != hand-computed ${sell}`);
   // A ₹100 buy costs a shade under ₹100.17; a ₹100 sell nets a shade over ₹99.84.
@@ -47,8 +50,10 @@ test('equity delivery schedule matches the hand-computed all-in rates', () => {
 
 test('equity intraday schedule: STT sell-side only, lighter stamp', () => {
   const m = equityIntradayCosts(); // default 3bps slippage
-  const buy = 0.00003 + 0.0000297 * 1.18 + 0.000001 + 0.0003; // NO STT on an intraday buy
-  const sell = 0.00025 + 0.0000297 * 1.18 + 0.000001 + 0.0003; // STT 0.025% on the sell
+  assert.equal(EQ_STT_INTRADAY_SELL, 0.00025, 'intraday STT = 0.025% of value, SELL side only');
+  assert.equal(EQ_STAMP_INTRADAY, 0.00003, 'intraday stamp duty = 0.003%, buy side only');
+  const buy = EQ_STAMP_INTRADAY + EQ_EXCH + 0.000001 + 0.0003; // NO STT on an intraday buy
+  const sell = EQ_STT_INTRADAY_SELL + EQ_EXCH + 0.000001 + 0.0003; // STT 0.025% on the sell
   assert.ok(Math.abs(m.buyRate - buy) < 1e-12);
   assert.ok(Math.abs(m.sellRate - sell) < 1e-12);
   assert.ok(m.buyRate < equityDeliveryCosts().buyRate, 'intraday is cheaper than delivery');

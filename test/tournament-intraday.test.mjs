@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 
 import { createTournament, dropFormingBar } from '../tournament/tournament.mjs';
 import freeProvider from '../src/dataSources/freeProvider.js';
+import { SEED_BOTS } from '../tournament/seed.mjs';
 
 // A deterministic, gently-rising DAILY series (for the benchmark + evolution).
 function dailySeries(n = 420) {
@@ -270,4 +271,24 @@ test('dropFormingBar removes a still-forming trailing bar at BOOT, and only that
   assert.deepEqual(dropFormingBar([], '1d'), []);
   assert.equal(dropFormingBar(null, '1d'), null);
   assert.equal(dropFormingBar([{ t: NaN, c: 1 }], '1d').length, 1, 'a non-finite timestamp is left alone, never dropped blindly');
+});
+
+test('no shipped bot claims squareOffDaily — the cheaper MIS schedule must be EARNED, not declared', () => {
+  // squareOffDaily is self-certification: it switches a bot to the intraday (MIS) cost schedule
+  // — no delivery STT, lighter stamp, no borrow — on nothing but its own say-so. There is no
+  // session-boundary enforcement anywhere, so adding the flag to a bot that actually holds
+  // overnight silently re-arms the exact bug this replaced (the hourly breakout was charged MIS
+  // while holding 88 of 94 round trips overnight, understating its loss by ~15pp on the board).
+  //
+  // This is a TRIPWIRE, not a proof. If you are here because you added the flag: first show the
+  // strategy is genuinely flat by the close — replay it and check that no round trip spans two
+  // IST dates — then add it to the allow-list below WITH that evidence in the commit message.
+  const SQUARE_OFF_ALLOWED = []; // deliberately empty
+  const declaring = SEED_BOTS.filter((b) => b.squareOffDaily).map((b) => b.id);
+  assert.deepEqual(declaring, SQUARE_OFF_ALLOWED, `these bots claim to square off daily without evidence: ${declaring.join(', ')}`);
+  // The flag being WIRED (and cheaper) is proved by the delivery-cost test above; this only
+  // guards against it being claimed. Also confirm the shipped hourly bot has not acquired it.
+  const hourly = SEED_BOTS.find((b) => b.interval === '60m');
+  assert.ok(hourly, 'the roster still has an hourly bot to guard');
+  assert.ok(!hourly.squareOffDaily, 'the hourly bot holds overnight — it must keep paying delivery costs');
 });

@@ -9,10 +9,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, rmSync, mkdirSync } from 'node:fs';
+import { writeFileSync, readFileSync, rmSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { sanitizeCandles, loadCandles, trailingSuspectJump } from '../backtest/data.mjs';
+import { sanitizeCandles, loadCandles, trailingSuspectJump, dropFormingBar } from '../backtest/data.mjs';
 import freeProvider from '../src/dataSources/freeProvider.js';
 
 const CACHE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'backtest', 'data');
@@ -245,4 +245,44 @@ test('degenerate inputs are returned as-is (no crash)', () => {
   assert.deepEqual(sanitizeCandles([]), []);
   assert.deepEqual(sanitizeCandles([{ t: 0, c: 100 }]).length, 1);
   assert.equal(sanitizeCandles(null), null);
+});
+
+test('loadCandles never writes a STILL-FORMING bar to the cache (the call site, not just the helper)', async () => {
+  // The helper is unit-tested elsewhere, but for a long time nothing proved loadCandles
+  // actually CALLS it — and where it sits matters more than what it does. The cache file has
+  // no date and no TTL (the only re-fetch trigger is a >40% trailing jump), so a partial
+  // mid-session close written once is served as that day's close for as long as the file
+  // lives: permanently on a dev machine, which is where every research CLI and published
+  // number is measured. Dropping it after the write (the first attempt) hid the symptom in
+  // memory and left the poison on disk.
+  const SYM = 'ZZFORMINGTEST';
+  const file = join(CACHE_DIR, `${SYM}-1d-20y-v2.json`);
+  const orig = freeProvider.getHistory;
+  try {
+    rmSync(file, { force: true });
+    // Three closed sessions, then TODAY's bar still in progress (stamped at 09:15 IST, the
+    // shape Yahoo actually emits) with the current price masquerading as a close.
+    const bar = (t, c) => ({ t, o: c, h: c, l: c, c, v: 1 });
+    const todayIst = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+    // fetchYahooWithRetry rejects a series of <= 50 bars as a bad fetch, so build a real one:
+    // 60 finished sessions, then TODAY's bar still in progress.
+    const closed = [];
+    for (let i = 60; i >= 1; i--) closed.push(bar(Date.parse(todayIst + 'T03:45:00.000Z') - i * 864e5, 100 + i));
+    const forming = bar(Date.parse(todayIst + 'T03:45:00.000Z'), 999);
+    freeProvider.getHistory = async () => ({ symbol: SYM, candles: [...closed, forming] });
+
+    const { candles } = await loadCandles(SYM, { interval: '1d', range: '20y' });
+    const istOf = (t) => new Date(t + 5.5 * 3600000).toISOString().slice(0, 10);
+    assert.ok(!candles.some((c) => istOf(c.t) === todayIst), 'the in-progress bar is not returned');
+    assert.ok(!candles.some((c) => c.c === 999), 'and its partial price is nowhere in the series');
+
+    // The point of the test: it is not on DISK either.
+    const cached = JSON.parse(readFileSync(file, 'utf8'));
+    assert.ok(!cached.candles.some((c) => c.c === 999), 'the partial close was never cached');
+    assert.ok(!cached.candles.some((c) => istOf(c.t) === todayIst), 'no bar for the open session was cached');
+    assert.equal(cached.candles.length, closed.length, 'exactly the finished sessions were persisted');
+  } finally {
+    freeProvider.getHistory = orig;
+    rmSync(file, { force: true });
+  }
 });

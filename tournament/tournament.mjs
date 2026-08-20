@@ -51,7 +51,9 @@ const INDEX_SPECS = FNO_INDICES; // F&O lot size + strike grid, keyed by index s
 // the leaderboard is the project's honest surface, so no bot trades for a flat 5bps
 // or sells option premium for free. Built once; the models are pure + stateless.
 const EQ_COSTS = equityDeliveryCosts();      // daily EQ / BASKET / PAIRS legs (incl. SLB borrow on shorts)
-const EQ_COSTS_INTRADAY = equityIntradayCosts(); // the 60m intraday track (lighter STT, no overnight borrow)
+const EQ_COSTS_INTRADAY = equityIntradayCosts(); // only reachable via a `squareOffDaily` bot —
+// UNREACHABLE on the current roster by design: no shipped bot certifies that it squares off
+// daily, and bar interval alone never selects this schedule (see runBot). // the 60m intraday track (lighter STT, no overnight borrow)
 const OPT_COSTS = indexOptionCosts();        // F&O premium sellers (spread + charges + brokerage + expiry STT)
 // The "backfill" is each bot's visible TRACK RECORD before its forward/live clock
 // starts. We make it the ENTIRE fetched history (Infinity = no cap) so every bot

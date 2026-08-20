@@ -53,6 +53,19 @@ const EQ_EXCH = 0.0000297 * (1 + GST);
 // ONE home and a future change is a one-line edit the cost test asserts against.
 const OPT_EXCH_RATE = 0.0003503;
 
+// The rest of the published statutory schedule, NAMED for the same reason OPT_EXCH_RATE is:
+// a test that re-types a magic literal from the implementation proves only that the code
+// equals itself. That is exactly how the option exchange charge sat 10x too high for months
+// behind a passing test (W17). These are now load-bearing for MORE bots than before, since
+// every EQ/basket bot pays the DELIVERY schedule unless it declares squareOffDaily.
+const EQ_STT_DELIVERY = 0.001;      // 0.10% of value, BOTH sides (GoI)
+const EQ_STAMP_DELIVERY = 0.00015;  // 0.015%, BUY side only
+const EQ_STT_INTRADAY_SELL = 0.00025; // 0.025%, SELL side only
+const EQ_STAMP_INTRADAY = 0.00003;  // 0.003%, BUY side only
+const OPT_STT_SELL = 0.001;         // 0.10% of PREMIUM, sell side only (raised Oct-2024)
+const OPT_STAMP = 0.00003;          // 0.003% of premium, buy side only
+const OPT_SETTLE_LONG_STT = 0.00125; // 0.125% of SETTLEMENT value on an exercised ITM long
+
 // --- Equity, DELIVERY (held overnight — the baskets, pairs legs, EQ bots) ----
 // All-in per-side fractions of trade value. With the default 5bps slippage this
 // lands ≈ 16.9bps on a buy / ≈ 15.4bps on a sell (vs the old flat 5bps).
@@ -60,22 +73,26 @@ function equityDeliveryCosts({ slippageBps = 5, borrowRatePA = 0.06 } = {}) {
   const slip = slippageBps / 10000;
   return {
     kind: 'eq-delivery',
-    buyRate: 0.001 /* STT */ + 0.00015 /* stamp */ + EQ_EXCH + SEBI_FEE + slip,
-    sellRate: 0.001 /* STT */ + EQ_EXCH + SEBI_FEE + slip,
+    buyRate: EQ_STT_DELIVERY + EQ_STAMP_DELIVERY + EQ_EXCH + SEBI_FEE + slip,
+    sellRate: EQ_STT_DELIVERY + EQ_EXCH + SEBI_FEE + slip, // no stamp on a sell
     // Overnight shorts borrow stock via SLB at this annual fee on notional.
     borrowRatePA,
   };
 }
 
-// --- Equity, INTRADAY (the 60m bot: in and out within the session) ----------
+// --- Equity, INTRADAY (MIS: genuinely in and out within one session) --------
+// NOTE: this is NOT "the 60m bot". Bar interval does not imply holding period — the shipped
+// hourly bot holds 88 of its 94 round trips overnight and so pays the DELIVERY schedule above.
+// A strategy reaches this schedule only by declaring `squareOffDaily`, i.e. certifying it is
+// flat by the close. Nothing on the current roster does.
 // STT is sell-side only and 4x lighter; stamp duty is lighter; no overnight
 // borrow needed for an intraday short. ≈ 3.7bps buy / 6.2bps sell at 3bps slip.
 function equityIntradayCosts({ slippageBps = 3 } = {}) {
   const slip = slippageBps / 10000;
   return {
     kind: 'eq-intraday',
-    buyRate: 0.00003 /* stamp */ + EQ_EXCH + SEBI_FEE + slip,
-    sellRate: 0.00025 /* STT */ + EQ_EXCH + SEBI_FEE + slip,
+    buyRate: EQ_STAMP_INTRADAY + EQ_EXCH + SEBI_FEE + slip, // NO STT on an intraday buy
+    sellRate: EQ_STT_INTRADAY_SELL + EQ_EXCH + SEBI_FEE + slip,
     borrowRatePA: 0,
   };
 }
@@ -94,14 +111,14 @@ function indexOptionCosts({ halfSpreadPct = 0.005, tick = 0.05, brokeragePerOrde
   const exch = OPT_EXCH_RATE * (1 + GST); // NSE option transaction charge, GST-inclusive
   return {
     kind: 'index-opt',
-    buyRate: 0.00003 /* stamp */ + exch + SEBI_FEE,
-    sellRate: 0.001 /* STT on sell premium */ + exch + SEBI_FEE,
+    buyRate: OPT_STAMP + exch + SEBI_FEE,
+    sellRate: OPT_STT_SELL + exch + SEBI_FEE,
     halfSpreadPct, // you buy at mid + half-spread, sell at mid − half-spread
     tick,          // the half-spread is floored at one price tick (₹0.05)
     brokeragePerOrder,
     // STT charged on the SETTLEMENT value of an in-the-money LONG option at
     // expiry (the exchange auto-exercises it). Sellers pay nothing at expiry.
-    settleLongSttRate: 0.00125,
+    settleLongSttRate: OPT_SETTLE_LONG_STT,
   };
 }
 
@@ -141,5 +158,7 @@ function borrowFee(notional, ratePA, ms) {
 
 export {
   equityDeliveryCosts, equityIntradayCosts, indexOptionCosts, flatCosts,
-  eqFillPrice, optFillPrice, borrowFee, GST, SEBI_FEE, OPT_EXCH_RATE,
+  eqFillPrice, optFillPrice, borrowFee, GST, SEBI_FEE, EQ_EXCH,
+  OPT_EXCH_RATE, EQ_STT_DELIVERY, EQ_STAMP_DELIVERY, EQ_STT_INTRADAY_SELL, EQ_STAMP_INTRADAY,
+  OPT_STT_SELL, OPT_STAMP, OPT_SETTLE_LONG_STT,
 };
