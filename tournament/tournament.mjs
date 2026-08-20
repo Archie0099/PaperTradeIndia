@@ -465,6 +465,13 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
   // one entry per data date, written BEFORE outcomes are knowable. Part of the FORWARD
   // record, so it persists (and restores) alongside the live closes.
   let state = { deployedAt: null, live: {}, roster: null, generation: 0, history: [], advisorLog: [] };
+  // What the REMOTE store did on this boot, so a non-restore is DIAGNOSABLE from outside.
+  // Without this, a reset forward clock looks identical whether (a) the read failed and the
+  // fail-closed guard correctly refused to overwrite (W15 — nothing lost, it comes back next
+  // boot), or (b) the store is unconfigured, or (c) the store really is empty and this process
+  // has just stamped a fresh clock over it. Those need completely different responses, and
+  // there was no way to tell them apart from the deployed site.
+  let persistState = { enabled: !!persistStore.enabled, attempted: false, restored: false, readFailed: false };
   let standings = null;
   let pool = null; // lazily-loaded generated strategy pool (backtest/generated-specs.json)
   let opSeq = 0; // bumped on every control mutation; an in-flight tick() aborts if it changes mid-await
@@ -875,7 +882,8 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       // itself happens ONLY in advisorTick() (once per new data date), never here: assembly
       // must stay read-only so the sync/yielding recomputes and control ops can share it.
       const advisor = buildAdvisorPayload({ log: state.advisorLog, seriesFor, universe: BASKET_UNIVERSE, minDays: advisorMinDays, costRates: EQ_COSTS });
-      standings = { deployedAt: state.deployedAt, generation: state.generation, liveBars, asOf: Date.now(), startingCash: CASH, atCap, maxBots: maxRosterBots, botCount: rows.length, evolutionEnabled, autopilot, advisor, history: state.history.slice(-30), bots: rows };
+      if (typeof persistStore.readFailed === 'function') persistState.readFailed = persistStore.readFailed();
+      standings = { deployedAt: state.deployedAt, generation: state.generation, liveBars, persist: { ...persistState }, asOf: Date.now(), startingCash: CASH, atCap, maxBots: maxRosterBots, botCount: rows.length, evolutionEnabled, autopilot, advisor, history: state.history.slice(-30), bots: rows };
       return standings;
     }
 
@@ -952,6 +960,7 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     // on !state.deployedAt, so a warm restart that still HAS its local file keeps that
     // local state and never round-trips the network. No-op (and no await) when unconfigured.
     if (persistStore.enabled && !state.deployedAt) {
+      persistState.attempted = true;
       try {
         const remote = await persistStore.load();
         if (remote && typeof remote === 'object' && remote.deployedAt) {
@@ -978,6 +987,7 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
             // a stray reset stays recoverable across a redeploy, not just in this process.
             advisorLogArchive: sanitizeAdvisorLog(remote.advisorLogArchive),
           };
+          persistState.restored = true;
           save(); // mirror the restored forward state (with the CURRENT roster) to local disk
         }
       } catch {

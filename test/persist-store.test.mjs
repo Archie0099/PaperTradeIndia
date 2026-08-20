@@ -240,3 +240,46 @@ test('a transient store read failure does NOT wipe the forward record (the whole
   assert.equal(c.getStandings().deployedAt, deployA, 'the original deploy clock survived the bad boot');
   assert.equal(c.getStandings().liveBars, 1, 'so did the forward bar');
 });
+
+test('the board REPORTS what the remote store did, so a non-restore is diagnosable from outside', async () => {
+  // A reset forward clock looks identical from the deployed site whether the read FAILED (the
+  // fail-closed guard refused to overwrite — nothing lost, it returns next boot), the store is
+  // unconfigured, or the store genuinely is empty and this process just stamped a fresh clock
+  // over it. Those need opposite responses, and there was no way to tell them apart. Now the
+  // payload says which happened.
+  const data = { NIFTY: series() };
+
+  // (a) unconfigured: enabled false, nothing attempted.
+  const off = await createTournament({ seed: SEED, backfillData: data, persist: false, evolutionEnabled: false });
+  await off.init();
+  assert.deepEqual(off.getStandings().persist, { enabled: false, attempted: false, restored: false, readFailed: false });
+
+  // (b) configured and the read FAILS -> attempted, not restored, readFailed true.
+  const failing = createPersistStore({ token: 't', gistId: 'g', fetchImpl: async () => ({ ok: false }) });
+  const bad = await createTournament({ seed: SEED, backfillData: data, persist: false, persistStore: failing, evolutionEnabled: false });
+  await bad.init();
+  const pBad = bad.getStandings().persist;
+  assert.equal(pBad.enabled, true);
+  assert.equal(pBad.attempted, true, 'it did try to read');
+  assert.equal(pBad.restored, false, 'and did not restore');
+  assert.equal(pBad.readFailed, true, 'and says the READ is why — so the Gist is intact and untouched');
+
+  // (c) configured, read fine, real record present -> restored true, readFailed false.
+  let blob = null;
+  const good = () => createPersistStore({
+    token: 't', gistId: 'g',
+    fetchImpl: async (url, opts = {}) => {
+      if ((opts.method || 'GET') === 'PATCH') { blob = JSON.parse(opts.body).files['tournament-state.json'].content; return { ok: true, text: async () => '' }; }
+      return { ok: true, json: async () => ({ files: blob == null ? {} : { 'tournament-state.json': { content: blob } } }) };
+    },
+  });
+  const first = await createTournament({ seed: SEED, backfillData: data, persist: false, persistStore: good(), evolutionEnabled: false });
+  await first.init();
+  first._appendLiveClose('NIFTY', { t: data.NIFTY[data.NIFTY.length - 1].t + DAY, c: 321 });
+  await new Promise((r) => setTimeout(r, 0));
+  const second = await createTournament({ seed: SEED, backfillData: data, persist: false, persistStore: good(), evolutionEnabled: false });
+  await second.init();
+  const pGood = second.getStandings().persist;
+  assert.equal(pGood.restored, true, 'a healthy read of a real record restores');
+  assert.equal(pGood.readFailed, false);
+});
