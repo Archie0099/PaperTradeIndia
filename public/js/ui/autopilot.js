@@ -1086,9 +1086,20 @@ function renderSuggestions(app) {
 
   // The trust clock: no claims until the log has earned its no-hindsight days.
   if (!advisor.ready) {
+    // ★ Say how fast the clock is ACTUALLY ticking. A suggestion is only recorded while the
+    // server is awake to see a new daily bar, and a free host sleeps when nobody visits — so
+    // "5 of 90 days" can look like an 85-day wait when the real pace is a fraction of that.
+    // Missed days are NEVER back-filled (reconstructing one today would be hindsight, which
+    // is the one thing this log exists to rule out), so a slow pace is permanent, not a
+    // backlog that catches up.
+    const cov = advisor.coverage;
+    const behind = cov && cov.possibleDays > 0 && cov.recordedDays < cov.possibleDays;
     box.append(el('div', { style: 'border-left: 3px solid var(--accent); padding: 6px 10px; margin: 6px 0; font-size: 12px' },
       `Track record before trust: ${advisor.logDays} of ${advisor.minDays} days of no-hindsight suggestion history recorded so far. ` +
-      'Every day’s suggestion is logged BEFORE its outcome is known; judge the score below only once the log has earned its days.'));
+      'Every day’s suggestion is logged BEFORE its outcome is known; judge the score below only once the log has earned its days.' +
+      (behind
+        ? ` So far it has recorded ${cov.recordedDays} of the ${cov.possibleDays} trading days since ${cov.since}: a suggestion is only logged while the server is awake to see that day's close, and missed days are never filled in afterwards. At this pace the count grows a good deal slower than the calendar.`
+        : '')));
   }
 
   // The fair-benchmark honesty check (measured offline; constants ship with the payload).

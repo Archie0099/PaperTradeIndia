@@ -242,6 +242,36 @@ test('reset() restarts the trust clock: the suggestion log is cleared with the f
   assert.deepEqual(t._state().advisorLogArchive, before, 'a second reset does not overwrite the archive with an empty log');
 });
 
+test('coverage reports how many of the POSSIBLE trading days were actually recorded', async () => {
+  // The log only grows while the server is awake to see a new bar, and a free host sleeps.
+  // Without this the panel's "N of 90 days" reads as a 90-day countdown when the honest
+  // reading can be years. Possible days = NIFTY's own bars from the first entry to the edge.
+  const t = await mkTournament();
+  await t.init();
+  const c1 = t.getStandings().advisor.coverage;
+  assert.equal(c1.recordedDays, 1);
+  assert.equal(c1.possibleDays, 1, 'the first entry sits on the newest bar, so exactly one day was possible');
+  assert.equal(c1.ratio, 1);
+  assert.equal(c1.since, t.getStandings().advisor.today.date);
+
+  // Three new bars arrive but only the LAST is recorded (the server was asleep for two).
+  for (let i = 0; i < 3; i++) t._appendLiveClose('NIFTY', { t: START + (400 + i) * DAY, c: 130 + i });
+  assert.equal(t._advisorTick(), true);
+  const c2 = t.getStandings().advisor.coverage;
+  assert.equal(c2.recordedDays, 2, 'two suggestions recorded');
+  assert.equal(c2.possibleDays, 4, 'but four trading days passed since the first one');
+  assert.equal(c2.ratio, 0.5);
+});
+
+test('coverage is null before anything is logged, and never divides by zero', () => {
+  const empty = buildAdvisorPayload({ log: [], seriesFor: () => [], universe: [] });
+  assert.equal(empty.coverage, null);
+  // A log with no market series loaded must report the gap honestly, not a fake ratio.
+  const noMarket = buildAdvisorPayload({ log: [{ date: '2020-01-02', t: 1, eligible: true, equity: 100, targets: [] }], seriesFor: () => [], universe: [] });
+  assert.equal(noMarket.coverage.possibleDays, 0);
+  assert.equal(noMarket.coverage.ratio, null, 'unknown is null, never 0 or Infinity');
+});
+
 test('advisorMinDays is a config knob: ready flips when the log reaches it', async () => {
   const t = await mkTournament({ advisorMinDays: 2 });
   await t.init();

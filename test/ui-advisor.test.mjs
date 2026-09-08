@@ -269,6 +269,30 @@ test('when the champion is NOT the measured strategy, the honesty check degrades
   assert.match(txt, /unproven/i, 'still refuses to claim skill');
 });
 
+test('the trust banner says how fast the clock is ACTUALLY ticking, not just N of 90', async () => {
+  // A suggestion is only recorded while the server is awake to see that day's close, and a
+  // free host sleeps. "5 of 90 days" then reads as an 85-day wait when the real pace is a
+  // fraction of that — and missed days are never back-filled, so it never catches up.
+  const dom = setupDom();
+  const adv = advisorPayload({ logDays: 5, coverage: { since: '2026-08-05', recordedDays: 5, possibleDays: 24, ratio: 0.208 } });
+  const app = appWith(dom, adv);
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  const txt = dom.$('#ap-suggestions').textContent;
+  assert.match(txt, /5 of 90 days/, 'the raw count still shows');
+  assert.match(txt, /5 of the 24 trading days since 2026-08-05/, 'and the real pace beside it');
+  assert.match(txt, /never filled in afterwards/i, 'and that the gap is permanent, not a backlog');
+});
+
+test('a fully-recorded log shows no pace caveat (it is only shown when actually behind)', async () => {
+  const dom = setupDom();
+  const adv = advisorPayload({ logDays: 5, coverage: { since: '2026-08-05', recordedDays: 5, possibleDays: 5, ratio: 1 } });
+  const app = appWith(dom, adv);
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  assert.ok(!/trading days since/i.test(dom.$('#ap-suggestions').textContent), 'no caveat when nothing was missed');
+});
+
 test('an unreadable remote store is SAID OUT LOUD on the panel — a silent one hid for three weeks', async () => {
   // The panel's whole claim is a log that ACCUMULATES. When the store cannot be read the
   // server refuses to write, so today's suggestion is never recorded and every restart drops

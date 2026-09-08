@@ -60,7 +60,7 @@ Every figure here is an upper bound. The universe is the set of names that are l
 ## Tests
 
 ```bash
-npm test          # 596 tests, runs with node --test
+npm test          # 600 tests, runs with node --test
 ```
 
 The suite covers the engine and money invariants, option pricing and payoffs, the backtester and tournament, the machine-learning rankers, and the browser UI (driven through jsdom). `jsdom` is the only development dependency.

@@ -396,10 +396,32 @@ function buildAdvisorPayload({ log, seriesFor, universe = [], minDays = ADVISOR_
   for (let i = entries.length - 2; i >= 0; i--) {
     if (entries[i].eligible && (entries[i].targets || []).length) { prevEligible = entries[i]; break; }
   }
+  // COVERAGE — how many of the trading days it COULD have recorded did it actually record?
+  // The log only grows while the server is awake to see a new bar, and a free host sleeps.
+  // Without this, "5 of 90 days" reads like a 90-day countdown 5 days in, when the honest
+  // reading may be "5 of the 24 trading days that have passed", i.e. years away. The count
+  // of possible days is NIFTY's own bars from the first recorded suggestion to the data
+  // edge — the same trading calendar the board runs on, so no holiday list to drift.
+  const nifty = seriesFor('NIFTY') || [];
+  let possibleDays = 0;
+  if (entries.length && nifty.length) {
+    const from = entries[0].t;
+    for (const bar of nifty) if (bar.t >= from) possibleDays++;
+  }
+  const coverage = entries.length
+    ? {
+        since: entries[0].date,
+        recordedDays: entries.length,
+        possibleDays,
+        // null rather than a fake 0 when we cannot tell (no market series loaded yet).
+        ratio: possibleDays > 0 ? +(entries.length / possibleDays).toFixed(3) : null,
+      }
+    : null;
   return {
     minDays,
     logDays: entries.length,
     ready: entries.length >= minDays,
+    coverage,
     today: entries.length ? entries[entries.length - 1] : null,
     prev: entries.length > 1 ? entries[entries.length - 2] : null,
     prevEligible,
