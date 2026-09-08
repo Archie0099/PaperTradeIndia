@@ -249,28 +249,45 @@ test('dropFormingBar removes a still-forming trailing bar at BOOT, and only that
   // completeness check — so a deploy during market hours froze a partial mid-session price as
   // that day's close for the whole life of the process (the cursor-based ticks can never
   // replace a bar that carries the same timestamp).
+  // ★ The clock is INJECTED, never Date.now(). Completeness is a SESSION question — a daily
+  // bar is done when its session CLOSES (15:30 IST), not when the calendar day ends — so
+  // "today's bar" is still forming only BEFORE the close; after it, keeping the bar is the
+  // correct behaviour (an evening boot must not discard a finished session). Reading the real
+  // clock made these assertions mean the PRE-rewrite thing and fail every evening after 15:30.
   const HOUR = 3600000;
-  const now = Date.now();
+  const MID_SESSION = Date.parse('2026-03-10T06:00:00.000Z'); // 11:30 IST — the session is open
+  const AFTER_CLOSE = Date.parse('2026-03-10T12:30:00.000Z'); // 18:00 IST — the same session is done
   const bars = (ts) => ts.map((t, i) => ({ t, c: 100 + i }));
 
   // Intraday: the last hour has NOT elapsed.
-  const forming = bars([now - 3 * HOUR, now - 2 * HOUR, now - 0.5 * HOUR]);
-  assert.equal(dropFormingBar(forming, '60m').length, 2, 'the in-progress hour is dropped');
-  assert.equal(dropFormingBar(forming, '60m').at(-1).t, now - 2 * HOUR, 'the completed bars survive untouched');
+  const forming = bars([MID_SESSION - 3 * HOUR, MID_SESSION - 2 * HOUR, MID_SESSION - 0.5 * HOUR]);
+  assert.equal(dropFormingBar(forming, '60m', MID_SESSION).length, 2, 'the in-progress hour is dropped');
+  assert.equal(dropFormingBar(forming, '60m', MID_SESSION).at(-1).t, MID_SESSION - 2 * HOUR, 'the completed bars survive untouched');
 
   // Intraday: every bar's hour has elapsed — nothing is removed.
-  const complete = bars([now - 3 * HOUR, now - 2 * HOUR - 1]);
-  assert.equal(dropFormingBar(complete, '60m').length, 2, 'a fully-elapsed series is returned intact');
+  const complete = bars([MID_SESSION - 3 * HOUR, MID_SESSION - 2 * HOUR - 1]);
+  assert.equal(dropFormingBar(complete, '60m', MID_SESSION).length, 2, 'a fully-elapsed series is returned intact');
 
-  // Daily: today's session is still open (or ahead) -> dropped; yesterday's is kept.
-  const daily = bars([now - 3 * 864e5, now - 864e5, now]);
-  assert.equal(dropFormingBar(daily, '1d').length, 2, "today's still-forming daily bar is dropped");
-  assert.equal(dropFormingBar(bars([now - 3 * 864e5, now - 864e5]), '1d').length, 2, 'a series ending yesterday is intact');
+  // Intraday: NSE's FINAL 60m bar spans 15:15-15:30, so it is complete AT the close — the
+  // `min(bar + interval, sessionClose)` rule. A plain +1h would withhold it until 16:15 and,
+  // because the intraday tick is market-hours gated, lose Friday's close for the weekend.
+  const lastHour = bars([Date.parse('2026-03-10T08:45:00.000Z'), Date.parse('2026-03-10T09:45:00.000Z')]);
+  assert.equal(dropFormingBar(lastHour, '60m', Date.parse('2026-03-10T10:00:00.000Z')).length, 2, "the day's final 15-minute 60m bar is complete at the close, not an hour later");
+
+  // Daily: the session is still OPEN -> today's bar is dropped; yesterday's is kept.
+  const daily = bars([MID_SESSION - 3 * 864e5, MID_SESSION - 864e5, MID_SESSION]);
+  assert.equal(dropFormingBar(daily, '1d', MID_SESSION).length, 2, "today's still-forming daily bar is dropped");
+  assert.equal(dropFormingBar(bars([MID_SESSION - 3 * 864e5, MID_SESSION - 864e5]), '1d', MID_SESSION).length, 2, 'a series ending yesterday is intact');
+
+  // Daily, AFTER the close: the SAME series is now complete and must be kept in full. This is
+  // the other half of the rule and had no lock — "drop today's bar" alone is satisfied by the
+  // old is-it-still-today test, which silently discarded a finished session on any evening boot.
+  assert.equal(dropFormingBar(daily, '1d', AFTER_CLOSE).length, 3, "once the session has closed, today's bar is COMPLETE and is kept");
 
   // Degenerate inputs must never throw or fabricate.
-  assert.deepEqual(dropFormingBar([], '1d'), []);
-  assert.equal(dropFormingBar(null, '1d'), null);
-  assert.equal(dropFormingBar([{ t: NaN, c: 1 }], '1d').length, 1, 'a non-finite timestamp is left alone, never dropped blindly');
+  assert.deepEqual(dropFormingBar([], '1d', MID_SESSION), []);
+  assert.equal(dropFormingBar(null, '1d', MID_SESSION), null);
+  assert.equal(dropFormingBar([{ t: NaN, c: 1 }], '1d', MID_SESSION).length, 1, 'a non-finite timestamp is left alone, never dropped blindly');
 });
 
 test('no shipped bot claims squareOffDaily — the cheaper MIS schedule must be EARNED, not declared', () => {
