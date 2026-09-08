@@ -76,13 +76,31 @@ function createPersistStore({
   let readFailed = false;
   let warnedReadFailed = false;
 
+  // Say WHY a read failed, once, on the host's log. The store going unreadable is silent by
+  // design (fail-closed, best-effort) and that silence once hid an expired token for three
+  // WEEKS — the forward record simply stopped accumulating and nothing anywhere said so. The
+  // HTTP status is the entire diagnosis, so name it and what it means. NEVER logs the token.
+  const explainStatus = (status) => {
+    if (status === 401) return 'the token is expired or revoked';
+    if (status === 403) return 'the token lacks the gist scope, or is rate-limited';
+    if (status === 404) return 'the gist id is wrong, or this token cannot see that gist';
+    return 'unexpected status';
+  };
+  const warnRead = (why) => {
+    console.warn(`persistStore: could not READ the remote store (${why}). The forward record + advisor log are NOT being restored or saved, and will reset on every restart until this is fixed. Nothing already stored is lost (writes are refused while unreadable).`);
+  };
+
   // Fetch the persisted blob (or null if unconfigured / missing / unreadable).
   async function load() {
     if (!enabled) return null;
     readFailed = false;
     try {
       const res = await fetchImpl(`${GH_API}/gists/${gistId}`, { headers, signal: abortAfter(timeoutMs) });
-      if (!res || !res.ok) { readFailed = true; return null; }
+      if (!res || !res.ok) {
+        readFailed = true;
+        warnRead(res ? (Number.isFinite(res.status) ? `HTTP ${res.status} — ${explainStatus(res.status)}` : 'the response carried no status') : 'no response');
+        return null;
+      }
       const gist = await res.json();
       const file = gist && gist.files && gist.files[filename];
       // No file (or no content) is an HONEST empty read — a gist we created but never
@@ -99,15 +117,20 @@ function createPersistStore({
         // A failed raw fetch leaves `content` as the HALF file — parsing that would throw
         // below and (before the fail-closed flag) looked like an empty store. It is a read
         // failure, not an empty store.
-        if (!raw || !raw.ok || typeof raw.text !== 'function') { readFailed = true; return null; }
+        if (!raw || !raw.ok || typeof raw.text !== 'function') {
+          readFailed = true;
+          warnRead(raw && raw.status ? `HTTP ${raw.status} fetching the full (>1MB) file` : 'the full (>1MB) file could not be fetched');
+          return null;
+        }
         content = await raw.text();
       }
       const blob = JSON.parse(content);
       if (blob === null) return null; // the file literally holds `null` — an honest empty read
-      if (typeof blob !== 'object') { readFailed = true; return null; } // junk we don't understand: don't clobber it
+      if (typeof blob !== 'object') { readFailed = true; warnRead('the stored file is not an object'); return null; } // junk we don't understand: don't clobber it
       return blob;
-    } catch {
+    } catch (e) {
       readFailed = true; // network/abort/parse — we do NOT know what the store holds
+      warnRead(e && e.name === 'AbortError' ? `timed out after ${timeoutMs}ms` : (e && e.message) || 'network or parse error');
       return null;
     }
   }

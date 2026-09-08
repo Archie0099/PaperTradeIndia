@@ -61,6 +61,36 @@ test('persistStore.save snapshots so a later in-place mutation is not persisted'
   assert.equal(JSON.parse(stored).live.NIFTY.length, 1, 'the persisted snapshot is frozen at save() time');
 });
 
+test('a failed READ names the status AND its meaning on the log — and never the token', async () => {
+  // An unreadable store is silent by design (fail-closed, best-effort) and that silence once
+  // hid an expired token for three WEEKS: the forward record stopped accumulating and nothing
+  // anywhere said why. The HTTP status IS the diagnosis, so the log has to carry it.
+  const TOKEN = 'ghp_SUPER_SECRET_never_log_me';
+  const warns = [];
+  const realWarn = console.warn;
+  console.warn = (...a) => warns.push(a.join(' '));
+  try {
+    for (const status of [401, 403, 404, 500]) {
+      const s = createPersistStore({ token: TOKEN, gistId: 'g', fetchImpl: async () => ({ ok: false, status }) });
+      assert.equal(await s.load(), null, `HTTP ${status} reads as unreadable`);
+    }
+    // A HEALTHY read must stay silent — a warning that cries wolf gets ignored.
+    const ok = createPersistStore({ token: TOKEN, gistId: 'g', fetchImpl: async () => ({ ok: true, json: async () => ({ files: { 'tournament-state.json': { content: '{"deployedAt":1}' } } }) }) });
+    assert.equal((await ok.load()).deployedAt, 1);
+  } finally {
+    console.warn = realWarn;
+  }
+  assert.equal(warns.length, 4, 'one warning per failed read, none for the healthy one');
+  assert.match(warns[0], /401/);
+  assert.match(warns[0], /expired or revoked/i, '401 is explained, not just numbered');
+  assert.match(warns[1], /403/);
+  assert.match(warns[1], /scope|rate/i);
+  assert.match(warns[2], /404/);
+  assert.match(warns[2], /gist id/i);
+  assert.ok(warns.every((w) => w.includes('not') && /reset|restor/i.test(w)), 'each says what the consequence is');
+  assert.ok(warns.every((w) => !w.includes(TOKEN)), 'the credential is NEVER written to the log');
+});
+
 test('persistStore.load returns null on a non-ok response or bad JSON (best-effort)', async () => {
   const s1 = createPersistStore({ token: 't', gistId: 'g', fetchImpl: async () => ({ ok: false }) });
   assert.equal(await s1.load(), null);

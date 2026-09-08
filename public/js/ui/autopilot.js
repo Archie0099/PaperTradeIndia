@@ -1062,6 +1062,23 @@ function renderSuggestions(app) {
 
   const advisor = lastStandings && lastStandings.advisor;
   const ap = lastStandings && lastStandings.autopilot;
+
+  // ★ SAY IT OUT LOUD when the record is not being kept. This panel's entire claim is an
+  // append-only log that ACCUMULATES; if the remote store cannot be read, the server refuses
+  // to write (fail-closed), so today's suggestion is never recorded and every restart drops
+  // the log back to nothing. That failed silently for three weeks once — the server published
+  // `persist.readFailed` the whole time and no screen ever showed it. The storage credential
+  // is the usual cause, and it expires on a schedule, so this WILL recur.
+  const ps = lastStandings && lastStandings.persist;
+  if (ps && ps.enabled && ps.readFailed) {
+    box.append(el('div', { style: 'border-left: 3px solid var(--down); padding: 6px 10px; margin: 6px 0; font-size: 12px' }, [
+      el('strong', {}, 'The suggestion record is not being saved. '),
+      'The app could not read its storage, so today’s suggestion is not being logged and the track record below resets whenever the server restarts. ',
+      'Nothing already saved is lost — saving is deliberately refused while storage is unreadable, so the stored copy is untouched. ',
+      'The usual cause is an expired storage token; the deploy notes have the check.',
+    ]));
+  }
+
   if (!advisor) {
     box.append(el('div', { class: 'empty-state' }, 'The tournament is still warming up — no suggestions yet.'));
     return;

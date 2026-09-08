@@ -36,10 +36,11 @@ const advisorPayload = (over = {}) => ({
   ...over,
 });
 
-function standings(advisor) {
+function standings(advisor, persist) {
   return {
     startingCash: 1e7,
     advisor,
+    persist,
     autopilot: {
       startedAt: Date.parse('2010-01-01'), cash: 1e7,
       metrics: { finalEquity: 2.5e7, liveReturnPct: 0.3, r1w: 1, r1m: 3, r1y: -13.6, r3y: 50, r5y: 90, r10y: 140, trackReturnPct: 150, sharpe: 1.1, maxDrawdownPct: 42.6 },
@@ -54,10 +55,10 @@ function standings(advisor) {
   };
 }
 
-const appWith = (dom, advisor) => {
+const appWith = (dom, advisor, persist) => {
   const app = dom.makeApp({
     api: Object.assign(dom.makeApiStub(), {
-      tournament: async () => standings(advisor),
+      tournament: async () => standings(advisor, persist),
       tournamentBot: async (id) => ({ ok: true, id, name: 'Sharpe King', mirror: { followable: true, equity: 1.08e7, positions: [] } }),
     }),
   });
@@ -266,6 +267,30 @@ test('when the champion is NOT the measured strategy, the honesty check degrades
   assert.match(txt, /measured .* for Cross-sectional momentum/i, 'names WHO the numbers were measured for');
   assert.match(txt, /has NOT been measured/i, 'says the current champion was not measured');
   assert.match(txt, /unproven/i, 'still refuses to claim skill');
+});
+
+test('an unreadable remote store is SAID OUT LOUD on the panel — a silent one hid for three weeks', async () => {
+  // The panel's whole claim is a log that ACCUMULATES. When the store cannot be read the
+  // server refuses to write, so today's suggestion is never recorded and every restart drops
+  // the log — but the only signal was a payload field no screen displayed. The storage
+  // credential expires on a schedule, so this recurs; it must be visible where it matters.
+  const dom = setupDom();
+  const app = appWith(dom, advisorPayload(), { enabled: true, attempted: true, restored: false, readFailed: true });
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  const txt = dom.$('#ap-suggestions').textContent;
+  assert.match(txt, /not being saved/i, 'the panel states the record is not being kept');
+  assert.match(txt, /resets/i, 'and that a restart loses the run of days');
+  assert.match(txt, /nothing already saved is lost/i, 'while making clear the stored copy is safe');
+  assert.match(txt, /token/i, 'and points at the usual cause');
+});
+
+test('a HEALTHY store shows no such warning (the banner is not permanent furniture)', async () => {
+  const dom = setupDom();
+  const app = appWith(dom, advisorPayload(), { enabled: true, attempted: true, restored: true, readFailed: false });
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  assert.ok(!/not being saved/i.test(dom.$('#ap-suggestions').textContent), 'no warning when the store reads fine');
 });
 
 test('a corrupt stored book is rebuilt fresh — the tab render never throws (regression)', async () => {
