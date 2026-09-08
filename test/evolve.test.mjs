@@ -8,8 +8,49 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { mutateSpec, crossover, generateChallengers, evolve, mulberry32, archetypeOf, freshFactors, mutateFactors } from '../tournament/evolve.mjs';
+import { mutateSpec, crossover, generateChallengers, evolve, mulberry32, archetypeOf, freshFactors, mutateFactors, scoreSpec } from '../tournament/evolve.mjs';
 import { validateSpec } from '../backtest/dsl.mjs';
+
+// A long, deterministic series (rising with periodic dips) so a slow-lookback spec has
+// something real to trade AFTER its indicators warm up. No RNG, no clock.
+function warmupSeries(n = 900, start = 1_400_000_000_000) {
+  const out = [];
+  let p = 100;
+  for (let i = 0; i < n; i++) {
+    p *= 1 + (i % 50 === 0 ? -0.02 : 0.0016);
+    out.push({ t: start + i * 86_400_000, c: +p.toFixed(2) });
+  }
+  return out;
+}
+
+test('scoreSpec SCORES from the warm-up boundary, so a slow indicator is not charged for idling', () => {
+  // The GA scores on a bounded recent window, and scoring from bar 0 of that window charged a
+  // spec for the stretch where its own indicator was not warm yet. Measured on the real
+  // universe, a 252-day-momentum spec idled 274 of 760 bars and its fitness SIGN inverted
+  // (Sharpe -0.55 cold vs +0.68 honest). Both the challenger AND the incumbent it must beat run
+  // through this scorer, so the bias decided promotions — and it punished long lookbacks
+  // specifically, which is the axis a GA explores. The fix scores only bars at/after fromT.
+  const series = warmupSeries();
+  const spec = { kind: 'EQ', name: 'Slow trend', entry: ['>', ['sma', 20], ['sma', 200]], exit: ['<', ['sma', 20], ['sma', 200]] };
+  const boundary = series[series.length - 400].t; // 500 bars of warm-up, 400 bars scored
+
+  const cold = scoreSpec(spec, series, 'NIFTY', 1_000_000); // the old behaviour: score everything
+  const warm = scoreSpec(spec, series, 'NIFTY', 1_000_000, null, boundary);
+  assert.ok(cold && warm, 'both arms score');
+  assert.notEqual(warm.totalReturnPct, cold.totalReturnPct, 'the warm score covers a strictly later span');
+  assert.ok(Number.isFinite(warm.sharpe) && Number.isFinite(warm.totalReturnPct), 'and yields real numbers');
+
+  // A window too short to judge returns null rather than a fabricated figure.
+  assert.equal(scoreSpec(spec, series, 'NIFTY', 1_000_000, null, series[series.length - 1].t), null);
+});
+
+test('scoreSpec is UNCHANGED when no warm-up boundary is given (every pre-existing caller)', () => {
+  const series = warmupSeries(400);
+  const spec = { kind: 'EQ', name: 'x', entry: ['<', ['rsi', 14], 30], exit: ['>', ['rsi', 14], 60] };
+  const a = scoreSpec(spec, series, 'NIFTY', 1_000_000);
+  assert.deepEqual(scoreSpec(spec, series, 'NIFTY', 1_000_000, null, null), a, 'passing null is identical to omitting it');
+  assert.deepEqual(scoreSpec(spec, series, 'NIFTY', 1_000_000, null, series[0].t - 1e9), a, 'a boundary before the first bar scores the whole run');
+});
 
 const ROSTER = [
   { id: 'a', name: 'Golden cross', kind: 'EQ', symbol: 'NIFTY', spec: { kind: 'EQ', name: 'Golden cross', entry: ['>', ['sma', 50], ['sma', 200]], exit: ['<', ['sma', 50], ['sma', 200]] } },

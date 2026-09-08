@@ -17,6 +17,7 @@ import { runPortfolioBacktest } from '../backtest/portfolio.mjs';
 import { runPairsBacktest } from '../backtest/pairs.mjs';
 import { makeRankSource } from '../backtest/ml.mjs';
 import { equityDeliveryCosts, indexOptionCosts } from '../backtest/costs.mjs';
+import { totalReturnPct, sharpe as sharpeOf, maxDrawdownPct } from '../backtest/metrics.mjs';
 
 // Challengers are scored under the SAME real Indian cost schedules the tournament
 // deploys with (tournament.mjs) — scoring cost-free would systematically breed
@@ -465,7 +466,37 @@ function generateChallengers(roster, n, rng, { eqSymbols = ['NIFTY'], fnoSymbols
 // by the PORTFOLIO backtester across its whole universe — pass `dataBySymbol`
 // (the optional 5th arg) so it can see every constituent; the legacy 4-arg
 // EQ/FNO callers are unchanged.
-function scoreSpec(spec, series, symbol = 'NIFTY', cash = 1_000_000, dataBySymbol = null) {
+// Re-score a finished backtest over ONLY the bars at/after `fromT`, so the WARM-UP prefix a
+// spec needs is traded through but never judged.
+//
+// Why this exists: the GA scores on a bounded recent window (EVOLVE_WINDOW) for speed, and
+// scoring started at bar 0 of that window. A spec whose rank/gate needs N bars therefore sat
+// in CASH for its first N SCORED bars and was charged for the flat stretch. Measured on the
+// real universe, `xsmom-research` (rank `mom 252`, gate `sma 200`) idled 274 of 760 bars and
+// scored Sharpe −0.55 / −9.07% cold against +0.68 / +74.95% honestly — the fitness SIGN
+// inverts. Both the challenger AND the incumbent it must beat go through this same scorer, so
+// it corrupted the whole retire/replace decision, and it systematically punished LONGER
+// lookbacks (the mutations that differ only in lookback are exactly what a GA explores).
+//
+// A longer data slice alone is NOT a fix — that just moves the idle stretch inside the scored
+// window. The cut has to be applied to the METRICS, which is what this does.
+// `times` are the bars the equity curve is indexed by; returns null when the window is too
+// short to say anything, so a caller treats it as "unscoreable" rather than trusting a number.
+function scoreFromTimestamp(equityCurve, times, fromT) {
+  const eq = Array.isArray(equityCurve) ? equityCurve : [];
+  if (!Number.isFinite(fromT) || !Array.isArray(times) || times.length !== eq.length) {
+    // No cut requested (or no usable timeline): score the whole run, the long-standing behaviour.
+    return eq.length >= 2 ? { totalReturnPct: totalReturnPct(eq), sharpe: sharpeOf(eq), maxDrawdownPct: maxDrawdownPct(eq) } : null;
+  }
+  let cut = times.findIndex((t) => t >= fromT);
+  if (cut < 0) return null; // the whole run predates the scoring window
+  if (cut < 1) cut = 0; // nothing to warm up on — score it all
+  const slice = eq.slice(cut);
+  if (slice.length < 2) return null;
+  return { totalReturnPct: totalReturnPct(slice), sharpe: sharpeOf(slice), maxDrawdownPct: maxDrawdownPct(slice) };
+}
+
+function scoreSpec(spec, series, symbol = 'NIFTY', cash = 1_000_000, dataBySymbol = null, scoreFromT = null) {
   const c = safeCompile(spec);
   if (!c.ok) return null;
   if (c.kind === 'BASKET') {
@@ -475,7 +506,7 @@ function scoreSpec(spec, series, symbol = 'NIFTY', cash = 1_000_000, dataBySymbo
     if (present.length < 2) return null; // not enough constituents have data
     const rankSource = spec.mlConfig ? makeRankSource({ spec, dataBySymbol: dbs }) : null;
     const res = runPortfolioBacktest({ spec, dataBySymbol: dbs, marketSeries: dbs.NIFTY || null, cash, costModel: EQ_COSTS, rankSource });
-    return { totalReturnPct: res.metrics.totalReturnPct, sharpe: res.metrics.sharpe, maxDrawdownPct: res.metrics.maxDrawdownPct };
+    return scoreFromTimestamp(res.equityCurve, res.times, scoreFromT);
   }
   if (c.kind === 'PAIRS') {
     const dbs = dataBySymbol || (series ? { [symbol]: series } : null);
@@ -483,13 +514,14 @@ function scoreSpec(spec, series, symbol = 'NIFTY', cash = 1_000_000, dataBySymbo
     const present = spec.universe.filter((s) => Array.isArray(dbs[s]) && dbs[s].length);
     if (present.length < 4) return null; // not enough constituents to form pairs
     const res = runPairsBacktest({ spec, dataBySymbol: dbs, cash, costModel: EQ_COSTS });
-    return { totalReturnPct: res.metrics.totalReturnPct, sharpe: res.metrics.sharpe, maxDrawdownPct: res.metrics.maxDrawdownPct };
+    return scoreFromTimestamp(res.equityCurve, res.times, scoreFromT);
   }
   const res =
     c.kind === 'FNO'
       ? runFnoBacktest({ strategy: c.strategy, candles: series, symbol, cash, costModel: OPT_COSTS, ...(INDEX_SPECS[symbol] || INDEX_SPECS.NIFTY) })
       : runBacktest({ strategy: c.strategy, candles: series, symbol, cash, costModel: EQ_COSTS });
-  return { totalReturnPct: res.metrics.totalReturnPct, sharpe: res.metrics.sharpe, maxDrawdownPct: res.metrics.maxDrawdownPct };
+  // A single-symbol run's equity curve is indexed by its own candles.
+  return scoreFromTimestamp(res.equityCurve, (series || []).map((c2) => c2.t), scoreFromT);
 }
 
 // Fitness = Sharpe first (risk-adjusted), then total return as a tiebreak.
@@ -533,13 +565,15 @@ function shareFitness(scored) {
 // maps each symbol to its candle series; EQ/FNO challengers are scored on their
 // own symbol, BASKETs across their whole universe — so the GA hunts the best
 // (strategy × stock) AND (basket × ML) combinations.
-function evolve({ roster, dataBySymbol, eqSymbols, fnoSymbols, basketSymbols, n = 14, seed = 1, cash = 1_000_000 }) {
+function evolve({ roster, dataBySymbol, eqSymbols, fnoSymbols, basketSymbols, n = 14, seed = 1, cash = 1_000_000, scoreFromT = null }) {
   const rng = mulberry32(seed >>> 0);
   const challengers = generateChallengers(roster, n, rng, { eqSymbols, fnoSymbols, basketSymbols })
     .map((ch) => {
+      // scoreFromT (when the caller supplies a warm-up prefix) must reach EVERY challenger —
+      // scoring one arm warm and another cold would compare two different things.
       const score = (ch.kind === 'BASKET' || ch.kind === 'PAIRS')
-        ? scoreSpec(ch.spec, null, ch.symbol, cash, dataBySymbol)
-        : (dataBySymbol && dataBySymbol[ch.symbol] ? scoreSpec(ch.spec, dataBySymbol[ch.symbol], ch.symbol, cash) : null);
+        ? scoreSpec(ch.spec, null, ch.symbol, cash, dataBySymbol, scoreFromT)
+        : (dataBySymbol && dataBySymbol[ch.symbol] ? scoreSpec(ch.spec, dataBySymbol[ch.symbol], ch.symbol, cash, null, scoreFromT) : null);
       return { ...ch, score };
     })
     .filter((ch) => ch.score)

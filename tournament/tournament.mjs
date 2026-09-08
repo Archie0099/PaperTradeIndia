@@ -144,6 +144,15 @@ const MAX_ROSTER_BOTS = 24;
 // models' lookback (≤756), while keeping a generation a few seconds. Slicing a shorter
 // (test) series is a no-op, so determinism/promotion tests are unaffected.
 const EVOLVE_WINDOW = 756;
+// ...plus a WARM-UP prefix that is traded through but NOT scored. Without it, scoring began at
+// bar 0 of the window, so a spec whose rank/gate needs N bars sat in CASH for its first N
+// SCORED bars and was charged for the flat stretch — measured on the real universe, that
+// inverted `xsmom-research`'s fitness SIGN (Sharpe −0.55 cold vs +0.68 honest) and
+// systematically punished LONGER lookbacks, which is exactly the axis a GA explores. 300 bars
+// covers the longest lookback the DSL allows a challenger to reach (mom 252 / sma 200) with
+// room to spare. Costs ~40% more work per generation, which only matters when breeding is on.
+// A series too short to spare the prefix (every test fixture) simply scores in full, unchanged.
+const EVOLVE_WARMUP = 300;
 // How many symbols to fetch from Yahoo at once during the cold-boot backfill. The
 // whole universe (38 symbols) is loaded at boot and, on Render's ephemeral disk, re-
 // fetched on every redeploy — so we cap concurrency to avoid a 38-wide burst that
@@ -1243,8 +1252,16 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     // stays a few seconds, not ~30, on the free host. Symbol eligibility above still
     // uses the FULL fullData length; only the per-bot backtest series is trimmed.
     const recentData = {};
-    for (const sym of Object.keys(fullData)) recentData[sym] = fullData[sym].slice(-EVOLVE_WINDOW);
-    const challengers = evolve({ roster: parents, dataBySymbol: recentData, eqSymbols, fnoSymbols, basketSymbols, n: 16, seed: s, cash: CASH });
+    for (const sym of Object.keys(fullData)) recentData[sym] = fullData[sym].slice(-(EVOLVE_WINDOW + EVOLVE_WARMUP));
+    // Where SCORING starts: the first bar of the last EVOLVE_WINDOW bars. Everything before it
+    // is warm-up — traded through so indicators/gates/ML are live, but not judged. Anchored on
+    // ONE reference series (NIFTY, else the longest loaded) so every challenger and the
+    // incumbent share an identical boundary; scoring two arms over different spans would not
+    // be a comparison. null when there is no history to spare, which is the old behaviour and
+    // is what every short test fixture gets.
+    const refSeries = fullData.NIFTY || Object.values(fullData).reduce((a, b) => ((b && b.length > (a ? a.length : 0)) ? b : a), null) || [];
+    const scoreFromT = refSeries.length > EVOLVE_WINDOW ? refSeries[refSeries.length - EVOLVE_WINDOW].t : null;
+    const challengers = evolve({ roster: parents, dataBySymbol: recentData, eqSymbols, fnoSymbols, basketSymbols, n: 16, seed: s, cash: CASH, scoreFromT });
     const keyOf = (sym, spec) => `${sym}|${specKey(spec)}`;
     const existing = new Set(roster.map((b) => keyOf(b.symbol, b.spec)));
     const best = challengers.find((ch) => !existing.has(keyOf(ch.symbol, ch.spec)));
@@ -1255,9 +1272,12 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     // never the target. EQ/FNO are scored on their own symbol; a BASKET is scored
     // across its whole universe via the portfolio backtester (using fullData) —
     // otherwise fullData[label] is undefined and a basket could never be scored.
+    // The incumbent is scored through the SAME warm-up boundary as the challengers — scoring
+    // the bar a challenger must clear differently from the challenger itself is how a biased
+    // scorer corrupts the retire/replace decision even when both arms use one code path.
     const scoreBot = (b) => spansUniverse(b.kind)
-      ? scoreSpec(b.spec, null, b.symbol, CASH, recentData)
-      : (recentData[b.symbol] ? scoreSpec(b.spec, recentData[b.symbol], b.symbol, CASH) : null);
+      ? scoreSpec(b.spec, null, b.symbol, CASH, recentData, scoreFromT)
+      : (recentData[b.symbol] ? scoreSpec(b.spec, recentData[b.symbol], b.symbol, CASH, null, scoreFromT) : null);
     const scored = roster
       .filter((b) => !b.protected && !isIntradayInterval(b.interval))
       .map((b) => ({ b, fit: fitness(scoreBot(b)) }))
