@@ -175,6 +175,12 @@ own control. No study has yet produced a selection edge proven against a fair be
    and **1.59x** for cross-sectional momentum, with excess-Sharpe spanning **0.71–0.94**. Two
    starts a single week apart already differ materially.
 
+   **Attribution, stated honestly:** a later start moves the rebalance grid **and** measures a
+   shorter period, and that experiment does not separate the two. So the spread is not "phase
+   alone" — it is how much a published figure moves across start dates the strategy cannot
+   influence and nobody deliberately chose. The near-adjacent pair is the cleanest read on the
+   grid itself, since the period barely changes across a single week.
+
    **★ The consequence for reading any number here: a single lifetime return or Sharpe is one
    sample from that range, not the strategy's value.** In particular, a change between two
    runs of the same strategy is *not* evidence that it improved or decayed — this project's own

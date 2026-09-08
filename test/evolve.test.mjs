@@ -44,6 +44,33 @@ test('scoreSpec SCORES from the warm-up boundary, so a slow indicator is not cha
   assert.equal(scoreSpec(spec, series, 'NIFTY', 1_000_000, null, series[series.length - 1].t), null);
 });
 
+test('evolve() THREADS the warm-up boundary to every challenger', () => {
+  // The boundary reaches scoreSpec through evolve() as its SIXTH argument, past `dataBySymbol`.
+  // One slip in that order silently scores against the wrong thing while every other test still
+  // passes (the author made exactly that slip once), and no fixture is long enough for
+  // runGeneration to supply a boundary of its own — so lock the threading here.
+  const series = warmupSeries(900);
+  const roster = [{ id: 'a', name: 'A', kind: 'EQ', symbol: 'NIFTY', spec: { kind: 'EQ', name: 'A', entry: ['>', ['sma', 20], ['sma', 200]], exit: ['<', ['sma', 20], ['sma', 200]] } }];
+  const args = { roster, dataBySymbol: { NIFTY: series }, eqSymbols: ['NIFTY'], fnoSymbols: [], basketSymbols: [], n: 6, seed: 7, cash: 1_000_000 };
+  const boundary = series[series.length - 400].t;
+
+  const plain = evolve({ ...args });
+  const warm = evolve({ ...args, scoreFromT: boundary });
+  assert.ok(plain.length && warm.length, 'both produce challengers');
+  // Same seed => same challengers in the same order; only the SCORES may differ.
+  assert.deepEqual(warm.map((c) => c.symbol), plain.map((c) => c.symbol), 'the boundary must not change which challengers are generated');
+  const scoredDifferently = warm.some((w, i) => plain[i] && w.score && plain[i].score && w.score.totalReturnPct !== plain[i].score.totalReturnPct);
+  assert.ok(scoredDifferently, 'the boundary actually reached the scorer — otherwise it was dropped on the way through');
+});
+
+test('a cut window too short to judge is UNSCOREABLE, not scored on noise', () => {
+  // fitness multiplies Sharpe by 1000, so a handful of bars decides promotion on noise.
+  const series = warmupSeries(900);
+  const spec = { kind: 'EQ', name: 'Slow trend', entry: ['>', ['sma', 20], ['sma', 200]], exit: ['<', ['sma', 20], ['sma', 200]] };
+  assert.equal(scoreSpec(spec, series, 'NIFTY', 1_000_000, null, series[series.length - 6].t), null, 'a 6-bar window scores nothing');
+  assert.ok(scoreSpec(spec, series, 'NIFTY', 1_000_000, null, series[series.length - 400].t), 'a 400-bar window still scores');
+});
+
 test('scoreSpec is UNCHANGED when no warm-up boundary is given (every pre-existing caller)', () => {
   const series = warmupSeries(400);
   const spec = { kind: 'EQ', name: 'x', entry: ['<', ['rsi', 14], 30], exit: ['>', ['rsi', 14], 60] };

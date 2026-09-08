@@ -147,10 +147,14 @@ const EVOLVE_WINDOW = 756;
 // ...plus a WARM-UP prefix that is traded through but NOT scored. Without it, scoring began at
 // bar 0 of the window, so a spec whose rank/gate needs N bars sat in CASH for its first N
 // SCORED bars and was charged for the flat stretch — measured on the real universe, that
-// inverted `xsmom-research`'s fitness SIGN (Sharpe −0.55 cold vs +0.68 honest) and
+// inverted `xsmom-research`'s fitness SIGN (Sharpe −0.55 cold vs +0.76 with the cut) and
 // systematically punished LONGER lookbacks, which is exactly the axis a GA explores. 300 bars
 // covers the longest lookback the DSL allows a challenger to reach (mom 252 / sma 200) with
-// room to spare. Costs ~40% more work per generation, which only matters when breeding is on.
+// room to spare. COST, measured on the real universe rather than assumed from the bar count:
+// the ML baskets roughly DOUBLE (ridge 416→858ms, gbm 631→1151ms) because their training cost
+// scales with series length, while non-ML specs are flat. Budget ~1.8–2x per generation, not
+// the ~40% the extra bars suggest — and note runGeneration is synchronous, so on the free host
+// that is a straight event-loop block. Only matters when breeding is on.
 // A series too short to spare the prefix (every test fixture) simply scores in full, unchanged.
 const EVOLVE_WARMUP = 300;
 // How many symbols to fetch from Yahoo at once during the cold-boot backfill. The

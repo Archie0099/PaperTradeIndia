@@ -473,27 +473,48 @@ function generateChallengers(roster, n, rng, { eqSymbols = ['NIFTY'], fnoSymbols
 // scoring started at bar 0 of that window. A spec whose rank/gate needs N bars therefore sat
 // in CASH for its first N SCORED bars and was charged for the flat stretch. Measured on the
 // real universe, `xsmom-research` (rank `mom 252`, gate `sma 200`) idled 274 of 760 bars and
-// scored Sharpe −0.55 / −9.07% cold against +0.68 / +74.95% honestly — the fitness SIGN
-// inverts. Both the challenger AND the incumbent it must beat go through this same scorer, so
-// it corrupted the whole retire/replace decision, and it systematically punished LONGER
-// lookbacks (the mutations that differ only in lookback are exactly what a GA explores).
+// scored Sharpe −0.55 / −9.07% cold against +0.76 / +83.06% with this cut applied — the fitness
+// SIGN inverts (−554 → +840). Both the challenger AND the incumbent it must beat go through
+// this same scorer, so it corrupted the whole retire/replace decision, and it systematically
+// punished LONGER lookbacks (the mutations that differ only in lookback are what a GA explores).
 //
-// A longer data slice alone is NOT a fix — that just moves the idle stretch inside the scored
-// window. The cut has to be applied to the METRICS, which is what this does.
+// A longer data slice ALONE is a partial fix, not a no-op and not enough: measured, the longer
+// slice with no cut already scores +0.57 / +88.43%, because the idle stretch moves inside the
+// scored window instead of vanishing. Applying the cut to the METRICS is what removes the
+// residual bias, and it is what this does.
 // `times` are the bars the equity curve is indexed by; returns null when the window is too
 // short to say anything, so a caller treats it as "unscoreable" rather than trusting a number.
+// The shortest slice worth scoring. Fitness multiplies Sharpe by 1000, so a handful of bars
+// decides promotion on noise: measured, a 6-bar cut window scored Sharpe −1.26 (fitness −1261)
+// where the same spec over its full window scored −0.02 (fitness +9). Every production symbol
+// ends today so the cut is never this tight, but a stale series in fullData — or any future
+// shrink of EVOLVE_WINDOW — reaches it. Below this, say "unscoreable" instead of guessing.
+const MIN_SCORED_BARS = 60;
+
+// Metrics are rounded to 2dp to stay byte-identical to `summarize()`, which every previous
+// caller of scoreSpec received. Dropping the rounding would silently change fitness from
+// 10-quantised to continuous and re-order tie-breaks — a real behaviour change smuggled in
+// under a refactor, which is not what this change is for.
+const scored = (eq) => ({
+  totalReturnPct: +totalReturnPct(eq).toFixed(2),
+  sharpe: +sharpeOf(eq).toFixed(2),
+  maxDrawdownPct: +maxDrawdownPct(eq).toFixed(2),
+});
+
 function scoreFromTimestamp(equityCurve, times, fromT) {
   const eq = Array.isArray(equityCurve) ? equityCurve : [];
   if (!Number.isFinite(fromT) || !Array.isArray(times) || times.length !== eq.length) {
     // No cut requested (or no usable timeline): score the whole run, the long-standing behaviour.
-    return eq.length >= 2 ? { totalReturnPct: totalReturnPct(eq), sharpe: sharpeOf(eq), maxDrawdownPct: maxDrawdownPct(eq) } : null;
+    return eq.length >= 2 ? scored(eq) : null;
   }
   let cut = times.findIndex((t) => t >= fromT);
   if (cut < 0) return null; // the whole run predates the scoring window
   if (cut < 1) cut = 0; // nothing to warm up on — score it all
   const slice = eq.slice(cut);
-  if (slice.length < 2) return null;
-  return { totalReturnPct: totalReturnPct(slice), sharpe: sharpeOf(slice), maxDrawdownPct: maxDrawdownPct(slice) };
+  // A cut window must clear the noise floor; an UNCUT run keeps the old 2-bar minimum so
+  // existing callers (and their fixtures) are untouched.
+  if (slice.length < (cut > 0 ? MIN_SCORED_BARS : 2)) return null;
+  return scored(slice);
 }
 
 function scoreSpec(spec, series, symbol = 'NIFTY', cash = 1_000_000, dataBySymbol = null, scoreFromT = null) {

@@ -11,7 +11,13 @@
 // divergence.
 //
 // This measures that directly: hold the DATA, the SPEC, the COSTS and the END date fixed,
-// and vary ONLY where the history begins. Anything that moves is phase, not performance.
+// and vary ONLY where the history begins. Nothing about the STRATEGY differs between runs, so
+// whatever moves is not skill.
+//
+// ATTRIBUTION, stated honestly: a later start shifts the rebalance grid AND measures a shorter
+// period, and this tool does not separate the two. The near-adjacent starts (a week apart) are
+// the cleanest read, since the period barely changes there. Do not quote the full spread as
+// "phase alone" — quote it as how much a figure moves across start dates nobody chose.
 //
 // WHY IT MATTERS
 // --------------
@@ -71,7 +77,9 @@ if (isMain) {
   if (/synthetic/.test(mSrc)) { console.error('refusing to evaluate: the market series is synthetic.'); process.exit(1); }
   console.log(`data: ${Object.keys(data).length} names loaded (${dropped} dropped)`);
   console.log('★ SURVIVORSHIP: the universe is today\'s liquid names held fixed across history — every figure below is an UPPER BOUND (METHODOLOGY.md).');
-  console.log('★ Only the WINDOW START changes below. Same bars, same spec, same costs, same end date — so every difference is PHASE, not skill.\n');
+  console.log('★ Only the WINDOW START changes below: same bars, same spec, same costs, same END date — nothing about the strategy differs.');
+  console.log('★ ATTRIBUTION, honestly: moving the start shifts the rebalance GRID *and* shortens the PERIOD measured, and this does not separate them.');
+  console.log('  The near-adjacent pair (a week apart) is the cleanest read — the period barely moves there, so what is left is almost all grid phase.\n');
 
   for (const id of botIds) {
     const bot = SEED_BOTS.find((x) => x.id === id);
@@ -90,7 +98,7 @@ if (isMain) {
     const lo = Math.min(...crs), hi = Math.max(...crs);
     console.log(`=== ${bot.name} (${id}) ===`);
     for (const r of rows) console.log(`  starts ${r.start}   final ₹${r.cr.toFixed(2).padStart(7)} cr   CAGR ${r.cagr.toFixed(2).padStart(6)}%   xSharpe ${r.sharpe.toFixed(2)}`);
-    console.log(`  → terminal wealth ${lo.toFixed(2)}–${hi.toFixed(2)} cr = ${(hi / lo).toFixed(2)}x, xSharpe ${Math.min(...shs).toFixed(2)}–${Math.max(...shs).toFixed(2)}, from PHASE ALONE\n`);
+    console.log(`  → terminal wealth ${lo.toFixed(2)}–${hi.toFixed(2)} cr = ${(hi / lo).toFixed(2)}x, xSharpe ${Math.min(...shs).toFixed(2)}–${Math.max(...shs).toFixed(2)}, across start dates the strategy cannot influence\n`);
   }
   console.log('Read a single lifetime figure as ONE DRAW from that range, not as the strategy\'s value.');
 }
