@@ -161,6 +161,29 @@ own control. No study has yet produced a selection edge proven against a fair be
 
 ## Known biases that remain (read before quoting any long-history number)
 
+0. **Rebalance-phase sensitivity — a lifetime figure is ONE DRAW, not a value. MEASURED.**
+   A basket rebalances every `rebalanceBars` bars counted from bar 0 of the aligned master
+   timeline, and history is fetched as "20 years from **today**" — so bar 0 moves forward every
+   day, and every rebalance date moves with it. For a strategy that *selects* names this is not
+   a rounding difference: rebalancing a week later holds a different basket, which changes the
+   next period, compounded across roughly 240 monthly decisions.
+
+   **How big is it? Up to about 3x on terminal wealth.** Measured by holding the data, the spec,
+   the costs and the END date fixed and varying **only** the window's start date
+   (`node backtest/research/phase-sensitivity.mjs`): terminal wealth ranges ₹38.4–84.2 crore for
+   the risk-parity basket (**2.19x**), ₹47.5–161.6 crore for the multi-factor basket (**3.40x**)
+   and **1.59x** for cross-sectional momentum, with excess-Sharpe spanning **0.71–0.94**. Two
+   starts a single week apart already differ materially.
+
+   **★ The consequence for reading any number here: a single lifetime return or Sharpe is one
+   sample from that range, not the strategy's value.** In particular, a change between two
+   runs of the same strategy is *not* evidence that it improved or decayed — this project's own
+   board moved roughly 6x between two readings six weeks apart with no code change at all — and
+   a local run cannot be compared with the deployed board unless both windows begin on the same
+   date. Comparisons that stay valid are ones where the phase is shared: bots against each other
+   on the same board and boot, and the forward live record, which does not depend on the window
+   at all.
+
 1. **Survivorship bias — the big one, and now MEASURED.** The stock universe is ~105 names
    that are liquid **today**, held fixed across the whole ~20-year replay
    (`tournament/universe.mjs`). Names that would have ranked well in 2008 and then collapsed
