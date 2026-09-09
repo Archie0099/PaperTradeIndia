@@ -265,6 +265,59 @@ const AP_MIN_HISTORY = 252; // a bot needs ≥ ~1 year of history before it can 
 // index (full ~20y window, and the walk-forward mechanics are untouched), but "the
 // market" really pays dividends, so where the TRI proxy's history overlaps the
 // walk-forward we ALSO report the head-to-head over that common window (`benchTri`).
+// Point-in-time annualised Sharpe over ALL of a bot's history UP TO bar `hi` — matching the
+// live Auto-Pilot's "best (full-life) Sharpe" default, so the track record reflects what the
+// live copy actually does (and the walk-forward's CURRENT pick == the live champion). Reads
+// no future data, so the whole thing stays look-ahead-free. Hoisted to module scope (it is a
+// pure function of `a`, `hi` and RF_ANNUAL) so the degenerate-curve rule below can be tested
+// directly instead of only through a whole walk-forward.
+//
+// ★ A DEGENERATE (never-moving) CURVE IS UNPICKABLE BY INTENT, not by floating-point luck.
+// Returns here are EXCESS of the risk-free rate, so a curve that never moves is a bot idling
+// in cash against a 6.5% hurdle: its mean excess return is exactly -rfBar with zero dispersion,
+// which is not a "0 Sharpe" — it is the worst thing on the board and must never be crowned.
+// The old guard was `sd > 0`, and it got the right ANSWER for the wrong REASON: summation
+// rounding in `mean()` leaves sd at ~1e-18 rather than 0, so the expression returned about
+// -1.4e15 — huge and negative, hence never the argmax. But at exactly 20 or 21 returns the
+// arithmetic IS exact, sd is truly 0, and the old code returned **0** — which outranks every
+// genuinely underwater bot. That case cannot arise today only because AP_MIN_HISTORY (252)
+// keeps `rets.length` far above 21; it is an accident of one constant, not a guarantee.
+// Returning -Infinity says the intended thing directly and survives AP_MIN_HISTORY changing.
+// MEASURED before changing, on a full ~20y board: this alters
+// nothing — 16/16 walk-forward fields byte-identical across 70 rebalance bars, 0 winner changes.
+function sharpeUpTo(a, hi) {
+  // EXCESS-of-risk-free per-bar returns (same convention as metrics.mjs), so the
+  // champion is picked on the honest hurdle — a bot merely matching the T-bill
+  // rate with volatility no longer looks "risk-adjusted positive".
+  const rfBar = RF_ANNUAL / 252;
+  const rets = [];
+  for (let j = 1; j <= hi; j++) {
+    const p = a[j - 1];
+    if (p != null && p > 0 && a[j] != null) rets.push(a[j] / p - 1 - rfBar);
+  }
+  if (rets.length < 20) return -Infinity;
+  const m = rets.reduce((s, x) => s + x, 0) / rets.length;
+  const v = rets.reduce((s, x) => s + (x - m) ** 2, 0) / (rets.length - 1);
+  const sd = Math.sqrt(v);
+  // Compare sd against the SCALE of the numbers, not against a bare 0 (the same shape as the
+  // guard in backtest/metrics.mjs), so a curve that is flat to within rounding is caught too.
+  if (sd > Math.max(Math.abs(m), 1e-12) * 1e-9) return (m / sd) * Math.sqrt(252);
+  // ZERO DISPERSION — take the limit of m/sd, WHICH HAS A SIGN. Getting this wrong in either
+  // direction is a real misranking, so both branches are spelled out:
+  //   m < 0  a bot idling in cash while the risk-free rate accrues: the worst thing on the
+  //          board, and it must never be crowned.
+  //   m > 0  a riskless gain ABOVE the hurdle — the best thing on the board, not the worst.
+  //          (A perfectly smooth compounding curve is exactly this, and it is what the
+  //          Auto-Pilot fixtures use, so collapsing it to -Infinity silently stops the
+  //          walk-forward following an obviously-good bot.)
+  //   m = 0  matches the hurdle exactly with no risk taken: genuinely a 0 Sharpe.
+  // The old `sd > 0` guard reproduced these signs only by ACCIDENT — rounding left sd at
+  // ~1e-18 so `m / sd` blew up with the right sign — and fell through to a flat `0` at the
+  // lengths where the arithmetic came out exact (20 and 21 returns), which mis-ranks the
+  // idling case as better than any losing-but-trading bot.
+  return m > 0 ? Infinity : m < 0 ? -Infinity : 0;
+}
+
 function computeAutopilotTrack(curves, cash, triSeries = null) {
   const usable = (curves || []).filter((c) => Array.isArray(c.eq) && Array.isArray(c.times) && c.eq.length === c.times.length && c.times.length >= 2);
   if (!usable.length) return null;
@@ -284,26 +337,8 @@ function computeAutopilotTrack(curves, cash, triSeries = null) {
     return { ...c, a, firstIdx: firstIdx < 0 ? Infinity : firstIdx };
   });
   const benchA = aligned.find((c) => c.id === bench.id) || aligned[0]; // the benchmark, aligned (has `.a`)
-  // Point-in-time annualised Sharpe over ALL the bot's history UP TO bar `hi` — matching the
-  // live Auto-Pilot's "best (full-life) Sharpe" default, so the track record reflects what the
-  // live copy actually does (and the walk-forward's CURRENT pick == the live champion). Reads
-  // no future data, so the whole thing stays look-ahead-free.
-  const sharpeUpTo = (a, hi) => {
-    // EXCESS-of-risk-free per-bar returns (same convention as metrics.mjs), so the
-    // champion is picked on the honest hurdle — a bot merely matching the T-bill
-    // rate with volatility no longer looks "risk-adjusted positive".
-    const rfBar = RF_ANNUAL / 252;
-    const rets = [];
-    for (let j = 1; j <= hi; j++) {
-      const p = a[j - 1];
-      if (p != null && p > 0 && a[j] != null) rets.push(a[j] / p - 1 - rfBar);
-    }
-    if (rets.length < 20) return -Infinity;
-    const m = rets.reduce((s, x) => s + x, 0) / rets.length;
-    const v = rets.reduce((s, x) => s + (x - m) ** 2, 0) / (rets.length - 1);
-    const sd = Math.sqrt(v);
-    return sd > 0 ? (m / sd) * Math.sqrt(252) : 0;
-  };
+  // `sharpeUpTo` is the module-scope pure function above (hoisted so its degenerate-curve
+  // rule is directly testable); the picking loop below is unchanged.
   const ap = new Array(master.length).fill(null);
   const followed = [];
   let started = false, apEq = cash, lastRebal = -Infinity, chosen = null, startIdx = -1;
@@ -1490,4 +1525,7 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
 // proves only that the code equals itself — that is exactly how the 10x option-exchange-
 // charge error survived for months. Nothing at runtime imports these three; the
 // export is a test handle, and changes no behaviour.
-export { createTournament, computeAutopilotTrack, dropFormingBar, EVOLVE_WINDOW, EVOLVE_WARMUP, CASH };
+// `sharpeUpTo` is exported for its own test only — nothing at runtime imports it; the
+// walk-forward calls it directly. Exporting it means the degenerate-curve rule can be
+// asserted on its own, instead of only inferred from a whole walk-forward's output.
+export { createTournament, computeAutopilotTrack, sharpeUpTo, dropFormingBar, EVOLVE_WINDOW, EVOLVE_WARMUP, CASH };
