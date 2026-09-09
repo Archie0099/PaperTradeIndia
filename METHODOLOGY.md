@@ -112,6 +112,45 @@ this code produced.
   rules above still govern every return figure. A VaR built from a 500-day window carries the
   same "history repeats" assumption as every backtest here [RMFI p.677, 13.1].
 
+## Delta-hedged option sellers (`backtest/hedge.mjs`, a study — not a board bot)
+
+The premium-selling bots are **naked**: they hold nothing against the options they sell, so their
+P&L mixes "was there a volatility premium?" with "did the market happen not to crash?". The
+textbook's answer is delta hedging — hold delta × N of the underlying and rebalance as delta moves
+[OFOD p.420; RMFI p.185–188] — which turns the position into a bet on implied-minus-realised
+volatility, minus the cost of rebalancing. `hedge.mjs` is Hull's own simulation as a pure
+function (his Table 8.2 mechanics: rebalance to delta, simple interest on the hedge cost, an
+exercised call delivers the shares at the strike). It is locked three ways: the printed week-0
+and week-1 lines of his 100,000-call example, exactly; the invariant he states in words — with
+fine enough rebalancing the discounted hedge cost equals the Black–Scholes price on every path,
+and the spread of outcomes shrinks with frequency; and the sign rule — a hedged seller profits
+when realised volatility is below the volatility sold and loses when above.
+
+`backtest/research/hedged-seller.mjs` replays the fno backtester's monthly cycles (ATM straddle
+and ±6% strangle, one lot, options modelled at realised vol × premium) on real NIFTY history,
+naked and daily-hedged with the index future at the volatility sold, at volPremium 1.0/1.1/1.2
+and a hedge-cost sensitivity of 0/2/5 bps per side (an assumption stated, not a claimed
+schedule — no sourced index-futures cost schedule lives here). Measured over 218 cycles:
+
+- **The hedge does what the textbook says for the tail.** Straddle worst month −20.2% → −13.1%,
+  max drawdown at fair value 78.8% → 43.2%; strangle worst month −18.5% → **−2.8%**, drawdown
+  39.9% → 4.9%.
+- **It manufactures no edge.** At fair value the hedged straddle still loses −36.5% over the
+  history with *zero* hedge cost: leg costs, discrete-rebalancing error, and gaps. Any edge
+  lives entirely in the vol-premium assumption — hedging makes that explicit rather than fixing
+  it. At 1.2 it improves the return (+47% → +78%) and halves the drawdown; 5 bps/side of hedge
+  cost eats about a third of that.
+- **What it cannot do is a gap.** The hedged straddle's worst cycle is no longer COVID (a slide the
+  daily hedge followed) but the cycle holding the June-2024 election-day gap.
+- **Read the two Sharpes.** The headline excess-of-6.5% Sharpe punishes a low-volatility series
+  with a small drift (a 3% CAGR at ~1% vol reads −0.9); the rf = 0 figure beside it (+0.88) is the
+  one that describes the shape.
+
+This is an in-sample **mechanism** study over the whole history (nothing is fitted, and nothing is
+claimed out of sample) and every F&O figure remains "indicative". A hedged seller on the live
+board would need daily futures rehedging through the real engine — a separate build — and the
+study says it would be a *better-behaved* published negative at fair value, not an edge.
+
 ## Regime gates (the quant optimisers' market filter)
 
 Three optimiser baskets (multi-factor, mean-variance, risk-parity) carry a *buffered market gate*:
