@@ -316,12 +316,23 @@ own control. No study has yet produced a selection edge proven against a fair be
 - Factor z-scores are cross-sectional within the decision bar.
 - Regression tests corrupt future bars and assert byte-identical early decisions; the
   walk-forward Auto-Pilot has the same corrupt-the-future locks.
-- **A daily bar is admitted to the live record only at 16:00 IST — the 15:30 close plus a
+- **A daily bar is admitted to the live record no earlier than 16:00 IST — the 15:30 close plus a
   30-minute settle margin** — by one shared predicate (`dailySessionClosed`, `backtest/data.mjs`)
-  that both the boot path and the live tick call. NSE's official close is a last-30-minute VWAP
-  published minutes after the bell and a free feed's bar can be revised in that window; since a
-  timestamp is never re-admitted and the advisor log is append-only, a bar taken at 15:30:01
+  that both the boot path and the live tick call. NSE’s official close is a last-30-minute VWAP
+  published minutes after the bell and a free feed’s bar can be revised in that window; since a
+  timestamp is never re-admitted and the suggestion log is append-only, a bar taken at 15:30:01
   could be a bad print made permanent. The margin is the price of never editing the record.
+- **In practice the data feed, not that rule, decides when a day is recorded.** The free daily
+  endpoint emits the current session’s row with an `open` but a **`null` close** until it
+  backfills the settled close, and a null-close row is skipped rather than guessed at (a price is
+  never fabricated). Measured on this feed: one session’s close was already published ~3 hours
+  after its bell, while another’s was still absent ~10.5 hours after — feed-wide across index,
+  large-cap and ETF symbols and on both API hosts — even though the same response’s quote field
+  and the 60-minute series both carried that close. So the admission time is
+  `max(close + settle margin, publication)`, the second term usually dominates, and the publication
+  lag is variable rather than a fixed offset. A session whose close is never published on the day
+  is simply not recorded: missed days are never back-filled, because reconstructing one after the
+  fact would be hindsight — the one thing an append-only forward record exists to rule out.
 - **The VaR back-test is forward by construction:** each day's VaR is built only from the
   returns strictly before it, and a day is scored against that already-published figure
   (`backtest/risk.mjs`, `rollingVaRBacktest`). It cannot be fitted to the days it judges.
