@@ -400,9 +400,40 @@ function renderBotPage(body, d, row) {
   if (track != null) stats.append(stat('Track (life)', signed(track, 2) + '%', moveClass(track)));
   stats.append(stat('Sharpe', String(m.sharpe != null ? m.sharpe : '–')));
   stats.append(stat('MaxDD', (m.maxDrawdownPct != null ? m.maxDrawdownPct : '–') + '%'));
+  // Risk block: the two questions a risk desk asks — "how bad can things get?"
+  // (VaR) and "if they do, what is the expected loss?" (ES) — one-day, 99%, by historical
+  // simulation on the trailing 500 daily returns. Rendered only when the curve holds a tail.
+  const rk = m.risk;
+  if (rk && rk.var1dPct != null) {
+    stats.append(stat('VaR 99% (1d)', rk.var1dPct.toFixed(2) + '%', 'down'));
+    stats.append(stat('ES 99% (1d)', rk.es1dPct.toFixed(2) + '%', 'down'));
+  }
   stats.append(stat('Equity', rupee(d.equity, 0), moveClass((d.equity || 0) - 10000000)));
   stats.append(stat('Trades', String(d.tradeCount != null ? d.tradeCount : 0)));
   body.append(stats);
+  // The VaR BACK-TEST — the honest part. Every day in the last 250, the bot's 99% VaR was
+  // built from returns strictly BEFORE that day; an "exception" is a day whose loss beat it.
+  // At 99% you expect ~2.5 in 250. Kupiec's two-tailed test rejects the model at the 5% level
+  // for too MANY exceptions (the VaR understates risk) or too FEW (it overstates it); the
+  // Basel traffic light is the regulator's ladder on the same count (green ≤ 4, yellow 5–9,
+  // red ≥ 10). A red bot is mis-measuring its own risk, whatever its Sharpe says.
+  if (rk && rk.backtest) {
+    const bt = rk.backtest;
+    const zoneClass = bt.zone === 'red' ? 'down' : bt.zone === 'green' ? 'up' : '';
+    body.append(el('div', { class: 'muted', style: 'font-size: 12px; margin: -4px 0 8px' }, [
+      `VaR back-test, last ${bt.days} days (no hindsight — each day’s VaR uses only prior returns): `,
+      // The Basel zone exists only on a 250-day test; a shorter span shows the count without one.
+      el('span', { class: zoneClass, style: 'font-weight: 600' }, `${bt.exceptions} exception${bt.exceptions === 1 ? '' : 's'} vs ${bt.expected} expected${bt.zone ? ` · ${bt.zone.toUpperCase()} zone` : ' · no Basel zone (the ladder is defined on 250 days)'}`),
+      bt.kupiecReject
+        ? ` · Kupiec test REJECTS this VaR model (statistic ${bt.kupiec} > 3.84 — it ${bt.exceptions > bt.expected ? 'understates' : 'overstates'} the bot’s risk).`
+        : ` · Kupiec test does not reject (statistic ${bt.kupiec} ≤ 3.84).`,
+      ` Ten-day VaR ≈ ${rk.var10dPct.toFixed(2)}% by the √10 rule (an approximation that ignores autocorrelation).`,
+      // A total loss inside the window: the percentages above are capped at 100% (you cannot
+      // lose more than everything, per rupee held), and the reader must know the cap is in
+      // play — this tail contains a wipe-out, which is the honest tail of a naked short.
+      rk.wiped ? el('span', { class: 'down', style: 'font-weight: 600' }, ' The account was WIPED OUT at least once inside this window — the VaR/ES above are capped at a total loss; treat this bot’s downside as unbounded.') : '',
+    ]));
+  }
 
   // Cost + liquidity honesty line: which real cost schedule this bot's whole track
   // paid (plus non-trade fees — SLB borrow, F&O brokerage), and whether any fills

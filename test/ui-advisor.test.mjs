@@ -345,3 +345,103 @@ test('"Change / clear capital" resets the panel back to the weight-level view', 
   assert.equal(JSON.parse(localStorage.getItem('paper-trade-india:advisor')).capital, null);
   assert.ok(dom.$('#adv-capital'), 'the capital input is back');
 });
+
+// the banner used to be gated on `readFailed` ALONE, so a store that read fine
+// but could not be WRITTEN lost today's suggestion just as completely — and said nothing.
+test('an UNWRITABLE store warns too, with its own wording (not the fail-closed one)', async () => {
+  const dom = setupDom();
+  const app = appWith(dom, advisorPayload(), { enabled: true, attempted: true, restored: true, readFailed: false, writeFailed: true });
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  const txt = dom.$('#ap-suggestions').textContent;
+  assert.match(txt, /not being saved/i, 'the panel still states the record is not being kept');
+  assert.match(txt, /last attempt to SAVE failed/i, 'and says it is the WRITE that failed, not the read');
+  assert.match(txt, /not growing/i, 'the stored copy is intact, it just is not accumulating');
+  assert.ok(!/refused/i.test(txt), 'it must NOT claim saving was refused on purpose — that is the readFailed case');
+});
+
+// ---------------------------------------------------------------------------
+// the real-capital panel answers the two risk questions IN RUPEES on
+// the assumed book, scaled from the champion’s board-row VaR/ES, and says whose
+// risk it is and how the VaR has been back-testing.
+// ---------------------------------------------------------------------------
+const withChampRisk = (dom, risk) => {
+  const adv = advisorPayload();
+  const app = dom.makeApp({
+    api: Object.assign(dom.makeApiStub(), {
+      tournament: async () => { const s = standings(adv, undefined); s.bots[0].risk = risk; return s; },
+      tournamentBot: async (id) => ({ ok: true, id, name: "Sharpe King", mirror: { followable: true, equity: 1.08e7, positions: [] } }),
+    }),
+  });
+  app.engine.reset(10_000_000);
+  return app;
+};
+const rupees = (txt, re) => { const m = txt.match(re); return m ? Number(m[1].replace(/,/g, "")) : NaN; };
+
+test("the real-capital panel states tomorrow’s VaR and ES in rupees on the assumed book", async () => {
+  const dom = setupDom();
+  const risk = { conf: 0.99, window: 500, var1dPct: 2.13, es1dPct: 3.41, var10dPct: 6.74,
+    backtest: { exceptions: 7, days: 250, expected: 2.5, kupiec: 5.21, kupiecReject: true, zone: "yellow", mc: 3.65 } };
+  const app = withChampRisk(dom, risk);
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  app.tabs.show("autopilot"); // the click handler re-renders only a VISIBLE tab
+  dom.setPrompt("25"); // the drawdown-tolerance question; null would abort the capital step
+  dom.$("#adv-capital").value = "1000000";
+  dom.fire(dom.$("#adv-capital-set"), "click");
+  await new Promise((r) => setTimeout(r, 0));
+  const txt = dom.$("#ap-suggestions").textContent;
+  assert.match(txt, /Tomorrow’s risk on this ₹[\d,]+: with 99% confidence you should not lose more than ₹[\d,]+ \(one-day VaR, 2\.13%\); if you do, expect to lose about ₹[\d,]+ \(expected shortfall, 3\.41%\)\. Historical simulation on the champion’s last 500 trading days\./, "the two questions, in rupees, with the method and window");
+  assert.match(txt, /Its VaR back-test over the last 250 days: 7 exceptions vs 2\.5 expected \(yellow zone\)\./, "and how that VaR has been back-testing");
+  // The rupee figures must be the book value scaled by the percentages — check the ARITHMETIC,
+  // not a hard-coded value (the book value depends on the applied suggestions).
+  const value = rupees(txt, /Tomorrow’s risk on this ₹([\d,]+):/);
+  const varRs = rupees(txt, /not lose more than ₹([\d,]+)/);
+  const esRs = rupees(txt, /expect to lose about ₹([\d,]+)/);
+  assert.ok(value > 0 && Math.abs(varRs - value * 0.0213) <= 1, `VaR ₹ = value × 2.13% (value ${value}, got ${varRs})`);
+  assert.ok(Math.abs(esRs - value * 0.0341) <= 1, `ES ₹ = value × 3.41% (got ${esRs})`);
+  assert.ok(esRs > varRs, "ES is never below VaR");
+});
+
+test("a RED back-test zone tells you to trust that VaR least; no risk block → no risk line", async () => {
+  const dom = setupDom();
+  const red = { conf: 0.99, window: 500, var1dPct: 1.5, es1dPct: 2.4, var10dPct: 4.7,
+    backtest: { exceptions: 12, days: 250, expected: 2.5, kupiec: 19.3, kupiecReject: true, zone: "red", mc: 4 } };
+  const app = withChampRisk(dom, red);
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  app.tabs.show("autopilot"); // the click handler re-renders only a VISIBLE tab
+  dom.setPrompt("25"); // the drawdown-tolerance question; null would abort the capital step
+  dom.$("#adv-capital").value = "1000000";
+  dom.fire(dom.$("#adv-capital-set"), "click");
+  await new Promise((r) => setTimeout(r, 0));
+  assert.match(dom.$("#ap-suggestions").textContent, /12 exceptions vs 2\.5 expected \(red zone — this VaR is being breached far too often; trust it least\)\./, "the red-zone warning");
+
+  const dom2 = setupDom();
+  const app2 = withChampRisk(dom2, null);
+  initAutoPilot(app2);
+  await renderAutoPilot(app2);
+  app2.tabs.show("autopilot");
+  dom2.setPrompt("25");
+  dom2.$("#adv-capital").value = "1000000";
+  dom2.fire(dom2.$("#adv-capital-set"), "click");
+  await new Promise((r) => setTimeout(r, 0));
+  assert.ok(!/Tomorrow’s risk/.test(dom2.$("#ap-suggestions").textContent), "no champion risk block → the line is simply absent");
+});
+
+test("a WIPED champion gets no rupee VaR — the panel refuses to size a total loss and says why (review finding)", async () => {
+  const dom = setupDom();
+  const wiped = { conf: 0.99, window: 500, wiped: true, var1dPct: 100, es1dPct: 100, var10dPct: 100,
+    backtest: { exceptions: 1, days: 250, expected: 2.5, kupiec: 1.32, kupiecReject: false, zone: "green", mc: 3 } };
+  const app = withChampRisk(dom, wiped);
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  app.tabs.show("autopilot");
+  dom.setPrompt("25");
+  dom.$("#adv-capital").value = "1000000";
+  dom.fire(dom.$("#adv-capital-set"), "click");
+  await new Promise((r) => setTimeout(r, 0));
+  const txt = dom.$("#ap-suggestions").textContent;
+  assert.match(txt, /Tomorrow’s risk on this ₹[\d,]+: not quantifiable — the champion’s last 500 trading days include a TOTAL LOSS, so a rupee VaR is not a meaningful figure for it\. Treat the downside of following it as unbounded, and re-read the honesty check above\./, "a warning, not a number");
+  assert.ok(!/not lose more than ₹/.test(txt), "and NO rupee VaR/ES figure is printed for a wiped champion");
+});

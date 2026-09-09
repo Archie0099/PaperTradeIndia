@@ -74,6 +74,44 @@ overnight position is a delivery trade in the real market.
 - **Sortino** follows the same conventions as the Sharpe (excess-of-rf numerator, wiped-account
   cap) but its denominator penalises only downside deviation.
 
+## Risk measures (`backtest/risk.mjs`)
+
+Every bot row and the per-bot page carry a risk block; the Advisor scales it to real capital.
+Every formula is Hull's (*Risk Management and Financial Institutions* 4e, cited by PDF page),
+and every one is unit-tested against a number printed in that book — never against a number
+this code produced.
+
+- **VaR** answers "how bad can things get?"; **Expected Shortfall** answers "if things do get
+  bad, what is the expected loss?" [RMFI p.287]. Both are **one-day, 99%**, by **historical
+  simulation on the trailing 500 daily returns** — Hull's window and his "fifth worst of 500"
+  rule for the VaR, the mean of those five for the ES [RMFI p.306, 310]. Sign convention is
+  Hull's: a VaR is a positive fraction of equity you might lose.
+- **The ten-day VaR is the √10 rule** (eq 12.3) and is labelled an approximation: it is exact
+  only for i.i.d. zero-mean normal daily changes, and a positive first-order autocorrelation
+  makes it **too low** [RMFI p.293–294]. The autocorrelation-corrected form (eq 12.5) is
+  implemented and tested but not shown.
+- **The VaR back-test is the honest part, and is a forward test by construction.** Over the
+  last 250 days, each day's VaR is built only from the returns strictly before it, and a day
+  whose loss exceeded it is an *exception*. At 99% you expect 2.5 in 250. Two verdicts are
+  shown: **Kupiec's two-tailed likelihood-ratio test** (eq 12.11, reject above 3.84) — which
+  rejects for too FEW exceptions as well as too many, since a VaR that is never breached is
+  overstating risk — and the **Basel traffic light** (green ≤ 4, yellow 5–9, red ≥ 10 in 250
+  days, the regulator's capital-multiplier ladder [RMFI p.364]). A bot in the red zone is
+  mis-measuring its own risk, whatever its Sharpe says.
+- **Also implemented, tested, and available to research but not shown on the board:**
+  parametric (variance–covariance) VaR/ES (eq 12.1–12.2); confidence-level conversion
+  (12.6–12.7); the discrete-distribution VaR/ES that shows VaR failing subadditivity while ES
+  keeps it (Problem 12.5); **weighted historical simulation** — the "Responsive VaR" of the
+  practitioner systems, λ = 0.994, ~56% of the weight in the last six months [RMFI p.312–313]; the
+  **EWMA** (eq 10.8, λ = 0.94) and **GARCH(1,1)** (eq 10.10) variance recursions with the
+  long-run variance and the mean-reverting forecast (eq 10.14); and the Excel
+  `PERCENTILE.INC` and practitioner interpolated-percentile conventions, because the two
+  differ and spreadsheets use one while the textbook uses the other.
+- **What this is NOT.** None of these measures is a trading edge, and none is claimed as one.
+  They measure the risk of a strategy that already exists; the fair-benchmark and survivorship
+  rules above still govern every return figure. A VaR built from a 500-day window carries the
+  same "history repeats" assumption as every backtest here [RMFI p.677, 13.1].
+
 ## Regime gates (the quant optimisers' market filter)
 
 Three optimiser baskets (multi-factor, mean-variance, risk-parity) carry a *buffered market gate*:
@@ -239,6 +277,15 @@ own control. No study has yet produced a selection edge proven against a fair be
 - Factor z-scores are cross-sectional within the decision bar.
 - Regression tests corrupt future bars and assert byte-identical early decisions; the
   walk-forward Auto-Pilot has the same corrupt-the-future locks.
+- **A daily bar is admitted to the live record only at 16:00 IST — the 15:30 close plus a
+  30-minute settle margin** — by one shared predicate (`dailySessionClosed`, `backtest/data.mjs`)
+  that both the boot path and the live tick call. NSE's official close is a last-30-minute VWAP
+  published minutes after the bell and a free feed's bar can be revised in that window; since a
+  timestamp is never re-admitted and the advisor log is append-only, a bar taken at 15:30:01
+  could be a bad print made permanent. The margin is the price of never editing the record.
+- **The VaR back-test is forward by construction:** each day's VaR is built only from the
+  returns strictly before it, and a day is scored against that already-published figure
+  (`backtest/risk.mjs`, `rollingVaRBacktest`). It cannot be fitted to the days it judges.
 
 ## Money model
 

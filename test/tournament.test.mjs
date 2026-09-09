@@ -680,3 +680,57 @@ test('evolutionEnabled:false turns breeding OFF — runGeneration is a no-op, th
   }
   assert.equal(t.getStandings().history.length, 0, 'no evolution events are logged');
 });
+
+// ---------------------------------------------------------------------------
+// tick() accepts a bar when its SESSION has closed, not when the
+// calendar date has rolled over.
+//
+// tick() used to filter `istDate(c.t) < today` (today = istDate(Date.now())): a wall-clock
+// DATE compare. That threw away today's bar even HOURS after the 15:30 IST close, and only
+// admitted it once the IST date rolled past midnight. Meanwhile the BOOT path already used
+// the session-aware dropFormingBar and recorded same-day — two different rules for one
+// question, and the strict one governed the long-running server. Consequence: the advisor's
+// append-only log could only advance in the window AFTER MIDNIGHT IST, historically the
+// least likely time for a free dyno to be awake. That filter, not just the sleeping host,
+// held the capture rate down.
+//
+// Both branches are locked below, and `now` is INJECTED — never the wall clock, because
+// "is this bar done?" is a SESSION question and a fixture built around "today" means
+// opposite things before and after 15:30 IST (§5).
+// ---------------------------------------------------------------------------
+test('tick() admits a bar once its SESSION has closed, and NEVER a forming one', async () => {
+  const series = niftySeries();
+  const lastT = series[series.length - 1].t;
+  const barT = lastT + 864e5;                                  // the next session
+  const close = Date.parse(new Date(barT + 5.5 * 3600e3).toISOString().slice(0, 10) + 'T10:00:00.000Z');
+
+  const orig = freeProvider.getHistory;
+  freeProvider.getHistory = async () => ({ symbol: 'NIFTY', candles: [{ t: barT, c: 30000 }] });
+  try {
+    // (a) FORMING — the session has not closed yet. It must be refused, because an entry
+    // written from a PARTIAL close would sit in the append-only log forever, unedited.
+    const early = await createTournament({ seed: SEED, backfillData: { NIFTY: series }, persist: false });
+    await early.init();
+    const beforeBars = early.getStandings().liveBars;
+    assert.equal(await early.tick({ now: close - 3600e3 }), false, 'an hour BEFORE the close the bar is still forming — refused');
+    assert.equal(early.getStandings().liveBars, beforeBars, 'and nothing was appended');
+
+    // (b) CLOSED — one hour after 15:30 IST, on the bar's OWN calendar day. This is exactly
+    // the case the old wall-clock rule rejected (istDate(bar) === istDate(now), so
+    // `istDate(c.t) < today` was false) and the boot path accepted. It must be admitted.
+    const late = await createTournament({ seed: SEED, backfillData: { NIFTY: series }, persist: false });
+    await late.init();
+    assert.equal(await late.tick({ now: close + 3600e3 }), true, 'an hour AFTER its close the same bar is complete — admitted same day');
+    assert.equal(late._seriesFor('NIFTY').slice(-1)[0].c, 30000, 'the completed bar really landed on the series');
+
+    // (c) THE SETTLE MARGIN — ten minutes after the bell is NOT yet complete. NSE's official
+    // close is a VWAP published minutes after 15:30 and a feed's bar can be revised; the
+    // append-only advisor log would make a bad first print permanent.
+    const early2 = await createTournament({ seed: SEED, backfillData: { NIFTY: series }, persist: false });
+    await early2.init();
+    assert.equal(await early2.tick({ now: close + 10 * 60e3 }), false, 'inside the 30-minute settle margin the bar is still refused');
+    assert.equal(await early2.tick({ now: close + 30 * 60e3 }), true, 'and admitted exactly at close + 30 min (16:00 IST)');
+  } finally {
+    freeProvider.getHistory = orig;
+  }
+});

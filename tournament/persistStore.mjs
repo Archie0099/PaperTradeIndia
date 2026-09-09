@@ -76,6 +76,27 @@ function createPersistStore({
   let readFailed = false;
   let warnedReadFailed = false;
 
+  // Did the last WRITE attempt fail? The read path above was hardened after an
+  // expired token hid for three weeks — but `flush()` was left exactly as it was, and it
+  // never checked `res.ok` and swallowed every error. So a store that had gone UNWRITABLE
+  // while still READABLE was completely invisible: `readFailed` stays false (only load()
+  // sets it), so save() kept accepting blobs, the advisor panel's warning never fired (it
+  // is gated on readFailed), and nothing reached the host log. That is the SAME silent
+  // shape as the outage the read-side hardening was written to prevent.
+  //
+  // ★ This flag is DIAGNOSTIC ONLY — it must never gate save() the way readFailed does.
+  // Refusing to write after a failed write would turn one transient 502 into a permanent
+  // self-inflicted outage; the fail-closed rule exists to protect a store we could not
+  // READ, which is a different danger. Writes keep retrying; we just stop being silent.
+  // It clears on the next successful write, so it reports the CURRENT state, not history.
+  let writeFailed = false;
+  let warnedWriteFailed = false;
+  const warnWrite = (why) => {
+    if (warnedWriteFailed) return; // once per failing streak — a 10-min tick would spam
+    warnedWriteFailed = true;
+    console.warn(`persistStore: could not WRITE the remote store (${why}). Reads still work, so nothing stored is lost and the board looks healthy — but today's forward bars and advisor entries are NOT being persisted and will reset on the next restart.`);
+  };
+
   // Say WHY a read failed, once, on the host's log. The store going unreadable is silent by
   // design (fail-closed, best-effort) and that silence once hid an expired token for three
   // WEEKS — the forward record simply stopped accumulating and nothing anywhere said so. The
@@ -154,8 +175,20 @@ function createPersistStore({
           // Drain the response body so the underlying socket is released back to the pool
           // (an un-consumed fetch body can otherwise keep the connection open under undici).
           if (res && typeof res.text === 'function') await res.text().catch(() => {});
-        } catch {
-          /* best-effort — drop this attempt; the next save() will retry with fresher state */
+          // ★ A non-2xx PATCH used to be indistinguishable from success here: the body was
+          // drained, `pending` was already cleared, and the blob was silently DROPPED. Name it.
+          if (!res || !res.ok) {
+            writeFailed = true;
+            warnWrite(res && Number.isFinite(res.status) ? `HTTP ${res.status} — ${explainStatus(res.status)}` : 'the response carried no status');
+          } else {
+            writeFailed = false;
+            warnedWriteFailed = false; // recovered — a later failure is news again
+          }
+        } catch (e) {
+          /* best-effort — drop this attempt; the next save() will retry with fresher state.
+             Still SAY so: silence here is what made a write outage invisible. */
+          writeFailed = true;
+          warnWrite(e && e.name === 'AbortError' ? `timed out after ${timeoutMs}ms` : (e && e.message) || 'network error');
         }
       }
     } finally {
@@ -186,7 +219,7 @@ function createPersistStore({
     flush().catch(() => {}); // fire-and-forget; flush swallows internally, but guard defensively
   }
 
-  return { enabled, load, save, flush, readFailed: () => readFailed };
+  return { enabled, load, save, flush, readFailed: () => readFailed, writeFailed: () => writeFailed };
 }
 
 export { createPersistStore, FILENAME };

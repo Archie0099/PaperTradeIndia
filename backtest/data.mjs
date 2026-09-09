@@ -123,6 +123,17 @@ function trailingSuspectJump(candles) {
 const IST_SHIFT = 5.5 * 3600000;
 const istDayOf = (ms) => new Date(ms + IST_SHIFT).toISOString().slice(0, 10);
 const NSE_CLOSE_UTC = 'T10:00:00.000Z'; // 15:30 IST
+// SETTLE MARGIN for the DAILY rule. NSE's official close is the last-30-minute VWAP, published
+// minutes after 15:30, and a free feed's daily bar can be revised in that window. The tournament
+// appends the first close it sees and never re-admits that timestamp, and the advisor log built
+// from it is append-only and never edited — so a bar admitted at 15:30:01 could be a bad print
+// made permanent. A daily bar therefore counts as complete only at close + this margin (16:00
+// IST). ONE predicate serves BOTH the boot path (dropFormingBar, below) and the live tick
+// (tournament.mjs), so the two rules can never drift apart again — they did once: boot admitted
+// a finished session same-day while the tick refused it until midnight.
+const SETTLE_MS = 30 * 60 * 1000;
+const dailyCloseOf = (t) => Date.parse(istDayOf(t) + NSE_CLOSE_UTC);
+const dailySessionClosed = (t, now = Date.now()) => { const c = dailyCloseOf(t); return Number.isFinite(c) && now >= c + SETTLE_MS; };
 const intervalMsOf = (interval) => {
   const m = /^(\d+)(m|h)$/.exec(interval || '');
   return m ? +m[1] * (m[2] === 'h' ? 3600000 : 60000) : 3600000;
@@ -136,7 +147,10 @@ function dropFormingBar(candles, interval, now = Date.now()) {
   try { close = Date.parse(istDayOf(last.t) + NSE_CLOSE_UTC); } catch { return candles; }
   if (!Number.isFinite(close)) return candles; // unparseable timestamp: leave it alone
   const isIntraday = /^\d+(m|h)$/.test(interval || '');
-  const doneAt = isIntraday ? Math.min(last.t + intervalMsOf(interval), close) : close;
+  // Daily: the shared settle-margin rule. Intraday: unchanged — the final 60m bar is released
+  // AT the close (it is only 15 minutes long), and the intraday track is a live paper track,
+  // not the append-only real-money log the margin exists to protect.
+  const doneAt = isIntraday ? Math.min(last.t + intervalMsOf(interval), close) : close + SETTLE_MS;
   return now >= doneAt ? candles : candles.slice(0, -1);
 }
 
@@ -303,4 +317,4 @@ async function loadCandles(symbol, { interval = '1d', range = '5y', refresh = fa
   return clean(syn.candles, 'synthetic (offline — wiring only)');
 }
 
-export { loadCandles, sanitizeCandles, trailingSuspectJump, toAdjusted, dropFormingBar };
+export { loadCandles, sanitizeCandles, trailingSuspectJump, toAdjusted, dropFormingBar, dailySessionClosed, SETTLE_MS };

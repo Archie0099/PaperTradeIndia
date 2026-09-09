@@ -282,7 +282,10 @@ test('the board REPORTS what the remote store did, so a non-restore is diagnosab
   // (a) unconfigured: enabled false, nothing attempted.
   const off = await createTournament({ seed: SEED, backfillData: data, persist: false, evolutionEnabled: false });
   await off.init();
-  assert.deepEqual(off.getStandings().persist, { enabled: false, attempted: false, restored: false, readFailed: false });
+  // `writeFailed` joined this shape — a store that reads fine but cannot be
+  // WRITTEN was previously invisible from outside. Updated deliberately (not loosened):
+  // the assertion still pins the EXACT shape, it just pins the current one.
+  assert.deepEqual(off.getStandings().persist, { enabled: false, attempted: false, restored: false, readFailed: false, writeFailed: false });
 
   // (b) configured and the read FAILS -> attempted, not restored, readFailed true.
   const failing = createPersistStore({ token: 't', gistId: 'g', fetchImpl: async () => ({ ok: false }) });
@@ -312,4 +315,84 @@ test('the board REPORTS what the remote store did, so a non-restore is diagnosab
   const pGood = second.getStandings().persist;
   assert.equal(pGood.restored, true, 'a healthy read of a real record restores');
   assert.equal(pGood.readFailed, false);
+});
+
+// ---------------------------------------------------------------------------
+// the WRITE path used to be as silent as the read path once was.
+//
+// An earlier change hardened load(): it names the HTTP status and its meaning, and it FAILS CLOSED.
+// But flush() was left exactly as it was — it never checked `res.ok` and its catch was
+// empty. So a store that had gone UNWRITABLE while still READABLE was invisible in every
+// direction at once: `readFailed` stays false (only load() sets it), so save() kept
+// accepting blobs, the advisor panel's banner never fired (gated on readFailed), and the
+// host log stayed clean. That is the same silent shape as the three-week token outage.
+// ---------------------------------------------------------------------------
+test('a FAILED WRITE is reported, not swallowed (the read path was hardened, this one was not)', async () => {
+  const readable = { ok: true, json: async () => ({ files: { 'tournament-state.json': { content: '{"deployedAt":1,"live":{}}' } } }) };
+
+  // A store that reads perfectly well and rejects every PATCH — the exact blind spot.
+  let patchStatus = 401;
+  const store = createPersistStore({
+    token: 't', gistId: 'g',
+    fetchImpl: async (url, opts = {}) => {
+      if ((opts.method || 'GET') === 'PATCH') return { ok: patchStatus === 200, status: patchStatus, text: async () => '' };
+      return readable;
+    },
+  });
+
+  assert.notEqual(await store.load(), null, 'the read succeeds — this is NOT the fail-closed case');
+  assert.equal(store.readFailed(), false, 'so readFailed stays false, which is why this hid');
+  assert.equal(store.writeFailed(), false, 'and nothing has been written yet');
+
+  // save() kicks a FIRE-AND-FORGET flush, and flush() returns early while one is in flight
+  // (`if (flushing) return`). So awaiting flush() alone can return before the PATCH settles —
+  // this drains the microtask chain (fetch -> res.text() -> the ok check) instead of racing it.
+  const settle = async () => { for (let i = 0; i < 8; i++) await new Promise((r) => setImmediate(r)); };
+
+  store.save({ deployedAt: 1, live: {}, advisorLog: [] });
+  await settle();
+  await store.flush();
+  assert.equal(store.writeFailed(), true, 'a 401 PATCH is recorded as a write failure, not treated as success');
+  assert.equal(store.readFailed(), false, 'and it must NOT be confused with a read failure — different danger, different fix');
+
+  // ★ The asymmetry is deliberate: readFailed GATES writes (never overwrite a store we
+  // could not read), writeFailed must NOT. Refusing to write after a failed write would
+  // turn one transient 502 into a permanent self-inflicted outage.
+  patchStatus = 200;
+  store.save({ deployedAt: 2, live: {}, advisorLog: [] });
+  await settle();
+  await store.flush();
+  assert.equal(store.writeFailed(), false, 'recovery clears the flag — it reports the CURRENT state, not history');
+});
+
+// ---------------------------------------------------------------------------
+// the write-failure flag must be read LIVE, not frozen at the last
+// recompute. tick() runs save() → recompute → advisorTick() → save(); the recompute's
+// finalizer stamped `writeFailed` BEFORE the first PATCH had settled (and before the
+// advisor-log save at all), so a failed write of the one artifact that cannot be
+// recomputed showed "healthy" on /api/tournament until the NEXT recompute.
+// ---------------------------------------------------------------------------
+test('getStandings() reports a FAILED WRITE live — not the value frozen at the last recompute', async () => {
+  let patchOk = true;
+  const store = createPersistStore({
+    token: 't', gistId: 'g',
+    fetchImpl: async (url, opts = {}) => {
+      if ((opts.method || 'GET') === 'PATCH') return { ok: patchOk, status: patchOk ? 200 : 401, text: async () => '' };
+      return { ok: true, json: async () => ({ files: {} }) }; // an honest empty store: readable, writable
+    },
+  });
+  const data = { NIFTY: series() };
+  const t = await createTournament({ seed: SEED, backfillData: data, persist: false, persistStore: store, evolutionEnabled: false });
+  await t.init();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(t.getStandings().persist.writeFailed, false, 'healthy while PATCHes succeed');
+
+  // Now the store goes UNWRITABLE while still readable. A control op recomputes the board
+  // SYNCHRONOUSLY (stamping the flags) and only THEN save()s — so the frozen value is "false".
+  patchOk = false;
+  t._appendLiveClose('NIFTY', { t: data.NIFTY[data.NIFTY.length - 1].t + DAY, c: 321 });
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0)); // let the fire-and-forget PATCH fail
+  assert.equal(t.getStandings().persist.writeFailed, true, 'the board reports the failed write WITHOUT waiting for another recompute');
+  assert.equal(t.getStandings().persist.readFailed, false, 'and does not confuse it with a read failure');
 });

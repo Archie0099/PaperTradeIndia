@@ -26,12 +26,14 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-import { loadCandles, dropFormingBar } from '../backtest/data.mjs';
+import { loadCandles, dropFormingBar, dailySessionClosed } from '../backtest/data.mjs';
 import { runBacktest } from '../backtest/backtester.mjs';
 import { runFnoBacktest } from '../backtest/fno.mjs';
 import { runPortfolioBacktest } from '../backtest/portfolio.mjs';
 import { runPairsBacktest } from '../backtest/pairs.mjs';
 import { sharpe as sharpeOfCurve, maxDrawdownPct, RF_ANNUAL } from '../backtest/metrics.mjs';
+// VaR / Expected Shortfall + a no-hindsight VaR back-test per bot (backtest/risk.mjs).
+import { riskProfile } from '../backtest/risk.mjs';
 import { equityDeliveryCosts, equityIntradayCosts, indexOptionCosts } from '../backtest/costs.mjs';
 import { makeRankSource } from '../backtest/ml.mjs';
 import { safeCompile, explainSpec, strategyRationale } from '../backtest/dsl.mjs';
@@ -484,7 +486,7 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
   // boot), or (b) the store is unconfigured, or (c) the store really is empty and this process
   // has just stamped a fresh clock over it. Those need completely different responses, and
   // there was no way to tell them apart from the deployed site.
-  let persistState = { enabled: !!persistStore.enabled, attempted: false, restored: false, readFailed: false };
+  let persistState = { enabled: !!persistStore.enabled, attempted: false, restored: false, readFailed: false, writeFailed: false };
   let standings = null;
   let pool = null; // lazily-loaded generated strategy pool (backtest/generated-specs.json)
   let opSeq = 0; // bumped on every control mutation; an in-flight tick() aborts if it changes mid-await
@@ -741,8 +743,8 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       curveTiers, // full equity curve as multi-resolution tiers, for the per-bot page's window zoom
       equity: finalEquity,
       metrics: traded
-        ? { totalReturnPct: res.metrics.totalReturnPct, sharpe: res.metrics.sharpe, maxDrawdownPct: res.metrics.maxDrawdownPct, trades: res.metrics.trades }
-        : { totalReturnPct: 0, sharpe: 0, maxDrawdownPct: 0, trades: 0 }, // never-traded: neutral, matching the leaderboard row
+        ? { totalReturnPct: res.metrics.totalReturnPct, sharpe: res.metrics.sharpe, maxDrawdownPct: res.metrics.maxDrawdownPct, trades: res.metrics.trades, risk: isIntradayInterval(bot.interval) ? null : riskProfile(res.equityCurve) }
+        : { totalReturnPct: 0, sharpe: 0, maxDrawdownPct: 0, trades: 0, risk: null }, // never-traded: neutral, matching the leaderboard row
       // Cost/liquidity honesty for the per-bot page: which cost schedule the run paid
       // (+ non-trade fees like SLB borrow / F&O brokerage), and how many fills exceeded
       // the volume-participation cap (a too-big-to-execute warning, not an impact model).
@@ -797,6 +799,7 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
           equity: CASH, liveReturnPct: 0, r1w: null, r1m: null, r1y: null, r3y: null, r5y: null, r10y: null, trackReturnPct: 0,
           sharpe: res.metrics && Number.isFinite(res.metrics.sharpe) ? res.metrics.sharpe : 0,
           maxDrawdownPct: res.metrics && Number.isFinite(res.metrics.maxDrawdownPct) ? res.metrics.maxDrawdownPct : 0,
+          risk: null, // no curve, no tail — never a made-up VaR
           position: res.position || 'flat', holdings: res.holdings || null, curve: [], deployFrac: 1,
         };
       }
@@ -863,6 +866,15 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
         trackReturnPct: +trackReturnPct.toFixed(2), // MAX (whole life)
         sharpe: res.metrics.sharpe,
         maxDrawdownPct: res.metrics.maxDrawdownPct,
+        // Risk block: one-day 99% VaR / ES by historical simulation on the trailing 500
+        // daily returns (Hull's window), the √10 ten-day figure, and a ROLLING BACK-TEST of that
+        // same VaR over the last 250 days where each day's VaR is built only from returns BEFORE
+        // it — so it is a forward test of the bot's own risk claim, never a fit. Null on a curve
+        // too short to hold a 1% tail (a made-up zone would be worse than none). See risk.mjs.
+        // NULL for an INTRADAY bot: its curve is hourly, so "one-day VaR", "last 500 trading
+        // days" and a "250-day back-test" would all be mislabelled by ~√7 —
+        // the same exclusion apCurves already applies to the Auto-Pilot.
+        risk: isIntradayInterval(bot.interval) ? null : riskProfile(eq),
         position: res.position || 'flat',
         holdings: res.holdings || null, // basket constituents + weights (null for EQ/FNO)
         curve: downsample(eq.map((c, i) => ({ t: times[i] != null ? times[i] : i, c }))),
@@ -896,6 +908,9 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       // must stay read-only so the sync/yielding recomputes and control ops can share it.
       const advisor = buildAdvisorPayload({ log: state.advisorLog, seriesFor, universe: BASKET_UNIVERSE, minDays: advisorMinDays, costRates: EQ_COSTS });
       if (typeof persistStore.readFailed === 'function') persistState.readFailed = persistStore.readFailed();
+      // a store that reads fine but cannot be WRITTEN was previously invisible from
+      // outside — the board looked healthy while the forward record silently stopped growing.
+      if (typeof persistStore.writeFailed === 'function') persistState.writeFailed = persistStore.writeFailed();
       standings = { deployedAt: state.deployedAt, generation: state.generation, liveBars, persist: { ...persistState }, asOf: Date.now(), startingCash: CASH, atCap, maxBots: maxRosterBots, botCount: rows.length, evolutionEnabled, autopilot, advisor, history: state.history.slice(-30), bots: rows };
       return standings;
     }
@@ -1121,8 +1136,24 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     return standings;
   }
 
-  async function tick() {
-    const today = istDate(Date.now());
+  // `now` is injectable so tests never read the wall clock for SESSION logic (§5): a daily bar
+  // is done at 15:30 IST, not at midnight, so a fixture built around "today" means opposite
+  // things before and after the close. Defaults to the real clock in production.
+  async function tick({ now = Date.now() } = {}) {
+    // A daily bar is COMPLETE once its own session has closed (15:30 IST) — the same rule
+    // dropFormingBar already applies on the BOOT path. This used to be `istDate(c.t) < today`,
+    // a wall-clock DATE compare, which threw away today's bar even hours after the close and
+    // only admitted it once the IST date rolled over. That meant a long-running server could
+    // advance the suggestion log ONLY in the window after MIDNIGHT IST — historically the
+    // least likely time for a free dyno to be awake — so the advisor's capture rate was hurt
+    // by this filter as well as by the sleeping host. Boot recorded same-day, tick did not:
+    // two rules for one question. This is the boot rule, so both paths now agree.
+    // ★ It must still NEVER admit a forming bar — that would write a PARTIAL close into the
+    // append-only log, which is never edited afterwards — and it waits a SETTLE MARGIN past
+    // the bell (16:00 IST), because the first close a free feed serves can be revised and the
+    // log would make it permanent. ONE predicate, owned by data.mjs and shared with the boot
+    // path, so the two rules cannot drift apart again (this was a third copy).
+    const sessionClosed = (t) => dailySessionClosed(t, now);
     const seq0 = opSeq; // snapshot: if a control op mutates state during our await, bail
     let changed = false;
     for (const { symbol, interval, key } of rosterSources()) {
@@ -1136,7 +1167,7 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
         // A reset/add/remove/evolve landed during the network round-trip — abort
         // so we never push stale live data onto (or clobber) the new state.
         if (opSeq !== seq0) return changed;
-        const cs = (res.candles || []).filter((c) => Number.isFinite(c.c) && c.c > 0 && istDate(c.t) < today).sort((a, b) => a.t - b.t);
+        const cs = (res.candles || []).filter((c) => Number.isFinite(c.c) && c.c > 0 && sessionClosed(c.t)).sort((a, b) => a.t - b.t);
         const series = seriesFor(symbol, interval);
         // Append EVERY completed bar newer than our cursor, not just the single
         // newest one: if the host slept/froze across 2+ sessions (a free-tier dyno
@@ -1418,7 +1449,25 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     reset,
     removeBot,
     addFromPool,
-    getStandings: () => standings,
+    // The persist flags are read LIVE from the store, never frozen at recompute time. tick() runs
+    // save() → recompute → advisorTick() → save(); the recompute's finalizer stamped `writeFailed`
+    // BEFORE the first save's PATCH had settled (and before the advisor-log save existed at all),
+    // so a failed write of the one artifact that cannot be recomputed reported "healthy" until the
+    // next recompute — up to a trading day `attempted`/`restored` are boot facts
+    // and stay as stamped. The `persist` field is refreshed IN PLACE on the published object rather
+    // than on a copy: the board's IDENTITY is part of its contract (a superseded recompute must hand
+    // off the newer object, never a stale one — locked in tournament.test.mjs), and a field
+    // assignment between awaits is atomic, so no reader can see a torn value.
+    getStandings: () => {
+      if (standings) {
+        standings.persist = {
+          ...persistState,
+          readFailed: typeof persistStore.readFailed === 'function' ? persistStore.readFailed() : persistState.readFailed,
+          writeFailed: typeof persistStore.writeFailed === 'function' ? persistStore.writeFailed() : persistState.writeFailed,
+        };
+      }
+      return standings;
+    },
     getBotDetail,
     detailIsCached: (id) => detailCache.has(id), // a cache HIT serves getBotDetail for free (no backtest)
     botCount: () => bots.length,
@@ -1436,4 +1485,9 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
   };
 }
 
-export { createTournament, computeAutopilotTrack, dropFormingBar };
+// EVOLVE_WINDOW / EVOLVE_WARMUP / CASH are exported so the TESTS can assert against the
+// NAMED constants instead of re-typing 756 / 300 / 1e7. A test that copies a magic number
+// proves only that the code equals itself — that is exactly how the 10x option-exchange-
+// charge error survived for months. Nothing at runtime imports these three; the
+// export is a test handle, and changes no behaviour.
+export { createTournament, computeAutopilotTrack, dropFormingBar, EVOLVE_WINDOW, EVOLVE_WARMUP, CASH };

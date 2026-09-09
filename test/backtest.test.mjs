@@ -185,3 +185,40 @@ test('end-to-end: the engine never lets a long-only backtest spend below zero ca
   assert.ok(Number.isFinite(res.metrics.finalEquity));
   assert.ok(res.metrics.finalEquity > 0, 'a long-only book cannot go bankrupt to <= 0');
 });
+
+// ---------------------------------------------------------------------------
+// a curve that NEVER MOVES must score 0, not -1.4e15.
+//
+// sharpe() guards zero variance, but the guard was the strict `sd === 0` and a flat curve
+// does not satisfy it. Every excess return is the same value (-rfBar); mean() over ~800
+// identical doubles accumulates ~1e-19 of summation rounding, so `x - mean` is not exactly
+// zero and stddev returns ~3e-18. (mean/sd) then blew up to -1.4e15, which evolve.mjs turns
+// into a ~-1e18 fitness: any spec that simply sits in cash for the whole scored window
+// becomes the weakest bot by an absurd margin — a meaningless number (shareFitness only rescales
+// an entry's own value, so it does not spread; "poisons every aggregate" was an overclaim the
+// a later review corrected). Latent today — breeding is OFF and every live bot
+// trades — but it sits under the GA the moment breeding is re-enabled.
+// ---------------------------------------------------------------------------
+test('a flat equity curve scores Sharpe 0, not an astronomical number', () => {
+  const flat = Array.from({ length: 800 }, () => 1e7); // a spec that never enters
+
+  assert.equal(sharpe(flat), 0, 'excess-of-rf Sharpe on a never-moving curve is 0');
+  assert.equal(sharpe(flat, undefined, 0), 0, 'and the rf=0 variant agrees (it always did)');
+
+  // The bug was one of MAGNITUDE, so assert the property that actually failed: whatever we
+  // return must stay in a sane band. `sd === 0` let this through at -1.4e15.
+  assert.ok(Math.abs(sharpe(flat)) < 100, `a flat curve must not produce a huge Sharpe (got ${sharpe(flat)})`);
+
+  // ★ The guard must not over-reach: a curve with genuinely small BUT REAL variance is still
+  // a real series and must still be scored, not silently zeroed.
+  let e = 1e7;
+  const wiggly = [e];
+  for (let i = 1; i < 400; i++) { e *= 1 + ((i % 7) - 3) * 1e-4; wiggly.push(e); }
+  assert.notEqual(sharpe(wiggly), 0, 'a genuinely varying curve is still scored');
+
+  // ★ NEAR-flat, not flat: 800 bars of 1e7 with ONE bar at 1e7·(1 + 1e-6). sd ≈ 4e-8 is real,
+  // so the relative guard alone let it through at −81,790 The absolute
+  // floor (1e-7 per bar) catches it; one ₹0.05 tick on a ₹1,000 stock is 5e-5, far above.
+  const nearFlat = flat.slice(); nearFlat[400] = 1e7 * (1 + 1e-6);
+  assert.equal(sharpe(nearFlat), 0, `a single 1e-6 move in 800 bars is not a risk-adjusted return (got ${sharpe(nearFlat)})`);
+});

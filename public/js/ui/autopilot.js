@@ -1069,12 +1069,18 @@ function renderSuggestions(app) {
   // the log back to nothing. That failed silently for three weeks once — the server published
   // `persist.readFailed` the whole time and no screen ever showed it. The storage credential
   // is the usual cause, and it expires on a schedule, so this WILL recur.
+  // warn on EITHER failure. A store that reads fine but cannot be WRITTEN loses
+  // today's suggestion just as completely as an unreadable one — and used to be invisible
+  // here, because this banner was gated on `readFailed` alone while `flush()` swallowed
+  // every write error. The two cases need different wording: an unreadable store is not
+  // being written ON PURPOSE (fail-closed), an unwritable one is failing.
   const ps = lastStandings && lastStandings.persist;
-  if (ps && ps.enabled && ps.readFailed) {
+  if (ps && ps.enabled && (ps.readFailed || ps.writeFailed)) {
     box.append(el('div', { style: 'border-left: 3px solid var(--down); padding: 6px 10px; margin: 6px 0; font-size: 12px' }, [
       el('strong', {}, 'The suggestion record is not being saved. '),
-      'The app could not read its storage, so today’s suggestion is not being logged and the track record below resets whenever the server restarts. ',
-      'Nothing already saved is lost — saving is deliberately refused while storage is unreadable, so the stored copy is untouched. ',
+      ps.readFailed
+        ? 'The app could not read its storage, so today’s suggestion is not being logged and the track record below resets whenever the server restarts. Nothing already saved is lost — saving is deliberately refused while storage is unreadable, so the stored copy is untouched. '
+        : 'The app can read its storage but its last attempt to SAVE failed, so today’s suggestion is not being stored and the track record below resets whenever the server restarts. Nothing already saved is lost — the stored copy is untouched; it simply is not growing. ',
       'The usual cause is an expired storage token; the deploy notes have the check.',
     ]));
   }
@@ -1255,6 +1261,36 @@ function renderSuggestions(app) {
   box.append(el('div', { style: `font-size: 12px; margin: 6px 0; ${breached ? 'color: var(--down); font-weight: 600' : ''}` },
     `If followed since ${book.startedDate}: value ${rupee(value, 0)} · current drawdown ${ddPct.toFixed(1)}%` +
     (adv.ddTolerancePct != null ? ` vs your ${adv.ddTolerancePct}% tolerance${breached ? ' — BREACHED. Re-read the honesty check above before adding money.' : '.'}` : '.')));
+  // the two risk questions, in RUPEES on this book. The champion's one-day 99% VaR
+  // and ES (historical simulation on its trailing 500 daily returns, from the board row) scaled
+  // to the assumed book's current value. Stated honestly: this is the CHAMPION's risk applied
+  // to your capital — the suggested book mirrors it, but can lag a rebalance by a day. VaR
+  // answers "how bad can tomorrow get?"; ES answers "and if it is that bad, how bad on average?"
+  // A red back-test zone is shown because a VaR that keeps getting breached is the one number
+  // here you should trust LEAST.
+  const champRow = advisor.today && lastStandings && Array.isArray(lastStandings.bots)
+    ? lastStandings.bots.find((b) => b.id === advisor.today.botId) : null;
+  const rk = champRow && champRow.risk;
+  if (rk && rk.wiped && value > 0) {
+    // A champion whose trailing window contains a total loss: a rupee VaR would be "up to
+    // everything", which is not sizing guidance — it is a warning. Say that, and only that.
+    // (Reachable in principle: eligibility looks at a bot's CURRENT positions, not its curve
+    // history, so a flat short bot with a past blow-up could be the champion of the day.)
+    box.append(el('div', { style: 'font-size: 12px; margin: 6px 0; color: var(--down); font-weight: 600' },
+      `Tomorrow’s risk on this ${rupee(value, 0)}: not quantifiable — the champion’s last ${rk.window} trading days include a TOTAL LOSS, so a rupee VaR is not a meaningful figure for it. Treat the downside of following it as unbounded, and re-read the honesty check above.`));
+  } else if (rk && rk.var1dPct != null && value > 0) {
+    const varRs = value * rk.var1dPct / 100;
+    const esRs = value * rk.es1dPct / 100;
+    const bt = rk.backtest;
+    box.append(el('div', { style: 'font-size: 12px; margin: 6px 0' }, [
+      `Tomorrow’s risk on this ${rupee(value, 0)}: with 99% confidence you should not lose more than `,
+      el('strong', {}, rupee(varRs, 0)),
+      ` (one-day VaR, ${rk.var1dPct.toFixed(2)}%); if you do, expect to lose about `,
+      el('strong', {}, rupee(esRs, 0)),
+      ` (expected shortfall, ${rk.es1dPct.toFixed(2)}%). Historical simulation on the champion’s last ${rk.window} trading days.`,
+      bt ? ` Its VaR back-test over the last ${bt.days} days: ${bt.exceptions} exception${bt.exceptions === 1 ? '' : 's'} vs ${bt.expected} expected${bt.zone ? ` (${bt.zone} zone${bt.zone === 'red' ? ' — this VaR is being breached far too often; trust it least' : ''})` : ' (no Basel zone — the ladder needs 250 test days)'}.` : '',
+    ]));
+  }
   box.append(el('button', { class: 'btn btn-mini', id: 'adv-capital-clear', onClick: () => {
     if (!window.confirm('Clear the capital setting and the assumed real-money book? (The server-side suggestion log is untouched.)')) return;
     saveAdv(defaultAdv());

@@ -65,7 +65,20 @@ function sharpe(equity, periodsPerYear = TRADING_DAYS, rfAnnual = RF_ANNUAL) {
   const rfBar = (rfAnnual || 0) / ppy; // per-bar risk-free hurdle (simple, standard)
   const r = dailyReturns(equity).map((x) => x - rfBar);
   const sd = stddev(r);
-  if (sd === 0) return 0;
+  // ZERO VARIANCE -> there is no risk-adjusted return to report. This test used to be the
+  // strict `sd === 0`, and a curve that never moves does NOT satisfy it: every element of `r`
+  // is the same value (-rfBar), but mean() over ~800 identical doubles accumulates ~1e-19 of
+  // summation rounding, so `x - mean` is not exactly 0 and stddev comes back at ~3e-18. The
+  // strict test passed straight through and (mean/sd) returned -1.4e15 — which evolve.mjs
+  // turns into a ~-1e18 fitness, so ANY spec that simply sits in cash for the whole scored
+  // window becomes the weakest bot by an absurd margin (shareFitness only rescales an entry's
+  // OWN value, so it does not spread to the others — but the number itself is meaningless).
+  // Two floors, both far below any genuine per-bar volatility: RELATIVE (1e-9 of the numbers'
+  // scale — the summation-rounding case) and ABSOLUTE (1e-7 per bar — a curve flat except for
+  // a single 1e-6 move has sd ≈ 4e-8, real but meaningless, and slipped the relative test to
+  // score −81,790). One ₹0.05 tick on a ₹1,000 stock is 5e-5, two orders above.
+  const scale = Math.max(Math.abs(mean(r)), Math.abs(rfBar));
+  if (!(sd > 0) || sd <= Math.max(scale * 1e-9, 1e-7)) return 0;
   const value = (mean(r) / sd) * Math.sqrt(ppy);
   // A WIPED account (equity touched <= 0 at some point — a blown short / naked-option blowup) must
   // never advertise a POSITIVE risk-adjusted return: dailyReturns SKIPS the steps from non-positive

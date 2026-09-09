@@ -457,3 +457,59 @@ test('clicking a column header sorts the leaderboard and toggles direction', asy
   dom.fire(thByText(/Symbol/), 'click');   // -> Symbol ascending
   assert.equal(firstRowId(), 'bk', '"8 stocks" sorts first alphabetically ascending');
 });
+
+// ---------------------------------------------------------------------------
+// the per-bot page shows VaR / ES and the VaR BACK-TEST verdict, as
+// whole sentences (a fragment lock once shipped a percent-of-percent bug).
+// ---------------------------------------------------------------------------
+const riskYellow = { conf: 0.99, window: 500, var1dPct: 2.13, es1dPct: 3.41, var10dPct: 6.74,
+  backtest: { exceptions: 7, days: 250, expected: 2.5, kupiec: 5.21, kupiecReject: true, zone: "yellow", mc: 3.65 } };
+
+test("the per-bot page shows one-day VaR/ES and the no-hindsight VaR back-test verdict", async () => {
+  const dom = setupDom();
+  const bk = baseDetail("bk", { kind: "BASKET", symbol: "8 stocks", metrics: { totalReturnPct: 12, sharpe: 0.8, maxDrawdownPct: 7, trades: 40, risk: riskYellow } });
+  await renderTournament(appWith(dom, { bk }));
+  clickBot(dom, "bk");
+  await flush();
+  const page = dom.$("#tourn-botpage-body").textContent;
+  assert.match(page, /VaR 99% \(1d\)2\.13%/, "the one-day 99% VaR stat renders with its value");
+  assert.match(page, /ES 99% \(1d\)3\.41%/, "the one-day 99% ES stat renders with its value");
+  assert.match(page, /VaR back-test, last 250 days \(no hindsight — each day’s VaR uses only prior returns\): 7 exceptions vs 2\.5 expected · YELLOW zone/, "the back-test line states the count, the expectation and the zone");
+  assert.match(page, /Kupiec test REJECTS this VaR model \(statistic 5\.21 > 3\.84 — it understates the bot’s risk\)\./, "a rejection names the statistic, the critical value and the DIRECTION");
+  assert.match(page, /Ten-day VaR ≈ 6\.74% by the √10 rule \(an approximation that ignores autocorrelation\)\./, "the ten-day figure is labelled an approximation");
+});
+
+test("a bot with no risk block (curve too short) shows NO VaR stat and NO back-test line — never a made-up number", async () => {
+  const dom = setupDom();
+  const bh = baseDetail("bh", { metrics: { totalReturnPct: 0, sharpe: 0, maxDrawdownPct: 0, trades: 0, risk: null } });
+  await renderTournament(appWith(dom, { bh }));
+  clickBot(dom, "bh");
+  await flush();
+  const page = dom.$("#tourn-botpage-body").textContent;
+  assert.ok(!/VaR 99%/.test(page), "no VaR stat without a tail");
+  assert.ok(!/VaR back-test/.test(page), "no back-test line without a tail");
+});
+
+test("a VaR the Kupiec test does NOT reject says so, with the statistic", async () => {
+  const dom = setupDom();
+  const risk = { ...riskYellow, backtest: { exceptions: 2, days: 250, expected: 2.5, kupiec: 0.11, kupiecReject: false, zone: "green", mc: 3 } };
+  const str = baseDetail("str", { kind: "FNO", symbol: "BANKNIFTY", metrics: { totalReturnPct: 8, sharpe: 1.1, maxDrawdownPct: 9, trades: 20, risk } });
+  await renderTournament(appWith(dom, { str }));
+  clickBot(dom, "str");
+  await flush();
+  const page = dom.$("#tourn-botpage-body").textContent;
+  assert.match(page, /2 exceptions vs 2\.5 expected · GREEN zone · Kupiec test does not reject \(statistic 0\.11 ≤ 3\.84\)\./, "the non-rejection sentence");
+});
+
+test("a bot WIPED OUT inside its window says so on the page — capped figures, downside called unbounded (review finding)", async () => {
+  const dom = setupDom();
+  const risk = { ...riskYellow, wiped: true, var1dPct: 100, es1dPct: 100, var10dPct: 100,
+    backtest: { exceptions: 1, days: 250, expected: 2.5, kupiec: 1.32, kupiecReject: false, zone: "green", mc: 3 } };
+  const str = baseDetail("str", { kind: "FNO", symbol: "BANKNIFTY", metrics: { totalReturnPct: -100, sharpe: -1, maxDrawdownPct: 100, trades: 20, risk } });
+  await renderTournament(appWith(dom, { str }));
+  clickBot(dom, "str");
+  await flush();
+  const page = dom.$("#tourn-botpage-body").textContent;
+  assert.match(page, /VaR 99% \(1d\)100\.00%/, "the VaR is shown capped at a total loss, never 524%");
+  assert.match(page, /The account was WIPED OUT at least once inside this window — the VaR\/ES above are capped at a total loss; treat this bot’s downside as unbounded\./, "and the cap is stated, with the honest reading");
+});
