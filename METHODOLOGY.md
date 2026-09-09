@@ -325,10 +325,13 @@ own control. No study has yet produced a selection edge proven against a fair be
 - **In practice the data feed, not that rule, decides when a day is recorded.** The free daily
   endpoint emits the current session’s row with an `open` but a **`null` close** until it
   backfills the settled close, and a null-close row is skipped rather than guessed at (a price is
-  never fabricated). Measured on this feed: one session’s close was already published ~3 hours
-  after its bell, while another’s was still absent ~10.5 hours after — feed-wide across index,
+  never fabricated). Measured on this feed: a usable close was available ~3 hours after one
+  session’s bell, while another’s was still absent ~12 hours after — feed-wide across index,
   large-cap and ETF symbols and on both API hosts — even though the same response’s quote field
-  and the 60-minute series both carried that close. So the admission time is
+  and the 60-minute series both carried that close. An early value is not necessarily the final
+  one: for that ~3-hour case, none of the ten prices recorded from it match the close the feed
+  serves for that date today, so availability and settlement are separate events. The admission
+  time is
   `max(close + settle margin, publication)`, the second term usually dominates, and the publication
   lag is variable rather than a fixed offset. A session whose close is never published on the day
   is simply not recorded: missed days are never back-filled, because reconstructing one after the
