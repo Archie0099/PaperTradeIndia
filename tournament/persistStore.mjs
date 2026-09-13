@@ -29,6 +29,22 @@ function createPersistStore({
   filename = FILENAME,
   fetchImpl = (typeof fetch === 'function' ? fetch : null),
   timeoutMs = 8000,
+  // ★ WRITES GET A FAR LONGER BUDGET THAN READS, and the asymmetry is the point.
+  // `timeoutMs` exists to bound the BOOT: init() awaits load(), so a hung read would hold the
+  // board down, and 8s is a deliberate ceiling on that. A write has no such constraint —
+  // flush() is fire-and-forget (save() calls it without awaiting), so a slow PATCH delays
+  // nothing and costs only a little memory while it is in flight.
+  //
+  // MEASURED: writes were failing with `timed out after 8000ms` — NOT an auth error.
+  // The blob is only ~44KB, so size is not the cause either. Render's own dashboard says a free
+  // instance "will spin down with inactivity, which can delay requests by 50 seconds or more",
+  // and every observed timeout (reads at boot on 09-07/09-08, writes on 09-10) is consistent
+  // with a throttled free dyno rather than anything about the request. An 8s ceiling on a tier
+  // that documents 50s stalls is simply too tight for the path that does not need one.
+  // The consequence of losing that race is NOT cosmetic: a dropped PATCH means the day's
+  // advisor entries live only in memory until the next restart discards them (that is exactly
+  // how 2026-09-10 and 09-11 came to need a manual rescue).
+  writeTimeoutMs = 60000,
 } = {}) {
   const enabled = !!(token && gistId && fetchImpl);
   const headers = {
@@ -94,7 +110,12 @@ function createPersistStore({
   const warnWrite = (why) => {
     if (warnedWriteFailed) return; // once per failing streak — a 10-min tick would spam
     warnedWriteFailed = true;
-    console.warn(`persistStore: could not WRITE the remote store (${why}). Reads still work, so nothing stored is lost and the board looks healthy — but today's forward bars and advisor entries are NOT being persisted and will reset on the next restart.`);
+    // ★ Do NOT say "reads still work" here. This process read the store ONCE, at boot, and has
+    // not tried since — load() is called only from init(). So a failing write says nothing
+    // about whether the store is readable NOW, and the old wording ("reads still work, so
+    // nothing stored is lost") asserted exactly that, and sent a reader hunting for a
+    // write-only permission problem when the real cause was a timeout.
+    console.warn(`persistStore: could not WRITE the remote store (${why}). What is ALREADY stored is untouched — a failed PATCH changes nothing remotely — but today's forward bars and advisor entries exist ONLY in this process's memory and will be LOST on the next restart. This says nothing about whether the store is still readable: the read happens once, at boot. Check the reason above before assuming a cause.`);
   };
 
   // Say WHY a read failed, once, on the host's log. The store going unreadable is silent by
@@ -170,7 +191,7 @@ function createPersistStore({
             method: 'PATCH',
             headers: { ...headers, 'Content-Type': 'application/json' },
             body: JSON.stringify({ files: { [filename]: { content: JSON.stringify(blob) } } }),
-            signal: abortAfter(timeoutMs),
+            signal: abortAfter(writeTimeoutMs),
           });
           // Drain the response body so the underlying socket is released back to the pool
           // (an un-consumed fetch body can otherwise keep the connection open under undici).
@@ -188,7 +209,7 @@ function createPersistStore({
           /* best-effort — drop this attempt; the next save() will retry with fresher state.
              Still SAY so: silence here is what made a write outage invisible. */
           writeFailed = true;
-          warnWrite(e && e.name === 'AbortError' ? `timed out after ${timeoutMs}ms` : (e && e.message) || 'network error');
+          warnWrite(e && e.name === 'AbortError' ? `timed out after ${writeTimeoutMs}ms` : (e && e.message) || 'network error');
         }
       }
     } finally {
