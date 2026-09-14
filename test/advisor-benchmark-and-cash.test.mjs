@@ -292,35 +292,59 @@ test('the leaderboard row carries the benchmark flag, and ordinary rows carry fa
 // artifact in this project that only time can produce. The guard asks the caller to echo the
 // current `deployedAt`, which it can only know by reading the board first.
 
-import { createServer } from 'node:http';
 
-// Minimal stand-in for the Express route's guard, exercised against a REAL tournament so the
-// value being echoed is the real `getStandings().deployedAt` rather than a hand-made number.
-const resetGuard = (t, confirm) => {
-  const standings = t.getStandings();
-  const expected = standings && standings.deployedAt;
-  if (!expected || String(expected) !== String(confirm ?? '')) return { ok: false, status: 400 };
-  return { ok: true, ...t.reset() };
-};
+// ★ THESE CALL THE ROUTE'S OWN GUARD, not a copy of it. The first version of this test
+// re-implemented the comparison by hand, which is the project's "a test that copies a magic
+// number proves only that the code equals itself" rule applied to LOGIC: renaming the query
+// parameter or flipping `!==` to `===` in server.js would have left every test green while the
+// route either 400'd forever or stood wide open. `checkResetConfirm` is now the single
+// implementation, and server.js forwards `req.query` to it wholesale, so the parameter NAME is
+// part of what these exercise too.
+import guardMod from '../src/resetGuard.js';
+const { checkResetConfirm } = guardMod;
+
+// Called exactly as the route calls it: the live standings object, and a query-shaped object.
+const tryReset = (t, confirm) => checkResetConfirm(t.getStandings(), confirm === undefined ? {} : { confirm: String(confirm) });
 
 test('a reset without the current deployedAt is refused', async () => {
   const t = await createTournament({ seed: CASH_SEED, backfillData: { NIFTY: series() }, persist: false, evolutionEnabled: false });
   await t.init();
   const before = t.getStandings().deployedAt;
-  assert.equal(resetGuard(t, undefined).ok, false, 'a blind POST must not reset');
-  assert.equal(resetGuard(t, '').ok, false, 'nor an empty confirm');
-  assert.equal(resetGuard(t, 'true').ok, false, 'nor a guessed value');
-  assert.equal(resetGuard(t, before + 1).ok, false, 'nor a near-miss');
+  for (const [label, value] of [['a blind POST', undefined], ['an empty confirm', ''], ['a guessed value', 'true'], ['a near-miss', before + 1]]) {
+    const v = tryReset(t, value);
+    assert.equal(v.ok, false, `${label} must not reset`);
+    assert.equal(v.status, 400, `${label} must be a client error, not a server one`);
+    assert.match(v.error, /trust clock/, 'and must say what is being protected');
+  }
   assert.equal(t.getStandings().deployedAt, before, 'the forward clock is untouched by every refused attempt');
 });
 
-test('a reset WITH the current deployedAt succeeds, and the echoed value then changes', async () => {
+test('a reset WITH the current deployedAt is allowed, and the value then goes stale', async () => {
   const t = await createTournament({ seed: CASH_SEED, backfillData: { NIFTY: series() }, persist: false, evolutionEnabled: false });
   await t.init();
   const before = t.getStandings().deployedAt;
-  assert.equal(resetGuard(t, before).ok, true, 'the control panel, which has read the board, can still reset');
-  // Replay protection falls out of the design: the value the caller just used is now stale.
-  assert.equal(resetGuard(t, before).ok, false, 'the same confirm cannot be replayed against the new run');
+  assert.equal(tryReset(t, before).ok, true, 'the control panel, which has read the board, can still reset');
+  t.reset();
+  // Replay protection falls out of the design rather than being a separate mechanism: reset
+  // re-stamps deployedAt, so the value the caller just used no longer matches anything.
+  assert.equal(tryReset(t, before).ok, false, 'the same confirm cannot be replayed against the new run');
+});
+
+test('the guard reports a WARMING-UP board distinctly, never as a failed confirmation', () => {
+  // Unreachable through the normal boot path (server.js only assigns `tournament` after init()
+  // resolves), but "no board yet" and "wrong token" are different problems and a 400 telling you
+  // to reload would send you in circles.
+  const v = checkResetConfirm(null, { confirm: '123' });
+  assert.equal(v.ok, false);
+  assert.equal(v.status, 503, 'a board that does not exist yet is a 503, not a bad request');
+});
+
+test('the guard compares deployedAt as a STRING on both sides', () => {
+  // deployedAt is a Date.now() NUMBER server-side and always arrives as a string over the query,
+  // so coercing only one side would never match and reset would be permanently broken.
+  const standings = { deployedAt: 1750000000000 };
+  assert.equal(checkResetConfirm(standings, { confirm: '1750000000000' }).ok, true, 'the string a real query delivers must match');
+  assert.equal(checkResetConfirm(standings, { confirm: 1750000000000 }).ok, false, 'a non-string is not what Express delivers and is not accepted');
 });
 
 // --- (7) a spec must not be able to name a market proxy that is silently ignored --------------

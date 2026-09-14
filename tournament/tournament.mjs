@@ -1349,7 +1349,20 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     // Baskets pick from the INDEX-FREE stock pool (a basket holds companies, not
     // the index — else it just overlaps the protected Buy & Hold benchmark).
     const basketSymbols = BASKET_UNIVERSE.filter((sym) => fullData[sym] && fullData[sym].length >= 60);
-    if (!eqSymbols.length && !fnoSymbols.length) return { generation: state.generation, promoted: null, retired: null };
+    if (!eqSymbols.length && !fnoSymbols.length) return { generation: state.generation, promoted: null, retired: null, reason: 'no symbols have enough loaded history to hunt on' };
+
+    // THE QUALITY BAR MUST EXIST BEFORE IT IS WORTH BREEDING ANYTHING. This is the same roster
+    // filter used further down to pick `weakest`, hoisted ABOVE the expensive work on purpose:
+    // it is a pure predicate over the roster and needs no scoring at all, whereas leaving the
+    // check where the bar is computed meant a barren roster paid for a full generation — 16 bred
+    // challengers plus an incumbent re-backtest, ~8.7s locally and more on the free tier — and
+    // then discarded every bit of it, once a day, forever. Sits next to the maxRosterBots
+    // short-circuit above, which exists for exactly this reason.
+    // This state only became reachable when benchmarks were excluded from the bar (before that
+    // the fair bar itself always supplied one), so there is no behaviour here to preserve.
+    if (!roster.some((b) => !b.protected && !b.benchmark && !isIntradayInterval(b.interval))) {
+      return { generation: state.generation, promoted: null, retired: null, reason: 'no quality bar: every eligible bot is protected or a benchmark, so there is nothing for a challenger to beat' };
+    }
 
     // Breed only from NON-protected bots that actually COMPILE. (The benchmark is a
     // yardstick, not breeding stock; and a corruptly-persisted MALFORMED spec must
@@ -1396,7 +1409,11 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     const keyOf = (sym, spec) => `${sym}|${specKey(spec)}`;
     const existing = new Set(roster.map((b) => keyOf(b.symbol, b.spec)));
     const best = challengers.find((ch) => !existing.has(keyOf(ch.symbol, ch.spec)));
-    if (!best) return { generation: state.generation, promoted: null, retired: null };
+    // Every challenger duplicates something already on the board — a STRUCTURAL cause, not a
+    // competitive one, so say which it is rather than letting the UI report 'no challenger beat
+    // the field'. (Grow mode keeps every bot forever, so a mature board genuinely runs out of
+    // novel mutations; that is worth knowing rather than looking like repeated bad luck.)
+    if (!best) return { generation: state.generation, promoted: null, retired: null, reason: 'every bred challenger duplicates a bot already on the board' };
 
     // Weakest current bot — the quality bar a challenger must clear to enter the
     // board (so it grows with credible strategies, not noise). protected bots are
