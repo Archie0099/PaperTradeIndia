@@ -36,7 +36,7 @@
 // Deterministic, cache-served, zero network beyond the usual Yahoo cache fill.
 
 import { pathToFileURL } from 'node:url';
-import { makeControlSpec, sampleNames } from './lowvol.mjs';
+import { makeControlSpec, sampleNames, nullDrawPool } from './lowvol.mjs';
 import { makeXsmomSpec } from './xsmom.mjs';
 import { validateSpec } from '../dsl.mjs';
 
@@ -123,7 +123,7 @@ if (isMain) {
   // no information (0 x vol keeps the null-while-unwarm exclusion identical to the controls).
   const nullSpec = (seed, gated) => {
     const sp = {
-      kind: 'BASKET', name: `null-${seed}`, universe: sampleNames(universe, xsSpec.k, seed),
+      kind: 'BASKET', name: `null-${seed}`, universe: sampleNames(nullDrawPool(universe, dataBySymbol, window.from), xsSpec.k, seed),
       rank: ['*', 0, ['vol', 20]], k: xsSpec.k, weighting: xsSpec.weighting, rebalanceBars: xsSpec.rebalanceBars,
     };
     return gated ? { ...sp, marketGate: GATE } : sp;

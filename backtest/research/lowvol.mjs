@@ -185,7 +185,35 @@ function makeControlSpec(universe, sign, k = DEFAULTS.k, rebalanceBars = DEFAULT
   return spec;
 }
 
-export { makeControlSpec, sampleNames };
+// The pool a random NULL draw may be taken from. ONLY names whose history starts early enough to
+// be selectable at the scoring start — so a random draw is not handicapped by the short-history
+// names the study arms self-exclude anyway.
+//
+// WHY THIS IS SHARED RATHER THAN INLINE. The rule lived here, correctly, while five other tools
+// (high52, rank-zoo, lowvol-grid, divyield, universe-bench) drew from the FULL universe. They were
+// not disagreeing on purpose; they copied `sampleNames(universe, ...)` without the filter. So six
+// studies used two different definitions of "a random portfolio", which is worse than either.
+// MEASURED on the shipped in-sample window: 31 of 104 names had not listed by the 2010 scoring
+// start, and 20 of 20 seeded full-pool draws contained at least one — the worst short 5 of its 10
+// names. A draw missing names holds fewer than k and `weightsFor` divides by what is left, so it
+// runs CONCENTRATED, scores worse, and makes the null too easy to beat.
+// EFFECT, everything else held fixed: median 0.63 -> 0.65, max 1.05 -> 1.15. One published verdict
+// moves — low volatility at 0.93 goes from 1 of 20 beaten to 3 of 20, which is exactly the
+// threshold these tools print as "inside the noise band".
+// ★ THIS IS ONE DEFENSIBLE CHOICE, NOT THE ONLY ONE. The alternative is to re-draw at every
+// rebalance from the names present THEN — a random *strategy* rather than a random fixed
+// portfolio, which is arguably closer still to what the study arms do. That is a larger change and
+// has not been measured; this one at least makes all six studies agree.
+function nullDrawPool(universe, dataBySymbol, fromISO) {
+  const startMs = Date.parse(`${fromISO}T00:00:00Z`);
+  if (!Number.isFinite(startMs)) return universe.slice(); // no window start -> no basis to filter
+  return universe.filter((s) => {
+    const c = dataBySymbol[s];
+    return Array.isArray(c) && c.length && c[0].t < startMs - 400 * 864e5;
+  });
+}
+
+export { makeControlSpec, sampleNames, nullDrawPool };
 
 // ---------------------------------------------------------------------------
 // CLI: `node backtest/research/lowvol.mjs` -> in-sample report + ±50% grid.
@@ -298,8 +326,7 @@ if (isMain) {
   if (nullDist) {
     // Only names with enough history to be selectable at the scoring start, so a random
     // draw is not handicapped by the short-history names the study self-excludes.
-    const startMs = Date.UTC(2010, 0, 1);
-    const eligible = universe.filter((s) => dataBySymbol[s][0].t < startMs - 400 * 864e5);
+    const eligible = nullDrawPool(universe, dataBySymbol, '2010-01-01');
     console.log(`\n=== NULL DISTRIBUTION: 20 seeded random ${DEFAULTS.k}-name portfolios (no signal) ===`);
     console.log(`eligible (pre-2009 history): ${eligible.length} of ${universe.length}`);
     const sharpes = [];

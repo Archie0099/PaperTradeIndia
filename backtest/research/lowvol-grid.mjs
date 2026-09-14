@@ -35,7 +35,7 @@
 // Usage: node backtest/research/lowvol-grid.mjs
 
 import { pathToFileURL } from 'node:url';
-import { makeControlSpec, sampleNames } from './lowvol.mjs';
+import { makeControlSpec, sampleNames, nullDrawPool } from './lowvol.mjs';
 import { DEFAULTS as XS } from './xsmom.mjs';
 import { validateSpec } from '../dsl.mjs';
 
@@ -73,7 +73,7 @@ console.log('★ IN-SAMPLE 2010-2019, net of real costs. Not a holdout.\n');
 const draws = [];
 for (let seed = 1; seed <= 20; seed++) {
   for (const k of [10]) { // the null is k-matched to the middle of the grid
-    const names = sampleNames(universe, k, seed);
+    const names = sampleNames(nullDrawPool(universe, dataBySymbol, WINDOW.from), k, seed);
     const sub = {};
     for (const n of names) sub[n] = dataBySymbol[n];
     const spec = { ...makeControlSpec(names, 0, k, XS.rebalanceBars), marketGate: GATE };

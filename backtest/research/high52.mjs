@@ -48,7 +48,7 @@
 //        node backtest/research/high52.mjs --phase    # + repeat across window starts
 
 import { pathToFileURL } from 'node:url';
-import { makeControlSpec, sampleNames } from './lowvol.mjs';
+import { makeControlSpec, sampleNames, nullDrawPool } from './lowvol.mjs';
 import { rank12_1, DEFAULTS as XS } from './xsmom.mjs';
 import { validateSpec } from '../dsl.mjs';
 
@@ -159,7 +159,7 @@ if (isMain) {
     console.log('\nNULL DISTRIBUTION — 20 seeded random 10-name portfolios, same machinery, gated:');
     const draws = [];
     for (let seed = 1; seed <= 20; seed++) {
-      const names = sampleNames(universe, XS.k, seed);
+      const names = sampleNames(nullDrawPool(universe, dataBySymbol, WINDOW.from), XS.k, seed);
       const spec = { ...makeControlSpec(names, 0, XS.k, XS.rebalanceBars), marketGate: ['>', ['price'], ['*', 0.95, ['sma', XS.gateSma]]] };
       const sub = {};
       for (const n of names) sub[n] = dataBySymbol[n];

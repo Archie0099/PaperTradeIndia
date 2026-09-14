@@ -30,7 +30,7 @@
 // Usage: node backtest/research/divyield.mjs
 
 import { pathToFileURL } from 'node:url';
-import { makeControlSpec, sampleNames } from './lowvol.mjs';
+import { makeControlSpec, sampleNames, nullDrawPool } from './lowvol.mjs';
 import { rank12_1, DEFAULTS as XS } from './xsmom.mjs';
 import { validateSpec } from '../dsl.mjs';
 
@@ -91,7 +91,7 @@ const ctrl = evaluateBasket({
 
 const draws = [];
 for (let seed = 1; seed <= 20; seed++) {
-  const names = sampleNames(universe, XS.k, seed);
+  const names = sampleNames(nullDrawPool(universe, dataBySymbol, WINDOW.from), XS.k, seed);
   const sub = {};
   for (const n of names) sub[n] = dataBySymbol[n];
   draws.push(evaluateBasket({
