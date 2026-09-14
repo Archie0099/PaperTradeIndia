@@ -77,6 +77,22 @@ function alignSeries(dataBySymbol, marketSeries = null) {
   return { master, symbols, priceGrid, realIdx, closesBy, timesBy, volsBy, rawsBy, marketGrid, marketRealIdx, marketCloses };
 }
 
+// Is an optimiser's solve fit to USE, or must the caller degrade to inverse-vol?
+// Accept only a finite, long-only AND ~fully-invested result (sums to `gross`). A per-name
+// cap too tight to fill the budget (maxWeight·k < 1) would otherwise leave capital idle —
+// inverse-vol always sums to `gross`, so degrading keeps the documented "fully-invested"
+// contract for any spec (hand-authored or evolved).
+//
+// ONE definition, deliberately: this rule used to be written out twice — once in weightsFor
+// to decide the weights, and again in the trade-recording block to decide whether the "Risk %"
+// column may be shown. Two copies of a rule are two chances to drift, and a re-typed condition
+// proves only that the code agrees with itself. Both callers now ask this function.
+function optimiserWeightsUsable(w, m, gross) {
+  return !!(w && w.length === m
+    && w.every((x) => Number.isFinite(x) && x >= 0)
+    && w.reduce((a, b) => a + b, 0) >= gross - 1e-6);
+}
+
 // Compute the target WEIGHT for each chosen name (sums to `gross`, <= 1).
 // `optimizer` (optional) carries the chosen names' trailing returns matrix for the
 // mean-variance / risk-parity weightings; equal/rankw/volinv ignore it (so those
@@ -92,11 +108,7 @@ function weightsFor(top, weighting, gross, optimizer = null) {
       const w = weighting === 'meanvar'
         ? meanVarWeights(optimizer.cols, optimizer.mu, gross, optimizer.maxWeight)
         : riskParityWeights(optimizer.cols, gross, optimizer.maxWeight);
-      // Accept only a finite, long-only AND ~fully-invested result (sums to gross). A
-      // per-name cap too tight to fill the budget (maxWeight·k < 1) would otherwise leave
-      // capital idle — degrade to inverse-vol (which always sums to gross) instead, so the
-      // documented "fully-invested" contract holds for any spec (hand-authored or evolved).
-      if (w && w.length === m && w.every((x) => Number.isFinite(x) && x >= 0) && w.reduce((a, b) => a + b, 0) >= gross - 1e-6) return w;
+      if (optimiserWeightsUsable(w, m, gross)) return w;
     }
     return weightsFor(top, 'volinv', gross); // graceful fallback (singular cov / infeasible cap / no window)
   }
@@ -126,7 +138,7 @@ function weightsFor(top, weighting, gross, optimizer = null) {
 // COSTS: pass a `costModel` (backtest/costs.mjs — the all-in Indian delivery
 // schedule) for honest results; without one the legacy flat `costBps` applies,
 // byte-identical to the old behaviour (kept for tests/back-compat).
-function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 10_000_000, costBps = 5, costModel = null, rankSource = null, recordTrades = false, intraday = false, _hook = null, alignCache = null }) {
+function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 10_000_000, costBps = 5, costModel = null, rankSource = null, recordTrades = false, intraday = false, _hook = null, _covProbe = null, covAlign = 'own', alignCache = null }) {
   // Operate on the universe in a CANONICAL (sorted) order so floating-point sums
   // (equity, weights) are identical regardless of input key order -> deterministic.
   const universe = [...spec.universe].filter((s) => Array.isArray(dataBySymbol[s]) && dataBySymbol[s].length).sort();
@@ -157,7 +169,7 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
   } else {
     A = alignSeries(dataForUniverse, marketSeries);
   }
-  const { master, priceGrid, realIdx, closesBy, rawsBy } = A;
+  const { master, priceGrid, realIdx, closesBy, rawsBy, timesBy } = A;
 
   const engine = freshEngine(cash);
   const cm = costModel || flatCosts(costBps);
@@ -462,19 +474,61 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
       if ((weighting === 'meanvar' || weighting === 'riskparity') && top.length) {
         const cols = [];
         let ok = true;
-        for (const t of top) {
-          const tri = realIdx[t.sym][gi];
-          const tcl = closesBy[t.sym];
-          if (tri < covLookback) { ok = false; break; }
-          const rets = new Array(covLookback);
-          for (let u = 0; u < covLookback; u++) {
-            const j = tri - covLookback + 1 + u;
-            const prev = tcl[j - 1];
-            if (!(prev > 0)) { ok = false; break; }
-            rets[u] = tcl[j] / prev - 1;
+        if (covAlign === 'dates') {
+          // DATE-ALIGNED window — OPT-IN, never reached unless a caller asks for it, so the
+          // default path below is byte-identical to what it always was.
+          //
+          // Row u of every column is the return over the SAME calendar interval for every
+          // chosen name. Walk back from the decision bar collecting master positions on which
+          // EVERY chosen name actually traded, then take each name's return between
+          // consecutive collected dates. An interval can span more than one session when
+          // somebody missed a day, but it is then the same interval for all of them — which is
+          // the point: a covariance is only meaningful between CONTEMPORANEOUS returns, and
+          // the default window pairs them by recency instead (see the OWN branch below).
+          // Reads nothing after the decision bar, so it is exactly as look-ahead-free.
+          // What this changes is measured by backtest/research/cov-alignment.mjs.
+          const hasBarAt = (sym, p) => { const ri = realIdx[sym][p]; return ri >= 0 && timesBy[sym][ri] === master[p]; };
+          const pos = [];
+          for (let p = gi; p >= 0 && pos.length < covLookback + 1; p--) {
+            let all = true;
+            for (const t of top) { if (!hasBarAt(t.sym, p)) { all = false; break; } }
+            if (all) pos.push(p);
           }
-          if (!ok) break;
-          cols.push(rets);
+          // Too few common dates behind us: bail exactly as the OWN branch does on a short
+          // window, so weightsFor degrades to inverse-vol rather than optimising on a stub.
+          if (pos.length < covLookback + 1) ok = false;
+          else {
+            pos.reverse(); // ascending in time
+            for (const t of top) {
+              const tcl = closesBy[t.sym], tri = realIdx[t.sym];
+              const rets = new Array(covLookback);
+              for (let u = 0; u < covLookback; u++) {
+                const prev = tcl[tri[pos[u]]], cur = tcl[tri[pos[u + 1]]];
+                if (!(prev > 0) || !(cur > 0)) { ok = false; break; }
+                rets[u] = cur / prev - 1;
+              }
+              if (!ok) break;
+              cols.push(rets);
+            }
+          }
+        } else {
+          // OWN window (the default): each name's own last covLookback real returns, ending at
+          // its own decision bar. Row u means "this name's u-th most recent return", which is
+          // the same DATE for every name only while they all traded on the same days.
+          for (const t of top) {
+            const tri = realIdx[t.sym][gi];
+            const tcl = closesBy[t.sym];
+            if (tri < covLookback) { ok = false; break; }
+            const rets = new Array(covLookback);
+            for (let u = 0; u < covLookback; u++) {
+              const j = tri - covLookback + 1 + u;
+              const prev = tcl[j - 1];
+              if (!(prev > 0)) { ok = false; break; }
+              rets[u] = tcl[j] / prev - 1;
+            }
+            if (!ok) break;
+            cols.push(rets);
+          }
         }
         if (ok) optimizer = { cols, mu: top.map((t) => t.score), maxWeight };
       }
@@ -495,6 +549,37 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
         effGross = gross * volScalar;
       }
       const w = weightsFor(top, weighting, effGross, optimizer);
+      // DIAGNOSTIC ONLY (default null -> this whole block never runs, so every existing
+      // caller is byte-identical). Research tools pass `_covProbe` to observe what the
+      // optimiser actually decided at each rebalance: which names were chosen, the scores
+      // that became `mu`, and the weights that came out. Everything else a study needs
+      // (the trailing returns windows) is a pure function of the data + `gi`, so it can be
+      // rebuilt outside rather than shipped through here.
+      if (typeof _covProbe === 'function' && (weighting === 'meanvar' || weighting === 'riskparity')) {
+        // Whether the optimiser's answer was actually USED cannot be read off `w`: when
+        // weightsFor degrades, the inverse-vol weights it returns are finite, long-only and
+        // fully invested too, so they pass the same usability test. The solve has to be
+        // re-derived and tested, exactly as the trade-recording block does.
+        let solved = null;
+        if (optimizer) {
+          const wOpt = weighting === 'meanvar'
+            ? meanVarWeights(optimizer.cols, optimizer.mu, effGross, optimizer.maxWeight)
+            : riskParityWeights(optimizer.cols, effGross, optimizer.maxWeight);
+          solved = optimiserWeightsUsable(wOpt, top.length, effGross);
+        }
+        _covProbe({
+          t: master[gi],
+          gi,
+          syms: top.map((t2) => t2.sym),
+          mu: top.map((t2) => t2.score),
+          weights: w.slice(),
+          gross: effGross,
+          maxWeight,
+          weighting,
+          windowBuilt: !!optimizer,   // a full covariance window was available
+          optimised: solved === true, // ...AND weightsFor kept its answer (else inverse-vol)
+        });
+      }
       targetW = {};
       top.forEach((t, i) => { targetW[t.sym] = w[i]; });
       pending = true; // execute at the NEXT bar
@@ -521,7 +606,7 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
           const wOpt = weighting === 'meanvar'
             ? meanVarWeights(optimizer.cols, optimizer.mu, effGross, optimizer.maxWeight)
             : riskParityWeights(optimizer.cols, effGross, optimizer.maxWeight);
-          const used = wOpt && wOpt.length === top.length && wOpt.every((x) => Number.isFinite(x) && x >= 0) && wOpt.reduce((a, b) => a + b, 0) >= effGross - 1e-6;
+          const used = optimiserWeightsUsable(wOpt, top.length, effGross);
           if (used) {
             const rc = riskContributions(optimizer.cols, wOpt);
             if (rc) { riskContribBySym = {}; top.forEach((t, i) => { riskContribBySym[t.sym] = rc[i]; }); }

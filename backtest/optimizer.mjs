@@ -26,9 +26,60 @@
 //
 // NOTE on alignment: cols[i] is name i's OWN last T returns. For the liquid NSE
 // large-caps a basket trades these are contemporaneous (same trading days); for a
-// name with interior gaps the pairing is approximate — acceptable because (a) such
-// names are rare in this universe and (b) the optimiser degrades to inverse-vol when
-// the covariance is ill-conditioned anyway.
+// name with interior gaps the pairing is approximate.
+//
+// This note used to call that harmless on two grounds, neither of which had been measured.
+// Both are now measured — `node backtest/research/cov-alignment.mjs`:
+//   (a) "such names are rare in this universe" — roughly right, and now quantified. On the
+//       full untrimmed timeline it is 6 of 185 solved rebalances for the risk-parity basket
+//       (3.2%) and 4 of 173 for the mean-variance one (2.3%); cut to the market's own span,
+//       1.1% / 0.6%. Say which basis you mean — they differ threefold — and note 3.2% is the
+//       most flattering of three true framings: per displaced COLUMN it is 0.61%, per
+//       displaced RETURN CELL 0.21%, and in absolute terms it is six rebalances in twenty
+//       years.
+//   (b) "the optimiser degrades to inverse-vol when the covariance is ill-conditioned anyway"
+//       — WRONG. That fallback does not protect against this. Displacing a column in time does
+//       not make the matrix ill-conditioned; it drives the off-diagonals toward zero, i.e.
+//       TOWARD the diagonal shrinkage target, which is better conditioned, not worse. Every
+//       misaligned rebalance measured solved cleanly and its answer was used. The fallback
+//       fires on SHORT windows (a name without a full lookback), an unrelated cause.
+//
+// AND THE CAUSE IS NOT IN THIS FILE AT ALL. The affected names are not missing sessions; they
+// have too FEW bars for a grid that has too MANY. `alignSeries` builds the master timeline from
+// the UNION of every symbol's timestamps, so a date that two symbols printed on becomes a bar
+// for all of them. The universe grid holds 4,938 bars against the index's 4,609, and exactly
+// FIVE of those dates are held by under 99% of already-listed names — one of them 2010-02-06,
+// a SATURDAY, held by 2 names out of 75. Those five dates account for 100% of the misalignment
+// measured (4/4, 1/1, 6/6 and 2/2 across both optimiser baskets and both bases). Fixing the
+// covariance window is therefore compensating downstream for a junk row upstream; dropping thin
+// dates from the grid would remove the cause — and would also take them out of the price grid,
+// out of marking, and out of the `rebalanceBars` counter, which counts GRID bars and so has its
+// rebalance phase nudged by them. That is a larger change and it restates published figures, so
+// it is left as an open decision rather than made silently.
+//
+// What the displacement does to a weight: the column loses its covariance with everyone else
+// (measured: mean |corr| to the rest of the book falls 0.153, post-shrinkage mean |S_ij| for
+// that row falls ~70%, while the Ledoit-Wolf intensity moves only 0.19 -> 0.24, so shrinkage
+// does NOT mask it), the name looks like a diversifier, and both optimisers reward that.
+// Confirmed three ways: a cyclic ROLL, which leaves the column's variance bit-identical,
+// reproduces the effect (97.1%, +3.74pp) while a variance-only rescale does nothing (52.3%,
+// +0.005pp) — so it is the correlation, not the variance; and on REAL misaligned bars 8 of the
+// 9 displaced risk-parity columns lose weight when date-aligned (19.7%->12.5% on the worst).
+// Quote the magnitude as a RANGE, not as +3.7pp: real displacement is always exactly one
+// session but only ever PARTIAL (3-88% of a column, mean ~35%), so the whole-column figure is
+// an upper bound and a mid-window gap gives ~+1.7pp.
+// MEAN-VARIANCE IS NOT MEASURABLE THIS WAY: a placebo that changes the return horizon and
+// lookback reach WITHOUT changing alignment moves its weights MORE than the whole own-vs-dates
+// difference, because inv(S).mu under a 0.4 cap is that unstable. Risk-parity clears its
+// placebo ~6:1 and is the only arm whose numbers mean anything here.
+//
+// The covariance window is NOT corrected here, deliberately. End to end the effect is far below
+// the board's own noise and does not even have a stable sign: over 19 window starts it leans
+// negative for risk-parity on both bases and positive for mean-variance on both, flipping in
+// every one of the four combinations, with |change in excess-rf Sharpe| <= 0.008 against the
+// ~0.25 spread that rebalance phase alone produces. `runPortfolioBacktest({ covAlign: 'dates' })`
+// is the corrected construction, opt-in and off by default, so the decision stays open and
+// re-measurable.
 // ---------------------------------------------------------------------------
 
 import { solveLinear } from './ml.mjs';
