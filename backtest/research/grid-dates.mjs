@@ -63,7 +63,7 @@ const { candles: market, source: mSrc } = await loadCandles('NIFTY', { interval:
 if (/synthetic/.test(mSrc)) { console.error('refusing to measure: the market series is synthetic.'); process.exit(1); }
 
 const A = alignSeries(data, market);
-const { master, realIdx, timesBy } = A;
+const { master, realIdx, timesBy, volsBy } = A;
 const names = Object.keys(data).sort();
 const nifty = new Set(market.map((c) => c.t));
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -83,7 +83,11 @@ for (let p = 0; p < master.length; p++) {
     const ri = realIdx[s][p];
     if (ri < 0) continue;
     listed++;
-    if (ts[ri] === master[p]) held++;
+    // ★ A BAR IS NOT A TRADE. The free feed emits carried-forward rows on days the market was
+    // shut: same close as the day before, volume EXACTLY 0, and often a different timestamp of
+    // day. Counting those as "this name traded" is what made an earlier version of this tool
+    // report phantom dates as sessions the index had dropped. Require real volume.
+    if (ts[ri] === master[p] && volsBy[s][ri] > 0) held++;
   }
   if (listed) rows.push({ t: master[p], dow: new Date(master[p]).getUTCDay(), listed, held, frac: held / listed });
 }

@@ -550,6 +550,15 @@ function renderBotPage(body, d, row) {
         ? `⚠ ${d.liquidity.flagged} of ${d.liquidity.checked} fills exceeded ${Math.round(d.liquidity.cap * 100)}% of the bar's traded volume — at this size those fills wouldn't execute as simulated`
         : `all ${d.liquidity.checked} volume-checked fills were under ${Math.round(d.liquidity.cap * 100)}% of the bar's traded volume`);
     }
+    // Fills on a bar where NOTHING traded. The participation check above cannot say anything
+    // about these — 10% of zero is zero — so they used to be skipped silently, without even
+    // counting as checked. They are the least executable fills a run contains: either the market
+    // was shut and the feed carried yesterday's close forward, or the instrument genuinely had a
+    // day with no trade. Reported, not refused: refusing would change which bars a bot may act on
+    // and restate every figure on the board.
+    if (d.liquidity && d.liquidity.zeroVol > 0) {
+      bits.push(`⚠ ${d.liquidity.zeroVol} fill${d.liquidity.zeroVol === 1 ? '' : 's'} landed on a bar with ZERO traded volume — a price nothing changed hands at, so those fills could not have happened as simulated at any size`);
+    }
     body.append(el('div', { class: 'muted', style: 'font-size:11px;margin-top:4px' }, bits.join(' · ')));
   }
 

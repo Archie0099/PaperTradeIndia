@@ -181,6 +181,59 @@ test("'dates' reads no bar after the decision bar (no look-ahead)", () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// ZERO-VOLUME FILLS. A bar where nothing traded is the least executable fill a run can
+// contain — the feed emits carried-forward rows on days the market was shut (same close,
+// volume 0), and an illiquid instrument can simply have a day with no trade. The
+// participation check cannot speak to them (10% of zero is zero), and it used to skip them
+// silently without even counting them as checked.
+// ---------------------------------------------------------------------------
+
+function withZeroVolumeDay(data, at = 200) {
+  const out = {};
+  for (const s of SYMS) {
+    out[s] = data[s].map((c, i) => (i === at
+      ? { ...c, c: data[s][i - 1].c, v: 0 }   // market shut: yesterday's close, no volume
+      : { ...c, v: 1e9 }));                   // every other bar deeply liquid
+  }
+  return out;
+}
+
+test('a fill on a ZERO-VOLUME bar is counted and reported, not skipped in silence', () => {
+  const data = withZeroVolumeDay(universeData());
+  const r = run(data, { spec: { ...rpSpec, rebalanceBars: 199 } });
+  assert.ok(r.liquidity, 'the run reports a liquidity block');
+  assert.equal(typeof r.liquidity.zeroVol, 'number', 'and it carries a zero-volume count');
+});
+
+test('zero-volume fills move OUT of the participation counters, not into them', () => {
+  // `checked` keeps its exact old meaning — fills the 10%-of-volume rule could actually be
+  // applied to — so a zero-volume fill must leave it, not join it.
+  // ★ The control has to be an ALL-LIQUID fixture, not the bare one: the bare fixture carries no
+  // volume field at all, so its `checked` is 0 and comparing against it proves nothing. (The
+  // first version of this test did exactly that and failed for that reason.)
+  const spec = { ...rpSpec, rebalanceBars: 199 };
+  const liquidData = {};
+  for (const s of SYMS) liquidData[s] = universeData()[s].map((c) => ({ ...c, v: 1e9 }));
+  const liquid = run(liquidData, { spec });
+  const withZero = run(withZeroVolumeDay(universeData()), { spec });
+
+  assert.ok(liquid.liquidity.checked > 0, 'the control really does volume-check its fills');
+  assert.equal(liquid.liquidity.zeroVol, 0, 'and has no zero-volume fills');
+  assert.ok(withZero.liquidity.zeroVol > 0, 'the zero-volume day produces zero-volume fills');
+  assert.equal(withZero.liquidity.checked + withZero.liquidity.zeroVol, liquid.liquidity.checked,
+    'every fill is accounted for exactly once — the zero-volume ones moved out of `checked`');
+});
+
+test('UNKNOWN volume stays unknown — it is neither checked nor counted as zero', () => {
+  // Injected/synthetic series carry no volume at all. That is "no claim", which is a different
+  // fact from "nothing traded", and collapsing the two would invent a warning out of missing data.
+  const data = universeData(); // no `v` field at all
+  const r = run(data);
+  assert.equal(r.liquidity.checked, 0, 'nothing can be volume-checked without volume');
+  assert.equal(r.liquidity.zeroVol, 0, 'and absent volume is NOT reported as zero-volume');
+});
+
 test('_covProbe is diagnostic-only — passing it changes no result', () => {
   const data = withGap(universeData());
   const plain = run(data, { covAlign: 'dates' });

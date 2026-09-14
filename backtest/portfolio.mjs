@@ -176,11 +176,22 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
   // Liquidity honesty flag (see backtester.mjs): count fills whose rupee value
   // exceeds this share of the bar's real traded value (volume × raw close).
   const PARTICIPATION_CAP = 0.10;
-  let liqChecked = 0, liqFlagged = 0;
+  let liqChecked = 0, liqFlagged = 0, liqZeroVol = 0;
   const flagLiquidity = (s, gi, qty, fillPrice) => {
     const idx = realIdx[s][gi];
     const vol = idx >= 0 ? A.volsBy[s][idx] : null;
-    if (!(Number.isFinite(vol) && vol > 0)) return;
+    // A bar with EXACTLY ZERO volume is the least executable fill there is, and this check used
+    // to say nothing about it at all: the early return skipped it without even counting it as
+    // checked. Two ways to get one, and a fill is un-executable under both — the free feed emits
+    // carried-forward rows on days the market was SHUT (same close as the day before, volume 0),
+    // and a genuinely illiquid instrument can simply have a day nobody traded.
+    // MEASURED across the board's baskets: 258 of 43,792 fills (0.589%) land on such a bar, in
+    // every basket bot, and `etf-rotation` reaches 5.57% of its trades.
+    // Counted separately and published, NOT refused: refusing would change which bars a bot can
+    // act on and so restate every figure on the board. `liqChecked`/`liqFlagged` keep their exact
+    // old meaning, so no published number moves.
+    if (Number.isFinite(vol) && vol === 0) { liqZeroVol++; return; }
+    if (!(Number.isFinite(vol) && vol > 0)) return; // volume genuinely unknown: still not a claim
     liqChecked++;
     if (qty * fillPrice > PARTICIPATION_CAP * vol * (A.rawsBy[s][idx] || priceGrid[s][gi])) liqFlagged++;
   };
@@ -673,7 +684,7 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
     finalPositions: snapshotPositions(engine), // current holdings (for the Auto-Pilot copy)
     metrics: summarize(equityCurve, { years, trades, periodsPerYear: intraday ? inferPeriodsPerYear(master) : undefined }),
     costs: { model: cm.kind, feesPaid: +feesCharged(engine).toFixed(2) },
-    liquidity: { cap: PARTICIPATION_CAP, checked: liqChecked, flagged: liqFlagged },
+    liquidity: { cap: PARTICIPATION_CAP, checked: liqChecked, flagged: liqFlagged, zeroVol: liqZeroVol },
     ...(tradeLog ? { trades: tradeLog, decision: lastDecision } : {}),
   };
 }
