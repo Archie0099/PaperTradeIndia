@@ -295,20 +295,20 @@ function render(app, data) {
       // disclosed on hover here and spelled out on the bot's own page.
       el('td', {
         class: 'num',
-        // Two separate known biases can sit on one ranked figure — idle cash charged the hurdle,
-        // and an opening stretch where the gate proxy does not exist yet. Both are disclosed
-        // here rather than applied, so the hover lists whichever apply to this row.
-        title: (() => {
-          const notes = [];
-          if (b.sharpeCashAdj != null && b.flatBarsPct != null && b.flatBarsPct >= 5 && b.sharpeCashAdj !== b.sharpe) {
-            notes.push(`In cash ${b.flatBarsPct.toFixed(1)}% of its life and charged the ~6.5% hurdle for those bars without earning it — re-scored as if idle cash paid that rate it would be ${b.sharpeCashAdj}.`);
-          }
-          if (b.sharpePostProxy != null && b.preProxyBars > 0 && b.sharpePostProxy !== b.sharpe) {
-            notes.push(`Its first ${b.preProxyBars} bars predate the market proxy it gates on, so it sits flat through them and is charged the hurdle anyway — scored only from the proxy's start it would be ${b.sharpePostProxy}.`);
-          }
-          return notes.length
-            ? `${b.sharpe} as ranked. ${notes.join(' ')} Open the bot for the full note.`
-            : 'Risk-adjusted return in excess of a ~6.5% risk-free rate.';
+        // Two separate known biases can sit on one ranked figure — idle cash charged the hurdle,
+        // and an opening stretch where the gate proxy does not exist yet. Both are disclosed
+        // here rather than applied, so the hover lists whichever apply to this row.
+        title: (() => {
+          const notes = [];
+          if (b.sharpeCashAdj != null && b.flatBarsPct != null && b.flatBarsPct >= 5 && b.sharpeCashAdj !== b.sharpe) {
+            notes.push(`In cash ${b.flatBarsPct.toFixed(1)}% of its life and charged the ~6.5% hurdle for those bars without earning it — re-scored as if idle cash paid that rate it would be ${b.sharpeCashAdj}.`);
+          }
+          if (b.sharpePostProxy != null && b.preProxyBars > 0 && b.sharpePostProxy !== b.sharpe) {
+            notes.push(`Its first ${b.preProxyBars} bars predate the market proxy it gates on, so it sits flat through them and is charged the hurdle anyway — scored only from the proxy's start it would be ${b.sharpePostProxy}.`);
+          }
+          return notes.length
+            ? `${b.sharpe} as ranked. ${notes.join(' ')} Open the bot for the full note.`
+            : 'Risk-adjusted return in excess of a ~6.5% risk-free rate.';
         })(),
       }, String(b.sharpe)),
       el('td', { class: 'num' }, b.maxDrawdownPct + '%'),
@@ -479,27 +479,27 @@ function renderBotPage(body, d, row) {
       ` Both are shown because the headline figure is charged twice for standing aside, and a bot that never stands aside is not. Neither number is adjusted anywhere else on the board — ${m.sharpe} remains the ranked figure. It is an estimate: a cash bar is inferred from equity being exactly unchanged.`,
     ]));
   }
-  // The GATE-PROXY dead stretch, said in words. A basket's timeline is the union of its
-  // universe and the market series, and most of the universe lists before NIFTY does — so over
-  // the opening stretch a gated basket has no proxy to read, sits flat, and is charged the
-  // hurdle for it. This is the size of that, measured on the bot's own full curve.
-  if (m.sharpePostProxy != null && m.preProxyBars > 0 && m.sharpePostProxy !== m.sharpe) {
-    // What those bars MEAN depends entirely on whether this bot reads the proxy, and the two
-    // readings are opposites — so the sentence branches rather than asserting the gated story
-    // about every bot. Saying "it holds nothing there" about an UNGATED basket would be flatly
-    // untrue: the fair bar takes 774 trades inside that very stretch.
-    body.append(el('div', { class: 'muted', style: 'font-size: 12px; margin: -4px 0 8px' }, [
-      `This bot's timeline opens ${m.preProxyBars} bars before the market proxy exists. `,
-      m.gated
-        ? 'It gates on that proxy, so across those bars it cannot evaluate its gate at all — it holds nothing and is charged the ~6.5% hurdle for every one of them. Removing them is the fairer read of this bot. '
-        : 'It does not gate on the proxy, so it trades through those bars normally. Removing them is NOT a correction for this bot — it is simply a shorter window, and the difference can fall either way. ',
-      el('span', { style: 'font-weight: 600' }, `Scored only from the bar the proxy starts, it is ${m.sharpePostProxy} instead of ${m.sharpe}.`),
-      ' The reason both are shown is COMPARABILITY: only from the proxy onward were all the bots on this board able to act on the same information. ',
-      'Read it as the SAME run scored over a later window — not as what the bot would have done on a trimmed timeline, which would also move every rebalance date and is a different (larger) question. Nothing on the board is adjusted by it; ',
-      el('span', { style: 'font-weight: 600' }, `${m.sharpe}`),
-      ' remains the ranked figure.',
-    ]));
-  }
+  // The GATE-PROXY dead stretch, said in words. A basket's timeline is the union of its
+  // universe and the market series, and most of the universe lists before NIFTY does — so over
+  // the opening stretch a gated basket has no proxy to read, sits flat, and is charged the
+  // hurdle for it. This is the size of that, measured on the bot's own full curve.
+  if (m.sharpePostProxy != null && m.preProxyBars > 0 && m.sharpePostProxy !== m.sharpe) {
+    // What those bars MEAN depends entirely on whether this bot reads the proxy, and the two
+    // readings are opposites — so the sentence branches rather than asserting the gated story
+    // about every bot. Saying "it holds nothing there" about an UNGATED basket would be flatly
+    // untrue: the fair bar takes 774 trades inside that very stretch.
+    body.append(el('div', { class: 'muted', style: 'font-size: 12px; margin: -4px 0 8px' }, [
+      `This bot's timeline opens ${m.preProxyBars} bars before the market proxy exists. `,
+      m.gated
+        ? 'It gates on that proxy, so across those bars it cannot evaluate its gate at all — it holds nothing and is charged the ~6.5% hurdle for every one of them. Removing them is the fairer read of this bot. '
+        : 'It does not gate on the proxy, so it trades through those bars normally. Removing them is NOT a correction for this bot — it is simply a shorter window, and the difference can fall either way. ',
+      el('span', { style: 'font-weight: 600' }, `Scored only from the bar the proxy starts, it is ${m.sharpePostProxy} instead of ${m.sharpe}.`),
+      ' The reason both are shown is COMPARABILITY: only from the proxy onward were all the bots on this board able to act on the same information. ',
+      'Read it as the SAME run scored over a later window — not as what the bot would have done on a trimmed timeline, which would also move every rebalance date and is a different (larger) question. Nothing on the board is adjusted by it; ',
+      el('span', { style: 'font-weight: 600' }, `${m.sharpe}`),
+      ' remains the ranked figure.',
+    ]));
+  }
   // The VaR BACK-TEST — the honest part. Every day in the last 250, the bot's 99% VaR was
   // built from returns strictly BEFORE that day; an "exception" is a day whose loss beat it.
   // At 99% you expect ~2.5 in 250. Kupiec's two-tailed test rejects the model at the 5% level
@@ -550,15 +550,15 @@ function renderBotPage(body, d, row) {
         ? `⚠ ${d.liquidity.flagged} of ${d.liquidity.checked} fills exceeded ${Math.round(d.liquidity.cap * 100)}% of the bar's traded volume — at this size those fills wouldn't execute as simulated`
         : `all ${d.liquidity.checked} volume-checked fills were under ${Math.round(d.liquidity.cap * 100)}% of the bar's traded volume`);
     }
-    // Fills on a bar where NOTHING traded. The participation check above cannot say anything
-    // about these — 10% of zero is zero — so they used to be skipped silently, without even
-    // counting as checked. They are the least executable fills a run contains: either the market
-    // was shut and the feed carried yesterday's close forward, or the instrument genuinely had a
-    // day with no trade. Reported, not refused: refusing would change which bars a bot may act on
-    // and restate every figure on the board.
-    if (d.liquidity && d.liquidity.zeroVol > 0) {
-      bits.push(`⚠ ${d.liquidity.zeroVol} fill${d.liquidity.zeroVol === 1 ? '' : 's'} landed on a bar with ZERO traded volume — a price nothing changed hands at, so those fills could not have happened as simulated at any size`);
-    }
+    // Fills on a bar where NOTHING traded. The participation check above cannot say anything
+    // about these — 10% of zero is zero — so they used to be skipped silently, without even
+    // counting as checked. They are the least executable fills a run contains: either the market
+    // was shut and the feed carried yesterday's close forward, or the instrument genuinely had a
+    // day with no trade. Reported, not refused: refusing would change which bars a bot may act on
+    // and restate every figure on the board.
+    if (d.liquidity && d.liquidity.zeroVol > 0) {
+      bits.push(`⚠ ${d.liquidity.zeroVol} fill${d.liquidity.zeroVol === 1 ? '' : 's'} landed on a bar with ZERO traded volume — a price nothing changed hands at, so those fills could not have happened as simulated at any size`);
+    }
     body.append(el('div', { class: 'muted', style: 'font-size:11px;margin-top:4px' }, bits.join(' · ')));
   }
 
