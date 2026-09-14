@@ -295,9 +295,21 @@ function render(app, data) {
       // disclosed on hover here and spelled out on the bot's own page.
       el('td', {
         class: 'num',
-        title: (b.sharpeCashAdj != null && b.flatBarsPct != null && b.flatBarsPct >= 5 && b.sharpeCashAdj !== b.sharpe)
-          ? `${b.sharpe} as ranked. This bot is in cash ${b.flatBarsPct.toFixed(1)}% of its life and is charged the ~6.5% hurdle for those bars without earning it — re-scored as if idle cash paid that rate it would be ${b.sharpeCashAdj}. Open the bot for the full note.`
-          : 'Risk-adjusted return in excess of a ~6.5% risk-free rate.',
+        // Two separate known biases can sit on one ranked figure — idle cash charged the hurdle,
+        // and an opening stretch where the gate proxy does not exist yet. Both are disclosed
+        // here rather than applied, so the hover lists whichever apply to this row.
+        title: (() => {
+          const notes = [];
+          if (b.sharpeCashAdj != null && b.flatBarsPct != null && b.flatBarsPct >= 5 && b.sharpeCashAdj !== b.sharpe) {
+            notes.push(`In cash ${b.flatBarsPct.toFixed(1)}% of its life and charged the ~6.5% hurdle for those bars without earning it — re-scored as if idle cash paid that rate it would be ${b.sharpeCashAdj}.`);
+          }
+          if (b.sharpePostProxy != null && b.preProxyBars > 0 && b.sharpePostProxy !== b.sharpe) {
+            notes.push(`Its first ${b.preProxyBars} bars predate the market proxy it gates on, so it sits flat through them and is charged the hurdle anyway — scored only from the proxy's start it would be ${b.sharpePostProxy}.`);
+          }
+          return notes.length
+            ? `${b.sharpe} as ranked. ${notes.join(' ')} Open the bot for the full note.`
+            : 'Risk-adjusted return in excess of a ~6.5% risk-free rate.';
+        })(),
       }, String(b.sharpe)),
       el('td', { class: 'num' }, b.maxDrawdownPct + '%'),
       el('td', { class: 'muted' }, b.position),
@@ -440,6 +452,9 @@ function renderBotPage(body, d, row) {
   // (1.4%), so the two numbers are put side by side here instead of being argued about in a
   // footnote. `sharpe` stays the headline; this is the same curve re-scored as if its idle
   // cash had earned the rate it is already charged.
+  if (m.sharpePostProxy != null && m.sharpePostProxy !== m.sharpe) {
+    stats.append(stat('Sharpe from proxy start', String(m.sharpePostProxy)));
+  }
   if (m.sharpeCashAdj != null && m.flatBarsPct != null && m.flatBarsPct >= 5 && m.sharpeCashAdj !== m.sharpe) {
     stats.append(stat('Sharpe if cash paid', String(m.sharpeCashAdj)));
     stats.append(stat('Life in cash', m.flatBarsPct.toFixed(1) + '%'));
@@ -464,6 +479,23 @@ function renderBotPage(body, d, row) {
       ` Both are shown because the headline figure is charged twice for standing aside, and a bot that never stands aside is not. Neither number is adjusted anywhere else on the board — ${m.sharpe} remains the ranked figure. It is an estimate: a cash bar is inferred from equity being exactly unchanged.`,
     ]));
   }
+  // The GATE-PROXY dead stretch, said in words. A basket's timeline is the union of its
+  // universe and the market series, and most of the universe lists before NIFTY does — so over
+  // the opening stretch a gated basket has no proxy to read, sits flat, and is charged the
+  // hurdle for it. This is the size of that, measured on the bot's own full curve.
+  if (m.sharpePostProxy != null && m.preProxyBars > 0 && m.sharpePostProxy !== m.sharpe) {
+    const worse = m.sharpePostProxy > m.sharpe;
+    body.append(el('div', { class: 'muted', style: 'font-size: 12px; margin: -4px 0 8px' }, [
+      `This bot's timeline opens ${m.preProxyBars} bars before the market proxy it gates on exists. It cannot evaluate its gate there, so it holds nothing and is charged the ~6.5% hurdle anyway. `,
+      el('span', { style: 'font-weight: 600' }, `Scored only from the bar the proxy starts, it is ${m.sharpePostProxy} instead of ${m.sharpe}.`),
+      worse
+        ? ' The ranked figure is therefore the more pessimistic of the two for this bot.'
+        : ' The ranked figure is the more flattering of the two for this bot.',
+      ' Read it as the SAME run scored over a later window — not as what the bot would have done on a trimmed timeline, which would also move every rebalance date and is a different (larger) question. Nothing on the board is adjusted by it; ',
+      el('span', { style: 'font-weight: 600' }, `${m.sharpe}`),
+      ' remains the ranked figure.',
+    ]));
+  }
   // The VaR BACK-TEST — the honest part. Every day in the last 250, the bot's 99% VaR was
   // built from returns strictly BEFORE that day; an "exception" is a day whose loss beat it.
   // At 99% you expect ~2.5 in 250. Kupiec's two-tailed test rejects the model at the 5% level

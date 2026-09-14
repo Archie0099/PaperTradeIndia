@@ -243,6 +243,36 @@ function downsample(points, max = 120) {
 // which would break the client's tier-pick comparison; a value larger than any real span works).
 const MAX_TIER_MS = 1e15;
 const CURVE_TIER_MS = [31 * 864e5, 366 * 864e5, 5 * 366 * 864e5, MAX_TIER_MS]; // 1M · 1Y · 5Y · MAX
+// Score an EXISTING equity curve only from the bar the market proxy starts, and say how many
+// bars were skipped. ONE definition, used by both the leaderboard row and the per-bot page, so
+// the two can never quote different figures for the same bot.
+//
+// WHY: `alignSeries` builds a basket's timeline from the UNION of its universe and the market
+// series, and most of the universe lists well before NIFTY does. Across that leading stretch a
+// GATED basket has no proxy to read, so it reads risk-off, sits flat, and is charged the ~6.5%
+// hurdle on every one of those bars. Measured on a real board: every basket carries 301 such
+// bars, gated ones read 0.02-0.05 low because of them, and the UNGATED fair bar moves -0.01 —
+// so the artifact pushes the two sides of the board's own headline comparison in opposite
+// directions.
+//
+// ★ THIS IS "THE SAME RUN, SCORED LATER" — NOT "the run if the timeline were trimmed". Trimming
+// the INPUT moves bar 0, which moves the whole rebalance grid (the rebalance-phase caveat) and changes which names are
+// held on which dates; that is a different and much larger effect (a local trimmed re-run of
+// quant-riskparity scored ~1.02 against 0.74 as-ranked, while re-scoring gives 0.78). This
+// isolates ONLY the dead-bar component, which is why it restates nothing and can be published
+// beside the ranked figure rather than instead of it.
+function postProxyScore(eq, times, proxyT0) {
+  if (!Number.isFinite(proxyT0) || !Array.isArray(times) || !times.length) return { sharpePostProxy: null, preProxyBars: 0 };
+  if (!Array.isArray(eq) || eq.length !== times.length) return { sharpePostProxy: null, preProxyBars: 0 };
+  if (!(times[0] < proxyT0)) return { sharpePostProxy: null, preProxyBars: 0 }; // no dead stretch: nothing to report
+  let n = 0;
+  while (n < times.length && times[n] < proxyT0) n++;
+  // Below ~30 surviving bars a Sharpe is noise; report the count but no number.
+  if (times.length - n < 30) return { sharpePostProxy: null, preProxyBars: n };
+  const s = sharpeOfCurve(eq.slice(n));
+  return { sharpePostProxy: Number.isFinite(s) ? +s.toFixed(2) : null, preProxyBars: n };
+}
+
 function multiResCurve(points, max = 120) {
   const pts = (points || []).filter((p) => p && Number.isFinite(p.t) && Number.isFinite(+p.c));
   if (pts.length < 2) return [];
@@ -658,6 +688,14 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     return [...merged.values()].sort((a, b) => a.t - b.t);
   };
 
+  // First bar of the market proxy every basket gates on. Null when NIFTY has not loaded (a cold
+  // boot), in which case the post-proxy score is simply not reported — never guessed at.
+  const proxyStartT = () => {
+    const s = seriesFor('NIFTY');
+    return Array.isArray(s) && s.length ? s[0].t : null;
+  };
+
+
   // Run one bot's backtest over [backfill+live]. `recordTrades` (used by
   // getBotDetail) makes the backtester also return a full per-trade log.
   function runBot(bot, candles, recordTrades = false, alignCache = null) {
@@ -822,7 +860,11 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
         // sharpeCashAdj/flatBarsPct ride along for the same reason the leaderboard row carries
         // them (see buildRow): a gated bot is charged the hurdle on every bar it stands aside,
         // and the per-bot page is where there is actually room to show the gap honestly.
-        ? { totalReturnPct: res.metrics.totalReturnPct, sharpe: res.metrics.sharpe, sharpeCashAdj: res.metrics.sharpeCashAdj, flatBarsPct: res.metrics.flatBarsPct, maxDrawdownPct: res.metrics.maxDrawdownPct, trades: res.metrics.trades, risk: isIntradayInterval(bot.interval) ? null : riskProfile(res.equityCurve) }
+        ? { totalReturnPct: res.metrics.totalReturnPct, sharpe: res.metrics.sharpe, sharpeCashAdj: res.metrics.sharpeCashAdj, flatBarsPct: res.metrics.flatBarsPct,
+            // Same helper the leaderboard row uses, so the two surfaces cannot quote different
+            // post-proxy figures for one bot.
+            ...postProxyScore(eqd, ctimes, isIntradayInterval(bot.interval) ? null : proxyStartT()),
+            maxDrawdownPct: res.metrics.maxDrawdownPct, trades: res.metrics.trades, risk: isIntradayInterval(bot.interval) ? null : riskProfile(res.equityCurve) }
         : { totalReturnPct: 0, sharpe: 0, sharpeCashAdj: 0, flatBarsPct: 0, maxDrawdownPct: 0, trades: 0, risk: null }, // never-traded: neutral, matching the leaderboard row
       // Cost/liquidity honesty for the per-bot page: which cost schedule the run paid
       // (+ non-trade fees like SLB borrow / F&O brokerage), and how many fills exceeded
@@ -923,6 +965,7 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       // Stash the bot's FULL daily curve for the Auto-Pilot walk-forward (daily bots only —
       // intraday live on a separate ~2y 60-min timeline and aren't part of the long-run race).
       if (!intraday) apCurves.push({ id: bot.id, name: bot.name, kind: bot.kind, symbol: bot.symbol, protected: !!bot.protected, eq, times, holdings: res.holdings || null });
+      const { sharpePostProxy, preProxyBars } = postProxyScore(eq, times, intraday ? null : proxyStartT());
       return {
         id: bot.id,
         name: bot.name,
@@ -972,6 +1015,10 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
         // assumption is visible rather than buried.
         sharpeCashAdj: res.metrics.sharpeCashAdj,
         flatBarsPct: res.metrics.flatBarsPct,
+        // The same run scored only from the bar the gate proxy starts (see above). null when the
+        // bot has no pre-proxy stretch at all.
+        sharpePostProxy,
+        preProxyBars,
         maxDrawdownPct: res.metrics.maxDrawdownPct,
         // Risk block: one-day 99% VaR / ES by historical simulation on the trailing 500
         // daily returns (Hull's window), the √10 ten-day figure, and a ROLLING BACK-TEST of that
@@ -1671,4 +1718,4 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
 // `sharpeUpTo` is exported for its own test only — nothing at runtime imports it; the
 // walk-forward calls it directly. Exporting it means the degenerate-curve rule can be
 // asserted on its own, instead of only inferred from a whole walk-forward's output.
-export { createTournament, computeAutopilotTrack, sharpeUpTo, specKey, dropFormingBar, EVOLVE_WINDOW, EVOLVE_WARMUP, CASH };
+export { createTournament, computeAutopilotTrack, sharpeUpTo, specKey, dropFormingBar, postProxyScore, EVOLVE_WINDOW, EVOLVE_WARMUP, CASH };

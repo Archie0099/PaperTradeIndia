@@ -490,6 +490,34 @@ test("a bot with no risk block (curve too short) shows NO VaR stat and NO back-t
   assert.ok(!/VaR back-test/.test(page), "no back-test line without a tail");
 });
 
+test("a bot whose timeline opens before its gate proxy exists says so, and states both figures", async () => {
+  // The board publishes the size of its own gate-proxy artifact rather than correcting it, so the
+  // page has to say what the second number means — and in particular that it is the SAME run
+  // scored later, not the run on a trimmed timeline (which would also move every rebalance date).
+  const dom = setupDom();
+  const bk = baseDetail("bk", { kind: "BASKET", symbol: "8 stocks",
+    metrics: { totalReturnPct: 120, sharpe: 0.74, sharpePostProxy: 0.78, preProxyBars: 301, maxDrawdownPct: 30, trades: 400 } });
+  await renderTournament(appWith(dom, { bk }));
+  clickBot(dom, "bk");
+  await flush();
+  const page = dom.$("#tourn-botpage-body").textContent;
+  assert.match(page, /Sharpe from proxy start0\.78/, "the stat renders with its value");
+  assert.match(page, /This bot's timeline opens 301 bars before the market proxy it gates on exists\./, "it states the size of the dead stretch");
+  assert.match(page, /Scored only from the bar the proxy starts, it is 0\.78 instead of 0\.74\./, "and both figures, in one sentence");
+  assert.match(page, /not as what the bot would have done on a trimmed timeline/, "it refuses the reading that would overstate the finding");
+});
+
+test("a bot with NO dead stretch shows no post-proxy figure at all (the control)", async () => {
+  const dom = setupDom();
+  const bh = baseDetail("bh", { metrics: { totalReturnPct: 50, sharpe: 0.23, sharpePostProxy: null, preProxyBars: 0, maxDrawdownPct: 20, trades: 1 } });
+  await renderTournament(appWith(dom, { bh }));
+  clickBot(dom, "bh");
+  await flush();
+  const page = dom.$("#tourn-botpage-body").textContent;
+  assert.ok(!/Sharpe from proxy start/.test(page), "no second Sharpe for a bot that has no dead stretch");
+  assert.ok(!/before the market proxy/.test(page), "and no explanatory note either");
+});
+
 test("a bot whose window holds NO LOSING DAY says so in words, instead of printing a 0.00% VaR", async () => {
   // The opposite extreme from a wipe-out, and it used to be the dishonest one: a bot sitting in
   // cash produced var1dPct 0.00, which reads as "this bot cannot lose money", beside a Kupiec
