@@ -490,6 +490,24 @@ test("a bot with no risk block (curve too short) shows NO VaR stat and NO back-t
   assert.ok(!/VaR back-test/.test(page), "no back-test line without a tail");
 });
 
+test("a bot whose window holds NO LOSING DAY says so in words, instead of printing a 0.00% VaR", async () => {
+  // The opposite extreme from a wipe-out, and it used to be the dishonest one: a bot sitting in
+  // cash produced var1dPct 0.00, which reads as "this bot cannot lose money", beside a Kupiec
+  // rejection rendered as "it overstates the bot's risk" — something a zero VaR cannot do.
+  // The figures are withheld now, so the page MUST say why or the risk section silently vanishes.
+  const dom = setupDom();
+  const risk = { conf: 0.99, window: 500, wiped: false, noLoss: true, lossDays: 0, tailDays: 5, var1dPct: null, es1dPct: null, var10dPct: null, backtest: null };
+  const idle = baseDetail("bk", { kind: "BASKET", symbol: "8 stocks", metrics: { totalReturnPct: 0, sharpe: 0, maxDrawdownPct: 0, trades: 0, risk } });
+  await renderTournament(appWith(dom, { bk: idle }));
+  clickBot(dom, "bk");
+  await flush();
+  const page = dom.$("#tourn-botpage-body").textContent;
+  assert.ok(!/VaR 99%/.test(page), "no VaR stat is printed");
+  assert.ok(!/VaR back-test/.test(page), "and no back-test line, since every day's VaR in it is the same zero");
+  assert.match(page, /No VaR or ES is shown for this bot: only 0 of the last 500 trading days were losses, and a 99% tail is measured from the worst 5, so the tail lands on a gain and there is nothing to estimate from\./, "it states the ACTUAL counts rather than claiming the equity never fell — a claim that is false whenever 1-4 losing days still trip the guard");
+  assert.match(page, /That is missing information, not zero risk\./, "and refuses the reassuring reading");
+});
+
 test("a VaR the Kupiec test does NOT reject says so, with the statistic", async () => {
   const dom = setupDom();
   const risk = { ...riskYellow, backtest: { exceptions: 2, days: 250, expected: 2.5, kupiec: 0.11, kupiecReject: false, zone: "green", mc: 3 } };

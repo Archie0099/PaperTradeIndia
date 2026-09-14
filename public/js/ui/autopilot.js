@@ -1329,6 +1329,14 @@ function renderSuggestions(app) {
     // history, so a flat short bot with a past blow-up could be the champion of the day.)
     box.append(el('div', { style: 'font-size: 12px; margin: 6px 0; color: var(--down); font-weight: 600' },
       `Tomorrow’s risk on this ${rupee(value, 0)}: not quantifiable — the champion’s last ${rk.window} trading days include a TOTAL LOSS, so a rupee VaR is not a meaningful figure for it. Treat the downside of following it as unbounded, and re-read the honesty check above.`));
+  } else if (rk && rk.noLoss && value > 0) {
+    // The other end of the same problem as `wiped`: a champion whose trailing window holds no
+    // losing day at all (almost always one that sat in cash) has no tail to scale to rupees.
+    // This branch exists because the alternative was WORSE THAN SILENCE — a 0.00% VaR used to
+    // reach this panel and tell someone sizing REAL money that they "should not lose more than
+    // ₹0". Say what is actually known instead, and offer no rupee figure.
+    box.append(el('div', { style: 'font-size: 12px; margin: 6px 0' },
+      `Tomorrow’s risk on this ${rupee(value, 0)}: not quantifiable right now — only ${rk.lossDays} of the champion’s last ${rk.window} trading days were losses, too few for a ${Math.round(rk.conf * 100)}% tail (which is measured from the worst ${rk.tailDays}), so there is no loss distribution to size a VaR from. Read that as missing information, not as a safe bet: it usually means the champion has been sitting in cash, and the moment it buys something its risk is whatever the new book carries.`));
   } else if (rk && rk.var1dPct != null && value > 0) {
     const varRs = value * rk.var1dPct / 100;
     const esRs = value * rk.es1dPct / 100;

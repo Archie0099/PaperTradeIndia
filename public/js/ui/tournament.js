@@ -487,6 +487,20 @@ function renderBotPage(body, d, row) {
       rk.wiped ? el('span', { class: 'down', style: 'font-weight: 600' }, ' The account was WIPED OUT at least once inside this window — the VaR/ES above are capped at a total loss; treat this bot’s downside as unbounded.') : '',
     ]));
   }
+  // The opposite extreme, and it needs saying OUT LOUD rather than by omission: a window with
+  // no losing day estimates nothing. This block used to print "VaR 99% (1d) 0.00%" beside a
+  // Kupiec rejection reading "it overstates the bot's risk" — which a zero VaR cannot do. The
+  // figures are withheld now, so without this line the whole risk section would simply vanish
+  // and a reader would not know whether it was missing or reassuring.
+  if (rk && rk.noLoss) {
+    body.append(el('div', { class: 'muted', style: 'font-size: 12px; margin: -4px 0 8px' }, [
+      `No VaR or ES is shown for this bot: only ${rk.lossDays} of the last ${rk.window} trading days were losses, and a ${Math.round(rk.conf * 100)}% tail is measured from the worst ${rk.tailDays}, so the tail lands on a gain and there is nothing to estimate from. `,
+      el('span', { style: 'font-weight: 600' }, 'That is missing information, not zero risk.'),
+      ' The usual cause is a bot that sat in cash across the window — a regime gate that stayed shut, or a basket whose data had not loaded yet after a restart. Its risk will reappear here once it holds something again.',
+    ]));
+  }
+
+
 
   // Cost + liquidity honesty line: which real cost schedule this bot's whole track
   // paid (plus non-trade fees — SLB borrow, F&O brokerage), and whether any fills

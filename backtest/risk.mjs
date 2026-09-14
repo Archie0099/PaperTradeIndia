@@ -420,14 +420,41 @@ function riskProfile(equity, { conf = 0.99, window = 500, testDays = 250 } = {})
   const recent = recentLosses.map((l) => -l); // as RETURNS, for historicalVaR
   const hs = historicalVaR(recent, { conf });
   const bt = rollingVaRBacktest(equity, { conf, window, testDays });
+  // A window whose tail holds NO LOSS estimates nothing. The commonest way to get here is a
+  // bot that sat in cash (or was data-starved on a cold boot) for the whole window, so every
+  // return is exactly 0 and the k-th worst "loss" is 0 — but it also covers the rarer case of
+  // a window with no losing day at all, where the quantile lands on a gain.
+  //
+  // This used to report var1dPct 0.000, which READS AS "this bot cannot lose money" and is a
+  // different claim from "we have no information about its tail". Downstream it was worse than
+  // cosmetic: the advisor scales these to a real capital figure, and told the reader of real money that
+  // they "should not lose more than ₹0"; and the per-bot page printed a self-contradictory
+  // sentence, since the Kupiec test rejects a 0% VaR for having too FEW exceptions and the page
+  // renders that as "it OVERSTATES the bot's risk" — which a VaR of zero cannot do.
+  //
+  // So report nothing, and flag WHY, exactly as `wiped` does for the opposite extreme. The
+  // back-test goes too: every day's VaR in it is the same uninformative 0, so its exception
+  // count and Basel zone describe the arithmetic rather than the bot. `null` already flows
+  // through both UIs (it is what an intraday bot ships), so nothing renders a bare zero.
+  //
+  // ★ "No loss" here means FEWER LOSING DAYS THAN THE TAIL NEEDS, which is not the same as
+  // none at all: at 99% on a 500-bar window the estimator takes the 5th-worst day, so a window
+  // with one to four losing days also lands on a gain and reports a zero VaR. `lossDays` and
+  // `tailDays` are published so the UI can state the actual counts instead of claiming the
+  // equity "never fell" — a sentence that would be false in exactly that case.
+  const noLoss = !!(hs && !(hs.var > 0));
+  const usable = hs && !noLoss;
   return {
     conf,
     window: recent.length,
     wiped: wipedWithin(equity.slice(-(recent.length + 1))),
-    var1dPct: hs ? +(hs.var * 100).toFixed(3) : null,
-    es1dPct: hs ? +(hs.es * 100).toFixed(3) : null,
-    var10dPct: hs ? +(Math.min(1, scaleHorizon(hs.var, 10)) * 100).toFixed(3) : null, // √10 rule (12.3), capped at a total loss
-    backtest: bt ? { exceptions: bt.exceptions, days: bt.days, expected: bt.expected, kupiec: bt.kupiec, kupiecReject: bt.kupiecReject, zone: bt.zone, mc: bt.mc } : null,
+    noLoss,
+    lossDays: recentLosses.filter((l) => l > 0).length,
+    tailDays: hs ? hs.k : null,
+    var1dPct: usable ? +(hs.var * 100).toFixed(3) : null,
+    es1dPct: usable ? +(hs.es * 100).toFixed(3) : null,
+    var10dPct: usable ? +(Math.min(1, scaleHorizon(hs.var, 10)) * 100).toFixed(3) : null, // √10 rule (12.3), capped at a total loss
+    backtest: (bt && !noLoss) ? { exceptions: bt.exceptions, days: bt.days, expected: bt.expected, kupiec: bt.kupiec, kupiecReject: bt.kupiecReject, zone: bt.zone, mc: bt.mc } : null,
   };
 }
 

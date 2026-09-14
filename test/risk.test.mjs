@@ -277,7 +277,75 @@ test('riskProfile returns the board’s risk block and stays null-safe on a shor
   const short = riskProfile([1e7, 1.01e7, 1.02e7]);
   assert.equal(short.var1dPct, null);
   assert.equal(short.backtest, null, 'no tail, no back-test — nulls, not zeros');
+  assert.equal(short.noLoss, false, 'a SHORT curve is "no data", which is not the same fact as "no loss"');
+  assert.equal(rp.noLoss, false, 'and an ordinary curve is neither');
 });
+
+// --- A window with NO LOSING DAY: missing information, not zero risk -------------
+// The commonest way a live bot gets here is sitting entirely in cash — a regime gate that
+// stayed shut, or a basket whose data had not loaded yet after a restart. Its equity never
+// moves, so every return is exactly 0 and the 99% tail holds no loss at all.
+test('a flat (all-cash) window reports NO VaR rather than a 0.00% one', () => {
+  const flat = new Array(900).fill(1e7);
+  const rp = riskProfile(flat);
+  // Before the fix this returned var1dPct 0, es1dPct 0, var10dPct 0 — which reads as
+  // "this bot cannot lose money" and reached the advisor as "you should not lose more than ₹0".
+  assert.equal(rp.noLoss, true, 'the profile must SAY the window holds no loss');
+  assert.equal(rp.var1dPct, null, 'no VaR is reported at all');
+  assert.equal(rp.es1dPct, null);
+  assert.equal(rp.var10dPct, null);
+  assert.equal(rp.wiped, false, 'and this is the opposite of a wipe-out, not a form of one');
+});
+
+test('the VaR back-test is withheld too when the window holds no loss', () => {
+  // Every day's VaR inside such a back-test is the same uninformative zero, so its exception
+  // count describes the arithmetic rather than the bot. Worse, Kupiec REJECTS it for having too
+  // FEW exceptions, which the per-bot page renders as "it overstates the bot's risk" — a thing
+  // a zero VaR cannot do. The pair (kupiecReject: true, zone: 'green') was the visible symptom.
+  const flat = new Array(900).fill(1e7);
+  assert.equal(riskProfile(flat).backtest, null);
+});
+
+test('a curve that MOVED and then went flat for the whole window is also withheld', () => {
+  // The bug is not limited to a bot that never traded: the estimator only ever looks at the
+  // trailing window, so a bot that traded for years and has since been in cash reports on the
+  // cash, not on the trading. This case is why the flag keys on the window, not on the curve.
+  let e = 1e7; const eq = [e];
+  for (let i = 1; i < 400; i++) { e *= 1 + ((i * 7919) % 13 - 6) * 0.002; eq.push(e); }
+  for (let i = 0; i < 520; i++) eq.push(e); // flat for longer than the 500-bar window
+  const rp = riskProfile(eq);
+  assert.equal(rp.noLoss, true);
+  assert.equal(rp.var1dPct, null);
+});
+
+test('"no loss" means FEWER LOSING DAYS THAN THE TAIL NEEDS, not zero of them', () => {
+  // The precision that matters for the copy on both screens. At 99% on a 500-bar window the
+  // estimator takes the 5th-worst day, so a window holding one to four losing days ALSO lands
+  // on a gain and reports a zero VaR. A UI sentence saying the equity "never fell" would be
+  // false in exactly that case, which is why the profile publishes the counts instead.
+  const eq = [1e7];
+  for (let i = 1; i < 700; i++) eq.push(eq[i - 1] * 1.0001);  // rises every day...
+  for (const i of [300, 420, 550]) eq[i] = eq[i - 1] * 0.995; // ...except three
+  for (let i = 301; i < 700; i++) if (![420, 550].includes(i)) eq[i] = eq[i - 1] * 1.0001;
+  const rp = riskProfile(eq);
+  assert.ok(rp.lossDays > 0 && rp.lossDays < rp.tailDays,
+    `the window must hold SOME losses but fewer than the tail needs (got ${rp.lossDays} of ${rp.tailDays})`);
+  assert.equal(rp.noLoss, true, 'the guard still fires — the 99% tail lands on a gain');
+  assert.equal(rp.var1dPct, null, 'so no VaR is reported');
+  assert.equal(rp.tailDays, 5, 'and the tail size is published so the UI can state it');
+});
+
+test('a window with real losses is untouched by the guard (it must not over-fire)', () => {
+  // The control. A bot that loses on some days has a tail, and the guard must leave it alone.
+  let e = 1e7; const eq = [e];
+  for (let i = 1; i < 800; i++) { e *= 1 + ((i * 104729) % 17 - 8) * 0.0015; eq.push(e); }
+  const rp = riskProfile(eq);
+  assert.equal(rp.noLoss, false);
+  assert.ok(rp.var1dPct > 0 && rp.es1dPct >= rp.var1dPct);
+  assert.ok(rp.backtest && rp.backtest.days === 250, 'and its back-test still runs');
+});
+
+
 
 // --- Sanity on the pieces everything else leans on -----------------------------
 test('normPdf and the tail-fill rule behave at the edges', () => {

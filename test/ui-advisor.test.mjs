@@ -446,6 +446,32 @@ test("a WIPED champion gets no rupee VaR — the panel refuses to size a total l
   assert.ok(!/not lose more than ₹/.test(txt), "and NO rupee VaR/ES figure is printed for a wiped champion");
 });
 
+test("an all-cash champion gets no rupee VaR either — the panel refuses to call the downside ₹0", async () => {
+  // The mirror image of the wiped case, and the one that was actually shipping. A champion
+  // sitting in cash produced var1dPct 0.00, which this panel scaled to a real capital figure and
+  // rendered as "you should not lose more than ₹0" — a real-money sizing statement asserting
+  // zero downside from a window that simply holds no information. It must refuse instead.
+  const dom = setupDom();
+  const noLoss = { conf: 0.99, window: 500, wiped: false, noLoss: true, lossDays: 3, tailDays: 5,
+    var1dPct: null, es1dPct: null, var10dPct: null, backtest: null };
+  const app = withChampRisk(dom, noLoss);
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  app.tabs.show("autopilot");
+  dom.setPrompt("25");
+  dom.$("#adv-capital").value = "1000000";
+  dom.fire(dom.$("#adv-capital-set"), "click");
+  await new Promise((r) => setTimeout(r, 0));
+  const txt = dom.$("#ap-suggestions").textContent;
+  // ★ This fixture deliberately has THREE losing days, not zero. The guard trips whenever the
+  // window holds fewer losing days than the tail needs (5, at 99% on 500 bars), so copy saying
+  // the equity "never fell" would be a lie in exactly this case. The panel must quote counts.
+  assert.match(txt, /Tomorrow’s risk on this ₹[\d,]+: not quantifiable right now — only 3 of the champion’s last 500 trading days were losses, too few for a 99% tail \(which is measured from the worst 5\), so there is no loss distribution to size a VaR from\./, "it states the ACTUAL counts");
+  assert.ok(!/never fell|did not fall/.test(txt), "and never asserts the equity did not fall, which this fixture would falsify");
+  assert.ok(!/not lose more than ₹/.test(txt), "and NO rupee VaR is printed");
+  assert.ok(!/₹0 \(one-day VaR/.test(txt), "specifically never the ₹0 this used to render");
+});
+
 test('a name too small to buy at this capital is NAMED on screen, not silently dropped', async () => {
   // Scaling can put a slice under one whole share. It then produced no order and no line, while
   // the target table below still listed the name at full weight — the screen contradicting itself
