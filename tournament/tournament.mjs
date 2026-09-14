@@ -936,9 +936,11 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
         // `bar-universe-equal` — the fair bar every basket is read against — is UNGATED and sits
         // in cash ~1.4% of its life, while a gated basket sits in cash 22-34% and is charged the
         // 6.5% hurdle for every one of those bars without earning anything on them. So the gated
-        // bots read 0.056-0.090 LOW against a control that reads 0.005 low. Over six window
-        // starts that gap decides whether the best strategy clears the bar at 3 of them, which is
-        // the difference between a headline claim and a coin flip on phase. Publishing the number
+        // bots read 0.056-0.090 LOW against a control that reads 0.005 low. (An earlier version of
+        // this comment claimed that gap decides whether the best strategy clears the bar at 3 of 6
+        // window starts. It does not — that came from a sweep that sliced by index and so gave
+        // every symbol a different start date; windowed by date the answer is 0 of 6. The per-bot
+        // gap below is a within-run difference and stands.) Publishing the number
         // is deliberately NOT the same as adopting it: `sharpe` remains the headline and no
         // published figure moves. Whether to switch convention outright stays an open decision.
         // ESTIMATE, not a measurement — a cash bar is inferred from equity being EXACTLY

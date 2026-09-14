@@ -296,9 +296,22 @@ if (process.argv.includes('--phase')) {
     console.log('-'.repeat(104));
     const verdicts = [];
     for (const off of OFFSETS) {
+      // ★ WINDOW BY DATE, NOT BY INDEX. The first version did `c.slice(off)` on every symbol,
+      // which drops the first `off` bars OF THAT SYMBOL — and because symbols have different bar
+      // counts, that hands each one a DIFFERENT start date. The cross-section is then scrambled
+      // rather than shifted, and the "flip" this sweep originally reported (3 of 6 decided by the
+      // convention) came out of that scrambling, not out of the accounting rule. Two things
+      // caught it: the sweep disagreed with itself at the one offset where two different slicing
+      // schemes must agree, and its "best strategy" disagreed with the LIVE BOARD, which has
+      // riskparity on top. Date-windowing reproduces the live winner. Also trim to the MARKET's
+      // own span so a symbol whose history starts earlier cannot open a dead leading stretch that
+      // depresses every Sharpe (the window-boundary artifact this project has been bitten by).
+      const fromT = market[off].t;
+      const toT = market[market.length - 1].t;
+      const win = (arr) => arr.filter((c) => c.t >= fromT && c.t <= toT);
       const sliced = {};
-      for (const [s, c] of Object.entries(data)) sliced[s] = off ? c.slice(off) : c;
-      const mkt = off ? market.slice(off) : market;
+      for (const [s, c] of Object.entries(data)) { const w = win(c); if (w.length) sliced[s] = w; }
+      const mkt = win(market);
       const res = {};
       for (const bot of phaseBots) {
         const dbs = {};
@@ -336,6 +349,17 @@ if (process.argv.includes('--phase')) {
       console.log('  20-year window happens to start, because the gated strategy is charged the hurdle for');
       console.log('  standing aside while the ungated control is not. That is an artefact of an accounting');
       console.log('  choice, not a fact about the strategies, and it is why this is NOT merely cosmetic.');
+      console.log('  ★ Before believing this: confirm the sweep is windowing by DATE. An index slice gives');
+      console.log('    every symbol a different start date and manufactures exactly this result.');
+    } else {
+      console.log('\n  The accounting choice does NOT decide the verdict at any start tested — the best');
+      console.log('  strategy clears the fair bar under both conventions. ★ This REPLACES an earlier');
+      console.log('  reading of "3 of 6", which came from slicing by INDEX instead of by date: that drops');
+      console.log('  the first n bars of EACH SYMBOL, so every symbol got a different start date and the');
+      console.log('  cross-section was scrambled rather than shifted. Two things exposed it — the sweep');
+      console.log('  disagreed with itself at the one offset where two slicing schemes must agree, and its');
+      console.log('  "best strategy" disagreed with the live board. The per-bot gap in the table above is a');
+      console.log('  within-run difference on one curve and is untouched by any of this: it still stands.');
     }
   }
 }
