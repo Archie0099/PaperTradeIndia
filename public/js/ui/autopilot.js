@@ -212,6 +212,9 @@ function rebalanceReason(inst, fromQty, toQty, botName) {
 // bot's mark for options) or null. Returns orders ordered funds-FREEING first.
 function computeRebalanceOrders({ mirror, current, userEquity, priceFor, botName = 'the bot' }) {
   const orders = [];
+  // Names the scaling could not act on at this capital (a slice under one whole share). Carried
+  // ON the returned array so every existing caller — which just iterates it — is unaffected.
+  const skipped = [];
   if (!mirror || !(mirror.equity > 0) || !(userEquity > 0)) return orders;
   const scale = userEquity / mirror.equity;
 
@@ -231,7 +234,29 @@ function computeRebalanceOrders({ mirror, current, userEquity, priceFor, botName
     const c = curByKey.get(key);
     const fromQty = c ? c.qty : 0;
     const toQty = t ? t.targetUnits : 0; // a held name NOT in the target is driven to flat
-    if (toQty === fromQty) continue;
+    if (toQty === fromQty) {
+      // ★ A TARGET THAT ROUNDS TO ZERO IS NOT "NO CHANGE" — it is a name the champion holds that
+      // you are about to be told nothing at all about. `targetUnits` is
+      // `Math.round(qty * scale / lot) * lot`, so any slice under HALF a share becomes 0; with
+      // nothing held either, this branch used to `continue` and the name vanished — no order, no
+      // line, no reason — while the panel's target table above still listed it at full weight.
+      // The screen contradicted itself and under-deployed in silence.
+      // MEASURED on a realistic 10-name champion at Rs 8.49cr: at Rs 1,00,000 of capital one name
+      // disappears, at Rs 50,000 two do and only 78.9% of the money is deployed. It fires wherever
+      // a name's slice is under half a share, so the expensive names go first.
+      // Recorded rather than fixed by rounding UP: buying a share you cannot afford a fraction of
+      // is worse advice than being told the slice is too small to act on at this size.
+      if (t && toQty === 0 && fromQty === 0) {
+        const px = priceFor(key, t.spec);
+        skipped.push({
+          key,
+          symbol: t.spec.symbol || key,
+          price: px > 0 ? px : null,
+          wantUnits: t.spec.qty * scale, // the fractional share count the scaling actually asked for
+        });
+      }
+      continue;
+    }
     const instrument = t ? instrumentFromMirror(t.spec) : c.instrument;
     const lot = instrument.lotSize || 1;
     const price = priceFor(key, t ? t.spec : instrument);
@@ -266,6 +291,7 @@ function computeRebalanceOrders({ mirror, current, userEquity, priceFor, botName
     return o.side === 'SELL' ? 1 : 2; // short opens before long opens
   };
   orders.sort((a, b) => rankOf(a) - rankOf(b));
+  orders.skipped = skipped; // see the zero-slice branch above; empty on every normal path
   return orders;
 }
 
@@ -369,7 +395,10 @@ function computeSuggestions({ entry, prev = null, marks = null, book, costRates 
   }
   const bookPositions = [...posByKey.values()].filter((p) => p.qty !== 0);
   const valueAfter = cash + bookPositions.reduce((s, p) => s + p.qty * (priceOf(p.symbol) || 0), 0);
-  return { orders: out, bookAfter: { cash: +cash.toFixed(2), positions: bookPositions }, valueBefore, valueAfter };
+  // `skipped` is carried EXPLICITLY rather than left as a property on the orders array: the book
+  // is persisted through JSON.stringify, which silently drops array properties, so a name dropped
+  // for being under one share would have reappeared as "nothing to say" on the next page load.
+  return { orders: out, skipped: orders.skipped || [], bookAfter: { cash: +cash.toFixed(2), positions: bookPositions }, valueBefore, valueAfter };
 }
 
 // Plain-English weight-level changes between two recorded entries (shown when no
@@ -1220,7 +1249,7 @@ function renderSuggestions(app) {
   if (!book || typeof book !== 'object' || !Number.isFinite(book.cash) || !Array.isArray(book.positions)) book = freshBook();
   if (book.lastAppliedDate !== today.date) {
     const res = computeSuggestions({ entry: today, prev: advisor.prev, marks: advisor.marks, book, costRates: advisor.costRates });
-    book = { ...res.bookAfter, lastAppliedDate: today.date, lastActions: res.orders, peakValue: Math.max(book.peakValue || adv.capital, res.valueAfter), startedDate: book.startedDate || today.date };
+    book = { ...res.bookAfter, lastAppliedDate: today.date, lastActions: res.orders, lastSkipped: res.skipped, peakValue: Math.max(book.peakValue || adv.capital, res.valueAfter), startedDate: book.startedDate || today.date };
     saveAdv({ ...adv, book });
   }
   // The SAME honest price chain computeSuggestions uses, for valuing the held book on
@@ -1257,6 +1286,28 @@ function renderSuggestions(app) {
     ]);
     box.append(el('div', { class: 'muted', style: 'font-size: 11px; margin: 8px 0 2px' }, `Scaled to your ₹${fmt(adv.capital, 0)} (whole shares, affordability-capped; costs estimated from the real delivery schedule incl. slippage):`));
     box.append(el('div', { class: 'table-wrap' }, at));
+  }
+  // NAMES TOO SMALL TO ACT ON AT THIS CAPITAL. Scaling the champion's book down can put a name's
+  // slice under one whole share; it was then silently absent from the actions above while the
+  // target table further down still listed it at full weight. Saying so is the difference between
+  // "nothing to do for this name" and a screen that quietly contradicts itself — and it explains
+  // where the missing money went, since the book ends up under-deployed by exactly these slices.
+  // MEASURED on a 10-name champion at ₹8.49cr: one name drops out at ₹1,00,000 of capital and two
+  // at ₹50,000, leaving 78.9% deployed. Deliberately NOT fixed by rounding up — telling someone to
+  // buy a share they cannot afford a fraction of is worse than telling them the slice is too small.
+  const skipped = book.lastSkipped || [];
+  if (skipped.length) {
+    const names = skipped.map((k) => {
+      const sh = k.wantUnits < 0.995 ? 'under 1' : k.wantUnits.toFixed(1);
+      return k.price ? `${k.symbol} (~${sh} share at ₹${fmt(k.price, 0)})` : `${k.symbol} (~${sh} share)`;
+    }).join(', ');
+    const them = skipped.length === 1 ? 'it' : 'them';
+    box.append(el('div', { class: 'muted', style: 'font-size: 12px; margin: 8px 0 2px' }, [
+      el('span', { style: 'font-weight: 600' }, `Too small to act on at ₹${fmt(adv.capital, 0)}: `),
+      `${names}. The champion holds ${them}, but your slice rounds to less than a whole share, so`
+      + ` that part of the book stays in cash rather than being placed. It becomes actionable at a`
+      + ` larger size.`,
+    ]));
   }
   box.append(el('div', { style: `font-size: 12px; margin: 6px 0; ${breached ? 'color: var(--down); font-weight: 600' : ''}` },
     `If followed since ${book.startedDate}: value ${rupee(value, 0)} · current drawdown ${ddPct.toFixed(1)}%` +

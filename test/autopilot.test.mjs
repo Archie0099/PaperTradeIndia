@@ -317,3 +317,54 @@ test('a copied F&O leg is RE-MARKED live from the underlying (not frozen at its 
   assert.ok(Math.abs(user.equity() - eqBefore) > 1, 'the copied F&O P&L now moves with the underlying');
   assert.ok(masterResidual(user) < 0.01, 'MASTER invariant holds after re-marking');
 });
+
+// --- a name too small to act on must be REPORTED, not silently dropped ------------------------
+// Scaling the champion's book to the user's capital rounds to whole shares, so a slice under half
+// a share becomes zero units. With nothing held either, `toQty === fromQty` and the name used to
+// vanish: no order, no line, no reason — while the panel's target table still listed it at full
+// weight. The screen contradicted itself and the book was under-deployed in silence.
+
+const bigChampion = () => ({
+  followable: true,
+  equity: 84_900_000,
+  positions: [
+    { key: 'EQ:RELIANCE', symbol: 'RELIANCE', price: 1400, lotSize: 1, kind: 'EQ', qty: Math.round((84_900_000 * 0.25) / 1400) },
+    { key: 'EQ:TCS', symbol: 'TCS', price: 3900, lotSize: 1, kind: 'EQ', qty: Math.round((84_900_000 * 0.25) / 3900) },
+    { key: 'EQ:BOSCHLTD', symbol: 'BOSCHLTD', price: 33000, lotSize: 1, kind: 'EQ', qty: Math.round((84_900_000 * 0.25) / 33000) },
+  ],
+});
+const priceOfSpec = (key, spec) => spec.price;
+
+test('a slice that rounds below one share is recorded as skipped, with what it needed', () => {
+  const orders = computeRebalanceOrders({ mirror: bigChampion(), current: [], userEquity: 50_000, priceFor: priceOfSpec });
+  const skipped = orders.skipped || [];
+  assert.ok(skipped.length > 0, 'the expensive name cannot be bought at this size and must be reported');
+  const b = skipped.find((s) => s.symbol === 'BOSCHLTD');
+  assert.ok(b, `expected BOSCHLTD to be skipped, got ${JSON.stringify(skipped.map((s) => s.symbol))}`);
+  assert.ok(b.wantUnits > 0 && b.wantUnits < 1, `it should want a fraction of a share (got ${b.wantUnits})`);
+  assert.equal(b.price, 33000, 'and carry the price, so the panel can explain why');
+  assert.ok(!orders.some((o) => o.key === 'EQ:BOSCHLTD'), 'and it must not also appear as an order');
+});
+
+test('nothing is reported as skipped when every slice is actionable (control)', () => {
+  const orders = computeRebalanceOrders({ mirror: bigChampion(), current: [], userEquity: 10_000_000, priceFor: priceOfSpec });
+  assert.deepEqual(orders.skipped, [], 'at a large size every name is buyable, so the note must not appear');
+  assert.equal(orders.length, 3);
+});
+
+test('computeSuggestions carries skipped EXPLICITLY, because the book is JSON-persisted', async () => {
+  // An array property does not survive JSON.stringify, so a name dropped for being under one
+  // share would have come back as "nothing to say" on the next page load.
+  const { computeSuggestions } = await import('../public/js/ui/autopilot.js');
+  const entry = {
+    date: '2026-09-15', equity: 84_900_000,
+    targets: [
+      { symbol: 'RELIANCE', qty: 15160, price: 1400, weight: 0.25 },
+      { symbol: 'BOSCHLTD', qty: 643, price: 33000, weight: 0.25 },
+    ],
+  };
+  const res = computeSuggestions({ entry, book: { cash: 50_000, positions: [] }, costRates: { buyRate: 0.001, sellRate: 0.001 } });
+  assert.ok(Array.isArray(res.skipped), 'skipped must be a real field on the result');
+  assert.ok(res.skipped.some((s) => s.symbol === 'BOSCHLTD'), 'and must survive as data, not as an array property');
+  assert.deepEqual(JSON.parse(JSON.stringify(res.skipped)), res.skipped, 'and must round-trip through JSON intact');
+});

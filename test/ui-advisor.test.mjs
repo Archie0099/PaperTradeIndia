@@ -445,3 +445,34 @@ test("a WIPED champion gets no rupee VaR — the panel refuses to size a total l
   assert.match(txt, /Tomorrow’s risk on this ₹[\d,]+: not quantifiable — the champion’s last 500 trading days include a TOTAL LOSS, so a rupee VaR is not a meaningful figure for it\. Treat the downside of following it as unbounded, and re-read the honesty check above\./, "a warning, not a number");
   assert.ok(!/not lose more than ₹/.test(txt), "and NO rupee VaR/ES figure is printed for a wiped champion");
 });
+
+test('a name too small to buy at this capital is NAMED on screen, not silently dropped', async () => {
+  // Scaling can put a slice under one whole share. It then produced no order and no line, while
+  // the target table below still listed the name at full weight — the screen contradicting itself
+  // and under-deploying in silence. The panel must say which name, and why.
+  const dom = setupDom();
+  const payload = advisorPayload({
+    today: {
+      date: '2026-08-04', t: Date.parse('2026-08-04'), botId: 'b', botName: 'Sharpe King', kind: 'BASKET',
+      eligible: true, reason: null, equity: 1.08e7,
+      targets: [
+        { symbol: 'RELIANCE', qty: 1800, price: 3000, weight: 0.5 },
+        { symbol: 'BOSCHLTD', qty: 163, price: 33000, weight: 0.5 }, // ~Rs 33k a share
+      ],
+    },
+  });
+  const app = appWith(dom, payload);
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  app.tabs.show('autopilot');
+
+  dom.setPrompt('25');
+  dom.$('#adv-capital').value = '20000'; // Rs 20k: half of it is well under one BOSCHLTD share
+  dom.fire(dom.$('#adv-capital-set'), 'click');
+  await new Promise((r) => setTimeout(r, 0));
+
+  const txt = dom.$('#ap-suggestions').textContent;
+  assert.match(txt, /Too small to act on/i, 'the panel must say that something was not actionable');
+  assert.match(txt, /BOSCHLTD/, 'and name it');
+  assert.match(txt, /stays in cash rather than being placed/i, 'and say where that share of the book went');
+});
