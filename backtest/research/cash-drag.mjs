@@ -122,16 +122,21 @@ function repairCurve(curve) {
 }
 
 // ★ TRIM EVERY SYMBOL TO THE MARKET'S OWN SPAN BEFORE MEASURING ANYTHING.
-// MEASURED: 68 of 114 universe names have history from 2006-07-03, while NIFTY — the gate proxy
-// every basket reads — only starts 2007-09-17. `alignSeries` builds its timeline from the UNION
+// MEASURED: 68 of 114 universe names START BEFORE NIFTY does (61 of them on 2006-07-03; the
+// series carry 48 distinct start dates). NIFTY — the gate proxy every basket reads — starts only
+// 2007-09-17. `alignSeries` builds its timeline from the UNION
 // of timestamps, so without this trim a GATED basket is evaluated over ~1.2 years in which its
 // gate expression has no series to evaluate against. It cannot trade, sits flat, and those bars
 // were counted as "life spent in cash" — which is this tool's headline number.
 // Measured cost of NOT trimming: the five gated bots read 24.2% in cash instead of 19.4%, and
-// their xSharpe understatement reads 0.071 instead of 0.055. The six UNGATED bots move by 0.0pp
-// and 0.000 — they have no gate to be starved of, which is exactly the signature that identifies
-// the cause. So roughly a fifth of the reported cash time was the shape of the DATA, not the
-// behaviour of the strategy, and it fell entirely on the bots the tool exists to measure.
+// their xSharpe understatement reads 0.071 instead of 0.055. So roughly a fifth of the reported
+// cash time was the shape of the DATA rather than the behaviour of the strategy.
+// ★ THE "SIGNATURE" IS NARROWER THAN IT FIRST LOOKED. The nine UNGATED bots move by only 0.0-0.3pp
+// of cash time and 0.000-0.002 of understatement, which is what identifies the GATE as the channel
+// — but the trim is NOT otherwise neutral for them: their xSharpe LEVELS move a lot (ml-ridge
+// 0.547 -> 0.226, ml-gbm 0.557 -> 0.115, breakout 0.161 -> 0.489, lowvol 0.623 -> 0.877). Removing
+// a year of history changes every bot's score; what it changes ONLY for gated bots is the cash
+// fraction. Quote the narrow claim, not "the ungated bots are unaffected".
 // ★ The LIVE BOARD does not trim: its basket curves start 2006-09-14 against NIFTY's 2007-09-17.
 // Whether to change that is an open decision — it restates published board figures.
 const marketFrom = market[0].t;
@@ -281,12 +286,15 @@ console.log(`  "if cash"    = the same run re-scored with idle cash earning ${(R
 console.log(`  "drag/yr"    = cash fraction x the hurdle: the excess return the bot forfeits purely for standing aside.`);
 console.log(`\n  gated bots  (n=${gatedRows.length}): avg ${(avg(gatedRows, (r) => r.flatFrac) * 100).toFixed(1)}% in cash, avg xSharpe change ${avg(gatedRows, (r) => r.delta) >= 0 ? '+' : ''}${avg(gatedRows, (r) => r.delta).toFixed(3)}`);
 console.log(`  ungated bots (n=${ungated.length}): avg ${(avg(ungated, (r) => r.flatFrac) * 100).toFixed(1)}% in cash, avg xSharpe change ${avg(ungated, (r) => r.delta) >= 0 ? '+' : ''}${avg(ungated, (r) => r.delta).toFixed(3)}`);
-console.log('\n  WHY "cash bars" EXCEEDS "gate shut" for every gated bot, which is the opposite of the naive');
-console.log('  expectation: a PERIODIC bot reads its gate ONLY at a rebalance bar. One shut');
-console.log('  gate on a rebalance day therefore buys a WHOLE period in cash — the bot does not re-enter the');
-console.log('  moment NIFTY recovers, it waits for the next scheduled rebalance. So "gate shut" is a LOWER');
-console.log('  bound on time spent flat, not an upper one, and the gap between the two columns is the cost of');
-console.log('  the rebalance grid rather than of the gate itself.');
+console.log('\n  READING THE TWO COLUMNS. They are an EMPIRICAL measure (flat bars) and a STRUCTURAL one');
+console.log('  (the gate expression evaluated on NIFTY), and once the pre-proxy bars are trimmed they agree');
+console.log('  closely — gaps of roughly 0.7-1.2pp, and for momentum-guarded the sign FLIPS (29.3% cash');
+console.log('  against 30.7% gate-shut, i.e. LESS time in cash than its gate was closed).');
+console.log('  ★ An earlier version of this note claimed cash time EXCEEDS gate-shut time for EVERY gated');
+console.log('  bot and attributed the whole ~6pp gap to the rebalance grid (a periodic bot reads its gate');
+console.log('  only at a rebalance bar, so one shut gate buys a whole period). That was mostly measuring');
+console.log('  the ~1.2 years of leading bars where the gate proxy did not exist. The grid effect is real');
+console.log('  but small, and "gate shut is a lower bound" is NOT a rule.');
 
 // ---------------------------------------------------------------------------------------
 // --phase : IS THE "CLEARS THE FAIR BAR" VERDICT STABLE, OR IS IT AN ARTEFACT OF ONE WINDOW?

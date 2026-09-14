@@ -1398,6 +1398,12 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     // stays a few seconds, not ~30, on the free host. Symbol eligibility above still
     // uses the FULL fullData length; only the per-bot backtest series is trimmed.
     const recentData = {};
+    // NOTE this slices by INDEX, the same class of bug that once corrupted a research sweep here
+    // (different bar counts -> different start dates per symbol). Measured and left alone: it yields
+    // 8 distinct start dates across 2022-02-24…2023-05-09 with 90 of 115 names on one date, NIFTY
+    // starts earlier than all but one so no dead-proxy stretch opens, and the spread sits inside the
+    // 300-bar warm-up that `scoreFromT` excludes from scoring. Breeding is OFF regardless. If
+    // evolution is ever re-enabled, prefer windowing by timestamp here too.
     for (const sym of Object.keys(fullData)) recentData[sym] = fullData[sym].slice(-(EVOLVE_WINDOW + EVOLVE_WARMUP));
     // Where SCORING starts: the first bar of the last EVOLVE_WINDOW bars. Everything before it
     // is warm-up — traded through so indicators/gates/ML are live, but not judged. Anchored on
