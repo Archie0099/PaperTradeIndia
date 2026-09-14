@@ -134,7 +134,19 @@ function buildAdvisorEntry({ autopilot, getBotDetail, seriesFor }) {
   // An ineligible day still logs (targets = [], scored as cash): "stand aside"
   // was the day's guidance, and the trust clock should count it honestly.
   let reason = null;
-  if (detail.kind === 'FNO') reason = 'the champion is an options (F&O) bot — its option prices are modelled/indicative, so honest rupee suggestions for hand-placed real orders are not possible';
+  //   * the fair-bar CONTROL. `bar-universe-equal` holds the entire ~105-name universe at equal
+  //     weight with no ranking signal, no filter and no market timing. It is on the board as the
+  //     YARDSTICK every basket must clear before "beats the index" means anything — its own note
+  //     opens "Not a strategy". It is deliberately still allowed to win the walk-forward, because
+  //     a board that cannot conclude "nothing here beats holding the whole universe blind" is
+  //     flattering itself. But that conclusion is a statement about the BOARD, not a real-money
+  //     instruction: mirroring it by hand means ~105 delivery orders rebalanced monthly, each
+  //     under 1% of the account, which no one placing orders manually can follow and which the
+  //     costs would eat. Excluded here and only here, so the board stays honest and the advice
+  //     stays usable. Checked FIRST — it is a statement about what the row IS, and it would
+  //     otherwise pass every instrument test below (a long-only equity basket passes all four).
+  if (detail.benchmark) reason = 'the champion is the fair-bar control (the whole universe at equal weight, no signal) — it is the yardstick this board is measured against, not a strategy, and mirroring it by hand would mean ~105 delivery orders rebalanced monthly';
+  else if (detail.kind === 'FNO') reason = 'the champion is an options (F&O) bot — its option prices are modelled/indicative, so honest rupee suggestions for hand-placed real orders are not possible';
   else if (detail.kind === 'PAIRS') reason = 'the champion is a market-neutral pairs bot — half its book is short positions, which cash-market delivery orders cannot hold';
   else if (positions.some((p) => (p.kind || 'EQ') !== 'EQ')) reason = 'the champion currently holds derivative (F&O) legs, which cannot be mirrored with cash-market delivery orders';
   else if (positions.some((p) => p.qty < 0)) reason = 'the champion currently holds short positions, which cash-market delivery orders cannot hold';

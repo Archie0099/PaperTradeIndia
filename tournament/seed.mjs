@@ -460,6 +460,11 @@ const SEED_BOTS = [
   // has to beat before it means anything.
   {
     id: 'bar-universe-equal',
+    // A CONTROL, not a competitor: it still ranks and can still be crowned Auto-Pilot
+    // champion (a board that cannot say "nothing here beats holding everything" is not being
+    // honest), but the ADVISOR stands aside on it — real-money guidance for hand-placed orders
+    // cannot sensibly be "buy all ~105 names", and a yardstick is not advice.
+    benchmark: true,
     name: 'The fair bar (whole universe, equal weight)',
     note: 'Not a strategy — the BENCHMARK, made visible. Holds every name in the basket universe at equal weight, rebalanced monthly, with no ranking signal, no filter and no market timing. It exists because beating the index proves nothing here: this universe is today\'s survivors held fixed across history, so a no-information portfolio of the same names already beats the index by roughly 0.6 Sharpe (0.67 vs 0.24 measured in-sample 2010-2019). Read every other basket against THIS row, not against NIFTY. A bot below it is being carried by survivorship rather than by picking.',
     kind: 'BASKET',

@@ -495,6 +495,17 @@ const asRosterEntry = (b, gen = 0) => ({
   squareOffDaily: !!b.squareOffDaily,
   gen: b.gen == null ? gen : b.gen,
   protected: !!b.protected,
+  // Is this row a CONTROL rather than a strategy? `bar-universe-equal` holds the whole universe
+  // at equal weight with no ranking signal, no filter and no market timing — it sits on the
+  // board as the yardstick every basket must beat before "beats the index" means anything.
+  // Deliberately NOT folded into `protected`, which already means something else entirely (the
+  // Buy & Hold row, used as the walk-forward's benchmark series and shielded from culling).
+  // Nothing about the board or the walk-forward changes: a benchmark row still competes, still
+  // ranks, and can still be crowned Auto-Pilot champion — which is the honest behaviour, since
+  // "nothing here beats holding the whole universe blind" is a verdict this board should be
+  // able to reach. The ONE thing it gates is the ADVISOR (see advisor.mjs): real-money guidance
+  // for hand-placed orders cannot sensibly be "buy all ~105 names", and a control is not advice.
+  benchmark: !!b.benchmark,
 });
 
 async function createTournament({ seed = SEED_BOTS, backfillData = null, persist = true, stateFile = STATE_FILE, retireWeakest = RETIRE_WEAKEST, maxRosterBots = MAX_ROSTER_BOTS, evolutionEnabled = true, persistStore = createPersistStore(), advisorMinDays = ADVISOR_MIN_DAYS } = {}) {
@@ -765,6 +776,9 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       id: bot.id,
       name: bot.name,
       kind: bot.kind,
+      // Is this row the fair-bar CONTROL rather than a strategy? The advisor reads this to stand
+      // aside rather than turn a yardstick into real-money guidance (see advisor.mjs).
+      benchmark: !!bot.benchmark,
       symbol: bot.symbol,
       interval: bot.interval || '1d',
       gen: bot.gen || 0,
@@ -782,8 +796,11 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       curveTiers, // full equity curve as multi-resolution tiers, for the per-bot page's window zoom
       equity: finalEquity,
       metrics: traded
-        ? { totalReturnPct: res.metrics.totalReturnPct, sharpe: res.metrics.sharpe, maxDrawdownPct: res.metrics.maxDrawdownPct, trades: res.metrics.trades, risk: isIntradayInterval(bot.interval) ? null : riskProfile(res.equityCurve) }
-        : { totalReturnPct: 0, sharpe: 0, maxDrawdownPct: 0, trades: 0, risk: null }, // never-traded: neutral, matching the leaderboard row
+        // sharpeCashAdj/flatBarsPct ride along for the same reason the leaderboard row carries
+        // them (see buildRow): a gated bot is charged the hurdle on every bar it stands aside,
+        // and the per-bot page is where there is actually room to show the gap honestly.
+        ? { totalReturnPct: res.metrics.totalReturnPct, sharpe: res.metrics.sharpe, sharpeCashAdj: res.metrics.sharpeCashAdj, flatBarsPct: res.metrics.flatBarsPct, maxDrawdownPct: res.metrics.maxDrawdownPct, trades: res.metrics.trades, risk: isIntradayInterval(bot.interval) ? null : riskProfile(res.equityCurve) }
+        : { totalReturnPct: 0, sharpe: 0, sharpeCashAdj: 0, flatBarsPct: 0, maxDrawdownPct: 0, trades: 0, risk: null }, // never-traded: neutral, matching the leaderboard row
       // Cost/liquidity honesty for the per-bot page: which cost schedule the run paid
       // (+ non-trade fees like SLB borrow / F&O brokerage), and how many fills exceeded
       // the volume-participation cap (a too-big-to-execute warning, not an impact model).
@@ -904,6 +921,23 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
         r10y: periodRet(10 * 365.25 * DAY),
         trackReturnPct: +trackReturnPct.toFixed(2), // MAX (whole life)
         sharpe: res.metrics.sharpe,
+        // The SAME Sharpe re-scored as if idle cash had earned the very rate the headline
+        // already charges it (`summarize` computes both; the board used to drop this one).
+        // It exists because the board's central comparison is now UNFAIR IN A MEASURABLE WAY:
+        // `bar-universe-equal` — the fair bar every basket is read against — is UNGATED and sits
+        // in cash ~1.4% of its life, while a gated basket sits in cash 22-34% and is charged the
+        // 6.5% hurdle for every one of those bars without earning anything on them. So the gated
+        // bots read 0.056-0.090 LOW against a control that reads 0.005 low. Over six window
+        // starts that gap decides whether the best strategy clears the bar at 3 of them, which is
+        // the difference between a headline claim and a coin flip on phase. Publishing the number
+        // is deliberately NOT the same as adopting it: `sharpe` remains the headline and no
+        // published figure moves. Whether to switch convention outright stays an open decision.
+        // ESTIMATE, not a measurement — a cash bar is inferred from equity being EXACTLY
+        // unchanged, which a single-name bot can hit on a genuinely quiet day (a basket of ten
+        // essentially cannot). `flatBarsPct` is published beside it so the size of that
+        // assumption is visible rather than buried.
+        sharpeCashAdj: res.metrics.sharpeCashAdj,
+        flatBarsPct: res.metrics.flatBarsPct,
         maxDrawdownPct: res.metrics.maxDrawdownPct,
         // Risk block: one-day 99% VaR / ES by historical simulation on the trailing 500
         // daily returns (Hull's window), the √10 ten-day figure, and a ROLLING BACK-TEST of that

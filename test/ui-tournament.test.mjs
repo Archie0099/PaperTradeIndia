@@ -513,3 +513,55 @@ test("a bot WIPED OUT inside its window says so on the page — capped figures, 
   assert.match(page, /VaR 99% \(1d\)100\.00%/, "the VaR is shown capped at a total loss, never 524%");
   assert.match(page, /The account was WIPED OUT at least once inside this window — the VaR\/ES above are capped at a total loss; treat this bot’s downside as unbounded\./, "and the cap is stated, with the honest reading");
 });
+
+// --- the IDLE-CASH gap on the per-bot page -------------------------------------------------
+// Sharpe here is excess of a ~6.5% hurdle charged on EVERY bar, including the bars a bot spends
+// entirely in cash, on which nothing credits it interest. A heavily-gated basket therefore reads
+// LOW against the ungated fair bar it is ranked beside. The ranked figure is deliberately left
+// alone; the gap is disclosed instead. These lock the whole rendered sentence with its numbers —
+// a fragment match once let a percent-of-a-percent bug ship.
+
+test('the per-bot page states the idle-cash gap in full, with both figures', async () => {
+  const dom = setupDom();
+  const detail = baseDetail('bk', {
+    name: 'ML ridge basket',
+    metrics: { totalReturnPct: 0, sharpe: 0.74, sharpeCashAdj: 0.83, flatBarsPct: 27.5, maxDrawdownPct: 31.2, trades: 40 },
+  });
+  await renderTournament(appWith(dom, { bk: detail }));
+  clickBot(dom, 'bk');
+  await flush();
+  const page = dom.$('#tourn-botpage-body').textContent;
+  assert.match(page, /This bot spent 27\.5% of its life fully in cash\./, 'says how much of the life was idle');
+  assert.match(page, /Re-scored as if its idle cash had earned the same rate it is charged, this bot scores 0\.83 instead of 0\.74\./, 'states BOTH numbers in one sentence — never a bare second Sharpe');
+  assert.match(page, /0\.74 remains the ranked figure/, 'and says plainly that nothing on the board was restated');
+  assert.match(page, /It is an estimate/, 'the inference behind a "cash bar" is disclosed, not buried');
+  assert.match(page, /Sharpe if cash paid/, 'the stat tile is present too');
+  assert.match(page, /Life in cash/);
+});
+
+test('a bot that barely idles shows no cash note at all (no noise on the 99% case)', async () => {
+  const dom = setupDom();
+  // 1.4% in cash is the fair bar's own figure — the gap is real but immaterial, and a second
+  // Sharpe on every row would train the reader to ignore it exactly where it matters.
+  const detail = baseDetail('bk', {
+    metrics: { totalReturnPct: 0, sharpe: 0.81, sharpeCashAdj: 0.82, flatBarsPct: 1.4, maxDrawdownPct: 56, trades: 20 },
+  });
+  await renderTournament(appWith(dom, { bk: detail }));
+  clickBot(dom, 'bk');
+  await flush();
+  const page = dom.$('#tourn-botpage-body').textContent;
+  assert.doesNotMatch(page, /fully in cash/, 'below the threshold the note is suppressed');
+  assert.doesNotMatch(page, /Sharpe if cash paid/);
+});
+
+test('an older payload without the cash fields renders exactly as before', async () => {
+  // The deployed board and a freshly-built client are not redeployed in lockstep, so a client
+  // holding a payload from before this change must not throw or print "undefined".
+  const dom = setupDom();
+  await renderTournament(appWith(dom)); // baseDetail has no sharpeCashAdj/flatBarsPct
+  clickBot(dom, 'bk');
+  await flush();
+  const page = dom.$('#tourn-botpage-body').textContent;
+  assert.doesNotMatch(page, /fully in cash/);
+  assert.doesNotMatch(page, /undefined/, 'a missing field must never reach the screen');
+});
