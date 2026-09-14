@@ -225,9 +225,20 @@ async function fetchYahooWithRetry(symbol, interval, range, tries = 3) {
 }
 
 // Re-base a series onto Yahoo's ADJUSTED close (split + dividend back-adjusted) —
-// the price series a backtest must trade on. On RAW closes a 1:1 bonus looks like a
-// fake −50% day (booking fake P&L and poisoning momentum/vol/ML features) and 20
-// years of dividends are silently forfeited. Policy:
+// the price series a backtest must trade on, because otherwise 20 years of dividends
+// are silently forfeited. Policy:
+//
+// ★ MEASURED — the SPLIT half of the old rationale here was WRONG. This comment used to
+// say a 1:1 bonus looks like a fake −50% day on RAW closes. It does not: Yahoo's
+// `quote.close` (kept here as `craw`) is ALREADY split/bonus-adjusted retroactively, and
+// only `adjclose` adds the DIVIDEND adjustment on top. Checked at two known 1:1 bonuses
+// (RELIANCE Sep-2017, WIPRO Mar-2019) the largest RAW single-day move in either window is
+// +3.06% / −4.15%, nowhere near a halving, and `a/craw` holds flat straight through both.
+// RELIANCE reads ~373 in Sep-2017 precisely BECAUSE the raw series has itself been halved
+// by the Oct-2024 bonus. The CONSEQUENCE worth keeping: since splits cancel in the ratio,
+// `a/craw` isolates dividends alone — see backtest/research/adjusted-vs-raw.mjs, which
+// verifies that across the whole universe. Using `a` for backtests is still right; the
+// reason is dividends, not splits.
 //   * If (nearly) every bar carries `a`, serve `c = a` and keep the raw close as
 //     `craw` (display/participation reference). Bars missing `a` inside an
 //     otherwise-adjusted series are DROPPED — mixing adjusted and raw scales in

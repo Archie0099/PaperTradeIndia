@@ -188,10 +188,16 @@ function parseHistory(symbol, result) {
   const q = (result && result.indicators && result.indicators.quote && result.indicators.quote[0]) || {};
   // Yahoo's ADJUSTED close (split + dividend back-adjusted) rides alongside the
   // raw quote for daily ranges. The terminal charts show the raw close (`c` — the
-  // price you'd actually have seen on screen that day); the BACKTESTERS use the
-  // adjusted close (`a`, via backtest/data.mjs) so a stock split isn't booked as
-  // a fake −50% day and dividends are earned as total return. Intraday responses
+  // price on screen that day); the BACKTESTERS use the adjusted close (`a`, via
+  // backtest/data.mjs) so dividends are earned as total return. Intraday responses
   // have no adjclose — `a` is simply omitted there.
+  // ★ MEASURED: this used to add "so a stock split isn't booked as a fake −50% day".
+  // That was WRONG. Yahoo's `quote.close` is ALREADY split/bonus-adjusted retroactively;
+  // `adjclose` only adds the DIVIDEND adjustment on top. At the RELIANCE Sep-2017 and
+  // WIPRO Mar-2019 1:1 bonuses the raw close never halves (largest raw move in either
+  // window: +3.06% / −4.15%). So for any bar preceding a later split the raw close is
+  // that day's price RESTATED, not the price as it appeared. Dividends, not splits, are
+  // why backtests need `a`.
   const adj = (result && result.indicators && result.indicators.adjclose && result.indicators.adjclose[0] && result.indicators.adjclose[0].adjclose) || null;
   const candles = [];
   for (let i = 0; i < ts.length; i++) {
