@@ -213,7 +213,11 @@ const specKey = (spec) => {
   // (the composite is an order-independent weighted sum), mirroring the universe/features
   // canonicalisation above.
   const factorsKey = Array.isArray(spec.factors) ? spec.factors.map((f) => [f.name, f.expr, f.weight]).sort((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1)) : null;
-  return JSON.stringify(['BASKET', [...(spec.universe || [])].sort(), spec.k ?? null, spec.rebalanceBars ?? null, spec.weighting ?? null, spec.rank ?? null, spec.gate ?? null, spec.marketGate ?? null, mlKey, factorsKey, spec.covLookback ?? null, spec.maxWeight ?? null]);
+  // `holdK` (the buy/hold spread) belongs here for the same reason the optimiser knobs do:
+  // two baskets with the same universe and rank but different hold bands are DIFFERENT
+  // strategies — one churns at the k-boundary and one does not — and without this they
+  // would dedupe to a single roster entry.
+  return JSON.stringify(['BASKET', [...(spec.universe || [])].sort(), spec.k ?? null, spec.rebalanceBars ?? null, spec.weighting ?? null, spec.rank ?? null, spec.gate ?? null, spec.marketGate ?? null, mlKey, factorsKey, spec.covLookback ?? null, spec.maxWeight ?? null, spec.holdK ?? null, spec.rebalanceBand ?? null]);
 };
 
 function downsample(points, max = 120) {
@@ -517,7 +521,7 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
   let state = { deployedAt: null, live: {}, roster: null, generation: 0, history: [], advisorLog: [] };
   // What the REMOTE store did on this boot, so a non-restore is DIAGNOSABLE from outside.
   // Without this, a reset forward clock looks identical whether (a) the read failed and the
-  // fail-closed guard correctly refused to overwrite (W15 — nothing lost, it comes back next
+  // fail-closed guard correctly refused to overwrite (nothing lost — it comes back next
   // boot), or (b) the store is unconfigured, or (c) the store really is empty and this process
   // has just stamped a fresh clock over it. Those need completely different responses, and
   // there was no way to tell them apart from the deployed site.
@@ -1171,7 +1175,7 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     return standings;
   }
 
-  // `now` is injectable so tests never read the wall clock for SESSION logic (§5): a daily bar
+  // `now` is injectable so tests never read the wall clock for SESSION logic: a daily bar
   // is done at 15:30 IST, not at midnight, so a fixture built around "today" means opposite
   // things before and after the close. Defaults to the real clock in production.
   async function tick({ now = Date.now() } = {}) {
@@ -1528,4 +1532,4 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
 // `sharpeUpTo` is exported for its own test only — nothing at runtime imports it; the
 // walk-forward calls it directly. Exporting it means the degenerate-curve rule can be
 // asserted on its own, instead of only inferred from a whole walk-forward's output.
-export { createTournament, computeAutopilotTrack, sharpeUpTo, dropFormingBar, EVOLVE_WINDOW, EVOLVE_WARMUP, CASH };
+export { createTournament, computeAutopilotTrack, sharpeUpTo, specKey, dropFormingBar, EVOLVE_WINDOW, EVOLVE_WARMUP, CASH };

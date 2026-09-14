@@ -175,6 +175,12 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
   const gross = spec.gross == null ? 1 : spec.gross;
   const weighting = spec.weighting || 'equal';
   const k = spec.k;
+  // Buy/hold spread: sell a holding only once it falls past rank `holdK`, while still
+  // buying only into the top `k`. 0 / undefined / <= k all mean OFF (plain top-k).
+  const holdK = Number.isFinite(spec.holdK) ? spec.holdK : 0;
+  // Weight-drift band: skip a same-side resize worth less than this fraction of equity.
+  // 0 / undefined = OFF (byte-identical to the old behaviour). See `banded` below.
+  const rebalanceBand = Number.isFinite(spec.rebalanceBand) ? spec.rebalanceBand : 0;
   const rebalanceBars = spec.rebalanceBars;
   const covLookback = spec.covLookback || 63; // trailing window for the optimiser's covariance
   const maxWeight = spec.maxWeight || 1;       // per-name weight cap (optimiser weightings)
@@ -258,6 +264,25 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
     // (b) EXECUTE the target decided on the PREVIOUS rebalance bar (one-bar lag).
     if (pending) {
       const equity = engine.equity(); // captured once, like the single-symbol backtester
+
+      // The WEIGHT-DRIFT BAND (opt-in via `rebalanceBand`; 0 = off = byte-identical).
+      //
+      // `holdK` above stops the book swapping NAMES at the ranking boundary. It does not
+      // touch the other half of the bill: the same names are trimmed and topped up every
+      // cycle purely because their prices moved apart, and on a slow signal that weight
+      // maintenance is the LARGER share of turnover (measured: switching selection churn
+      // off entirely cut trades only ~12% on the band fixture).
+      //
+      // So skip a same-side adjustment worth less than `band × equity`. Entries (curQty 0)
+      // and exits (desiredQty 0) always trade — a band must never suppress a decision, only
+      // the drift around one. Same rule and the same reasoning as the single-symbol
+      // backtester's `rebalanceBand`, applied per name here.
+      const banded = (curQty, desiredQty, px) => {
+        if (!(rebalanceBand > 0)) return desiredQty;
+        if (curQty === 0 || desiredQty === 0) return desiredQty; // a decision, not drift
+        if (Math.abs(desiredQty - curQty) * px < rebalanceBand * Math.max(0, equity)) return curQty;
+        return desiredQty;
+      };
       // SELL first (frees cash for the buys), then BUY — names not in the target
       // have weight 0, so they are driven to flat.
       for (const s of universe) {
@@ -265,7 +290,7 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
         if (!(Number.isFinite(px) && px > 0)) continue;
         const pos = engine.state.positions[key[s]];
         const curQty = pos ? pos.qty : 0;
-        const desiredQty = Math.max(0, Math.floor(((targetW[s] || 0) * equity) / px));
+        const desiredQty = banded(curQty, Math.max(0, Math.floor(((targetW[s] || 0) * equity) / px)), px);
         if (desiredQty < curQty) {
           const sellPrice = eqFillPrice(cm, 'SELL', px), r0 = engine.realisedTotal();
           const order = engine.placeOrder({ instrument: inst[s], side: 'SELL', orderType: 'MARKET', lots: curQty - desiredQty, price: sellPrice });
@@ -281,7 +306,7 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
         if (!(Number.isFinite(px) && px > 0)) continue;
         const pos = engine.state.positions[key[s]];
         const curQty = pos ? pos.qty : 0;
-        const desiredQty = Math.max(0, Math.floor(((targetW[s] || 0) * equity) / px));
+        const desiredQty = banded(curQty, Math.max(0, Math.floor(((targetW[s] || 0) * equity) / px)), px);
         if (desiredQty > curQty) {
           const buyPrice = eqFillPrice(cm, 'BUY', px);
           const affordable = Math.floor(engine.availableFunds() / buyPrice); // never overspend
@@ -389,7 +414,45 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
       // Sort best-first; tie-break by the rule score, then the NAME (a total order,
       // so selection is fully deterministic regardless of sort stability).
       candidates.sort((a, b) => b.score - a.score || b.ruleScore - a.ruleScore || (a.sym < b.sym ? -1 : 1));
-      const top = candidates.slice(0, k);
+
+      // THE BUY/HOLD SPREAD (opt-in via `holdK`; default off = byte-identical to top-k).
+      //
+      // A plain top-k basket sells a name the moment it slips to rank k+1 and buys its
+      // replacement — paying a full round trip for two names whose expected returns are
+      // nearly identical, because a ranking is continuous and the k-boundary is arbitrary.
+      // The cost is immediate and certain; the gain is the sliver of edge between ranks
+      // k and k+1, which for a slow signal is close to nothing.
+      //
+      // So: BUY into the top k, but only SELL once a holding falls out of a WIDER band
+      // (`holdK`). A name you already own at rank 15 with holdK=25 is kept; the same name
+      // at rank 15 is NOT bought if you do not own it. Novy-Marx & Velikov (2016, RFS
+      // 29(1)) call this "the single most effective simple cost mitigation strategy".
+      //
+      // Priority is deliberate: retained holdings are placed FIRST, so an incumbent inside
+      // the band keeps its slot even when a better-ranked name is available. That IS the
+      // mechanism — continuing to hold what you would not actively buy — and it is what
+      // trades turnover for a little selection sharpness. Slots left over are filled
+      // best-first from everything not already chosen.
+      let top;
+      if (holdK > k) {
+        const chosen = [];
+        const taken = new Set();
+        // 1) keep what we already own, provided it is still inside the hold band
+        for (let i = 0; i < candidates.length && i < holdK && chosen.length < k; i++) {
+          const c = candidates[i];
+          const pos = engine.state.positions[key[c.sym]];
+          if (pos && pos.qty > 0) { chosen.push(c); taken.add(c.sym); }
+        }
+        // 2) fill any remaining slots from the top, best-first
+        for (let i = 0; i < candidates.length && chosen.length < k; i++) {
+          const c = candidates[i];
+          if (taken.has(c.sym)) continue;
+          chosen.push(c); taken.add(c.sym);
+        }
+        top = chosen;
+      } else {
+        top = candidates.slice(0, k);
+      }
       // Optimiser weightings (mean-variance / risk-parity) need the chosen names'
       // covariance — build a trailing returns matrix: each name's OWN last covLookback
       // real returns, ending at its decision bar (ri), so it reads no future data. If

@@ -209,6 +209,20 @@ function validateBasket(spec) {
   // would silently hold the whole basket in cash forever. Same guard the factors below apply.
   if (typeof spec.rank === 'boolean' || (Array.isArray(spec.rank) && BOOL_VALUED_OPS.has(spec.rank[0]))) return 'basket.rank must be numeric-valued (not a boolean/comparison)';
   if (!Number.isInteger(spec.k) || spec.k < 1 || spec.k > u.length) return 'basket.k must be 1..universe.length';
+  // The buy/hold spread (optional): buy into the top `k`, sell only once a holding falls
+  // past rank `holdK`. Must be a wider band than the buy list or it means nothing, and it
+  // cannot exceed the universe. Absent = off, which is the plain top-k behaviour.
+  if (spec.holdK !== undefined
+    && !(Number.isInteger(spec.holdK) && spec.holdK > spec.k && spec.holdK <= u.length)) {
+    return 'basket.holdK must be an integer greater than k and at most universe.length';
+  }
+  // Weight-drift band (optional): skip a same-side resize worth less than this fraction of
+  // equity. Capped well below 1 — a band near 1 would suppress every adjustment and freeze
+  // the book, which is a broken spec rather than a cheap one.
+  if (spec.rebalanceBand !== undefined
+    && !(Number.isFinite(spec.rebalanceBand) && spec.rebalanceBand >= 0 && spec.rebalanceBand <= 0.25)) {
+    return 'basket.rebalanceBand must be a number in [0, 0.25]';
+  }
   if (!WEIGHTINGS.has(spec.weighting === undefined ? 'equal' : spec.weighting)) return 'basket.weighting must be equal/rankw/volinv/meanvar/riskparity';
   if (!Number.isInteger(spec.rebalanceBars) || spec.rebalanceBars < 5 || spec.rebalanceBars > 63) return 'basket.rebalanceBars must be 5..63';
   if (spec.gross !== undefined && !(Number.isFinite(spec.gross) && spec.gross > 0 && spec.gross <= 1)) return 'basket.gross must be in (0,1]';
