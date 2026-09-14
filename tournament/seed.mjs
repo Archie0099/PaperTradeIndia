@@ -437,6 +437,42 @@ const SEED_BOTS = [
     symbol: 'NIFTYBEES',
     spec: { kind: 'EQ', name: 'ETF trend (NIFTYBEES)', entry: ['>', ['price'], ['sma', 50]], exit: ['<', ['price'], ['sma', 50]] },
   },
+
+  // --- The FAIR BAR, put on the board where it can be seen ---------------------
+  // Every basket on this leaderboard is measured against the index by default, and the
+  // index is the WRONG yardstick: a portfolio of these same names picked with NO
+  // information at all beats it by roughly 0.6 Sharpe, purely because the universe is
+  // today's survivors held fixed across history (METHODOLOGY.md states this rule).
+  // That control has always existed in the research lab, where nobody looks at it.
+  //
+  // This puts it on the board as a competitor so the comparison is unavoidable: same
+  // engine, same costs, same cadence, holding EVERY name at equal weight with no ranking
+  // signal whatsoever. Measured in-sample 2010-2019 it scores xSharpe 0.67 against
+  // NIFTYBEES buy-and-hold at 0.24 — so a bot that beats the index but lands under this
+  // row has not demonstrated stock-picking, it has demonstrated survivorship.
+  //
+  // It is deliberately UNGATED: a regime filter would make it a strategy, and the whole
+  // point is that it makes no decisions. `0 × vol` is the no-information rank — numeric
+  // (so the composite never silently drops a name) and null while unwarm, exactly as the
+  // research lab's control has always been written.
+  //
+  // ★ This row is not trying to win and is not an edge. It is the number every other row
+  // has to beat before it means anything.
+  {
+    id: 'bar-universe-equal',
+    name: 'The fair bar (whole universe, equal weight)',
+    note: 'Not a strategy — the BENCHMARK, made visible. Holds every name in the basket universe at equal weight, rebalanced monthly, with no ranking signal, no filter and no market timing. It exists because beating the index proves nothing here: this universe is today\'s survivors held fixed across history, so a no-information portfolio of the same names already beats the index by roughly 0.6 Sharpe (0.67 vs 0.24 measured in-sample 2010-2019). Read every other basket against THIS row, not against NIFTY. A bot below it is being carried by survivorship rather than by picking.',
+    kind: 'BASKET',
+    spec: {
+      kind: 'BASKET',
+      name: 'The fair bar (whole universe, equal weight)',
+      universe: WIDE,
+      rank: ['*', 0, ['vol', 60]], // no information: every name ties, null while unwarm
+      k: WIDE.length,              // hold all of them
+      weighting: 'equal',
+      rebalanceBars: 21,
+    },
+  },
 ];
 
 export { SEED_BOTS };

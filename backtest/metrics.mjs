@@ -143,7 +143,52 @@ function maxDrawdownPct(equity) {
 // `periodsPerYear` optional — pass it (e.g. inferPeriodsPerYear(times)) for INTRADAY
 // curves so the Sharpe annualises correctly; omit it for daily (defaults to 252, so
 // existing daily backtests are byte-identical).
+// ---------------------------------------------------------------------------
+// THE IDLE-CASH GAP, reported rather than silently carried.
+//
+// `sharpe` charges rf on EVERY bar, including bars the account spends flat in cash —
+// but nothing in the engine credits interest on that cash (engine.js's own
+// `riskFreeRate` is used by the option tools only). A real investor parking cash in a
+// T-bill earns the hurdle; a strategy here earns zero and is charged it anyway. So any
+// strategy that deliberately steps aside is penalised twice, and the penalty scales with
+// how long it stands aside.
+//
+// MEASURED (backtest/research/cash-drag.mjs): the regime-gated baskets sit 21.7-34.0% of
+// their life in cash and read 0.056-0.090 LOW on Sharpe; strategies that stay invested sit
+// at 3.4% and lose 0.010. It does not change which strategy ranks first, so nothing here
+// restates a published figure — the gap is simply made visible instead of argued about.
+//
+// HOW A CASH BAR IS DETECTED, and the one way it can be wrong: cash earns exactly nothing,
+// so a fully-in-cash bar leaves equity EXACTLY unchanged. The false positive is a bar on
+// which a held book's mark did not move at all — vanishingly unlikely for a basket of ten
+// names, genuinely possible for a single-name strategy on a quiet day. So this is an
+// ESTIMATE and is named like one; `flatBarsPct` is published beside it so the size of the
+// assumption is visible. Deliberately NOT done inside the engine: crediting interest there
+// would break the MASTER invariant (realised + unrealised − fees == equity − initialCash),
+// which interest income satisfies none of.
+function flatBarCount(equity) {
+  let flat = 0;
+  for (let i = 1; i < equity.length; i++) if (equity[i] === equity[i - 1]) flat++;
+  return flat;
+}
+
+// The same curve re-scored as if idle cash had earned rf, by compounding the per-bar rate
+// through each flat run. Returns the equity curve, not a score, so the caller can feed it
+// to whichever metric it wants.
+function creditIdleCash(equity, rfAnnual = RF_ANNUAL, periodsPerYear = TRADING_DAYS) {
+  const perBar = (rfAnnual || 0) / (periodsPerYear || TRADING_DAYS);
+  const out = [equity[0]];
+  let credit = 1;
+  for (let i = 1; i < equity.length; i++) {
+    if (equity[i] === equity[i - 1]) credit *= (1 + perBar);
+    out.push(equity[i] * credit);
+  }
+  return out;
+}
+
 function summarize(equity, { years, trades = 0, periodsPerYear = TRADING_DAYS } = {}) {
+  const bars = Math.max(1, (equity || []).length - 1);
+  const flat = flatBarCount(equity || []);
   return {
     totalReturnPct: +totalReturnPct(equity).toFixed(2),
     cagrPct: +cagrPct(equity, years).toFixed(2),
@@ -151,6 +196,11 @@ function summarize(equity, { years, trades = 0, periodsPerYear = TRADING_DAYS } 
     // kept alongside so the two conventions are never silently confused.
     sharpe: +sharpe(equity, periodsPerYear).toFixed(2),
     sharpeRf0: +sharpe(equity, periodsPerYear, 0).toFixed(2),
+    // The headline Sharpe this strategy would have scored if its idle cash had earned the
+    // same rf it is charged. An ESTIMATE (see the note above), never the headline.
+    sharpeCashAdj: +sharpe(creditIdleCash(equity, RF_ANNUAL, periodsPerYear), periodsPerYear).toFixed(2),
+    // How much of the run was spent fully in cash — the size of the assumption above.
+    flatBarsPct: +((flat / bars) * 100).toFixed(2),
     sortino: +sortino(equity, periodsPerYear).toFixed(2),
     maxDrawdownPct: +maxDrawdownPct(equity).toFixed(2),
     trades,
