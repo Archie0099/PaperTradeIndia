@@ -484,14 +484,18 @@ function renderBotPage(body, d, row) {
   // the opening stretch a gated basket has no proxy to read, sits flat, and is charged the
   // hurdle for it. This is the size of that, measured on the bot's own full curve.
   if (m.sharpePostProxy != null && m.preProxyBars > 0 && m.sharpePostProxy !== m.sharpe) {
-    const worse = m.sharpePostProxy > m.sharpe;
+    // What those bars MEAN depends entirely on whether this bot reads the proxy, and the two
+    // readings are opposites — so the sentence branches rather than asserting the gated story
+    // about every bot. Saying "it holds nothing there" about an UNGATED basket would be flatly
+    // untrue: the fair bar takes 774 trades inside that very stretch.
     body.append(el('div', { class: 'muted', style: 'font-size: 12px; margin: -4px 0 8px' }, [
-      `This bot's timeline opens ${m.preProxyBars} bars before the market proxy it gates on exists. It cannot evaluate its gate there, so it holds nothing and is charged the ~6.5% hurdle anyway. `,
+      `This bot's timeline opens ${m.preProxyBars} bars before the market proxy exists. `,
+      m.gated
+        ? 'It gates on that proxy, so across those bars it cannot evaluate its gate at all — it holds nothing and is charged the ~6.5% hurdle for every one of them. Removing them is the fairer read of this bot. '
+        : 'It does not gate on the proxy, so it trades through those bars normally. Removing them is NOT a correction for this bot — it is simply a shorter window, and the difference can fall either way. ',
       el('span', { style: 'font-weight: 600' }, `Scored only from the bar the proxy starts, it is ${m.sharpePostProxy} instead of ${m.sharpe}.`),
-      worse
-        ? ' The ranked figure is therefore the more pessimistic of the two for this bot.'
-        : ' The ranked figure is the more flattering of the two for this bot.',
-      ' Read it as the SAME run scored over a later window — not as what the bot would have done on a trimmed timeline, which would also move every rebalance date and is a different (larger) question. Nothing on the board is adjusted by it; ',
+      ' The reason both are shown is COMPARABILITY: only from the proxy onward were all the bots on this board able to act on the same information. ',
+      'Read it as the SAME run scored over a later window — not as what the bot would have done on a trimmed timeline, which would also move every rebalance date and is a different (larger) question. Nothing on the board is adjusted by it; ',
       el('span', { style: 'font-weight: 600' }, `${m.sharpe}`),
       ' remains the ranked figure.',
     ]));

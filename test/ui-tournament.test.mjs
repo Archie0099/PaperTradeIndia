@@ -496,15 +496,33 @@ test("a bot whose timeline opens before its gate proxy exists says so, and state
   // scored later, not the run on a trimmed timeline (which would also move every rebalance date).
   const dom = setupDom();
   const bk = baseDetail("bk", { kind: "BASKET", symbol: "8 stocks",
-    metrics: { totalReturnPct: 120, sharpe: 0.74, sharpePostProxy: 0.78, preProxyBars: 301, maxDrawdownPct: 30, trades: 400 } });
+    metrics: { totalReturnPct: 120, sharpe: 0.74, sharpePostProxy: 0.78, preProxyBars: 301, gated: true, maxDrawdownPct: 30, trades: 400 } });
   await renderTournament(appWith(dom, { bk }));
   clickBot(dom, "bk");
   await flush();
   const page = dom.$("#tourn-botpage-body").textContent;
   assert.match(page, /Sharpe from proxy start0\.78/, "the stat renders with its value");
-  assert.match(page, /This bot's timeline opens 301 bars before the market proxy it gates on exists\./, "it states the size of the dead stretch");
+  assert.match(page, /This bot's timeline opens 301 bars before the market proxy exists\. It gates on that proxy, so across those bars it cannot evaluate its gate at all — it holds nothing and is charged the ~6\.5% hurdle for every one of them\./, "for a GATED bot it states the dead stretch and why it is dead");
   assert.match(page, /Scored only from the bar the proxy starts, it is 0\.78 instead of 0\.74\./, "and both figures, in one sentence");
   assert.match(page, /not as what the bot would have done on a trimmed timeline/, "it refuses the reading that would overstate the finding");
+});
+
+test("an UNGATED bot is NOT told it held nothing through a stretch it actually traded", async () => {
+  // The branch that matters, and the bug the deployed board exposed. All five GATED bots move
+  // +0.03..+0.04 while the ungated ones scatter -0.05..+0.04 — because for an ungated basket
+  // those bars are ordinary trading. The fair bar takes 774 trades inside that very stretch, so
+  // telling its reader it "holds nothing" there is simply false, which the first copy did.
+  const dom = setupDom();
+  const bk = baseDetail("bk", { kind: "BASKET", symbol: "105 stocks",
+    metrics: { totalReturnPct: 300, sharpe: 0.79, sharpePostProxy: 0.78, preProxyBars: 249, gated: false, maxDrawdownPct: 56, trades: 20000 } });
+  await renderTournament(appWith(dom, { bk }));
+  clickBot(dom, "bk");
+  await flush();
+  const page = dom.$("#tourn-botpage-body").textContent;
+  assert.match(page, /It does not gate on the proxy, so it trades through those bars normally\. Removing them is NOT a correction for this bot — it is simply a shorter window, and the difference can fall either way\./,
+    "the ungated branch says the opposite thing, because the opposite is true");
+  assert.ok(!/it holds nothing/.test(page), "and never claims it held nothing");
+  assert.match(page, /Scored only from the bar the proxy starts, it is 0\.78 instead of 0\.79\./, "both figures are still stated");
 });
 
 test("a bot with NO dead stretch shows no post-proxy figure at all (the control)", async () => {

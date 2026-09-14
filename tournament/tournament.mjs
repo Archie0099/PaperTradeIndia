@@ -864,6 +864,7 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
             // Same helper the leaderboard row uses, so the two surfaces cannot quote different
             // post-proxy figures for one bot.
             ...postProxyScore(eqd, ctimes, isIntradayInterval(bot.interval) ? null : proxyStartT()),
+            gated: !!(bot.spec && bot.spec.marketGate !== undefined),
             maxDrawdownPct: res.metrics.maxDrawdownPct, trades: res.metrics.trades, risk: isIntradayInterval(bot.interval) ? null : riskProfile(res.equityCurve) }
         : { totalReturnPct: 0, sharpe: 0, sharpeCashAdj: 0, flatBarsPct: 0, maxDrawdownPct: 0, trades: 0, risk: null }, // never-traded: neutral, matching the leaderboard row
       // Cost/liquidity honesty for the per-bot page: which cost schedule the run paid
@@ -1019,6 +1020,16 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
         // bot has no pre-proxy stretch at all.
         sharpePostProxy,
         preProxyBars,
+        // Does this bot READ the market proxy? It decides what the pre-proxy stretch MEANS, and
+        // the two meanings are opposites. A GATED basket cannot evaluate its gate there, so it
+        // holds nothing and is charged the hurdle for every bar — a systematic penalty, and
+        // removing it is a fairer read of that bot. An UNGATED one trades through the stretch
+        // normally (the fair bar takes 774 trades in it), so removing those bars is not a
+        // correction at all, just a shorter window. MEASURED on the deployed board: the five
+        // gated bots move +0.03..+0.04, tightly; the ungated ones scatter -0.05..+0.04 with no
+        // sign. Without this flag the per-bot page would tell an ungated bot's reader it "holds
+        // nothing" through a stretch it actually traded.
+        gated: !!(bot.spec && bot.spec.marketGate !== undefined),
         maxDrawdownPct: res.metrics.maxDrawdownPct,
         // Risk block: one-day 99% VaR / ES by historical simulation on the trailing 500
         // daily returns (Hull's window), the √10 ten-day figure, and a ROLLING BACK-TEST of that
