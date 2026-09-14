@@ -767,7 +767,13 @@ function initTournament(app) {
     wired = true;
     wireAction($('#btn-evolve'), app, () => app.api.evolveTournament());
     wireAction($('#btn-add-bot'), app, () => app.api.addTournamentBot());
-    wireAction($('#btn-reset-tourn'), app, () => app.api.resetTournament(), { confirm: 'Reset the tournament to the original line-up at generation 0? Forward progress will be cleared.' });
+    // Reset passes the board's CURRENT deployedAt so the server can tell a deliberate reset from
+    // a blind POST (see server.js). `lastData` is whatever the last poll rendered, so this is
+    // exactly "the run you are looking at". The warning names what is actually lost: the advisor
+    // clock is the one thing here that no amount of recomputation can rebuild.
+    wireAction($('#btn-reset-tourn'), app, () => app.api.resetTournament(lastData && lastData.deployedAt), {
+      confirm: 'Reset the tournament to the original line-up at generation 0?\n\nThis clears the forward record and RESTARTS the advisor’s 90-day track-record clock. The suggestion log itself is archived, but the clock can only be rebuilt by waiting — missed trading days are never back-filled.',
+    });
     // The per-bot detail page's "back" button returns to the leaderboard.
     const back = $('#btn-botpage-back');
     if (back) back.addEventListener('click', () => showBoard(true));

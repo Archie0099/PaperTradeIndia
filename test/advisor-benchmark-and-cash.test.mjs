@@ -283,3 +283,57 @@ test('the leaderboard row carries the benchmark flag, and ordinary rows carry fa
   assert.equal(ctrl.benchmark, true, 'the control must be identifiable from the board payload alone');
   assert.equal(ordinary.benchmark, false, 'and an ordinary strategy must be a real false, not undefined');
 });
+
+// --- (6) the destructive route is no longer a drive-by ---------------------------------------
+// `/api/tournament/reset` restarts `deployedAt` AND clears the live advisor log. The log is
+// archived, but the 90-day "track record before trust" CLOCK restarts, and that cannot be
+// recomputed from data — only waited out, at roughly one trading day per trading day, with
+// missed days never back-filled. So an anonymous POST to a public URL could throw away the one
+// artifact in this project that only time can produce. The guard asks the caller to echo the
+// current `deployedAt`, which it can only know by reading the board first.
+
+import { createServer } from 'node:http';
+
+// Minimal stand-in for the Express route's guard, exercised against a REAL tournament so the
+// value being echoed is the real `getStandings().deployedAt` rather than a hand-made number.
+const resetGuard = (t, confirm) => {
+  const standings = t.getStandings();
+  const expected = standings && standings.deployedAt;
+  if (!expected || String(expected) !== String(confirm ?? '')) return { ok: false, status: 400 };
+  return { ok: true, ...t.reset() };
+};
+
+test('a reset without the current deployedAt is refused', async () => {
+  const t = await createTournament({ seed: CASH_SEED, backfillData: { NIFTY: series() }, persist: false, evolutionEnabled: false });
+  await t.init();
+  const before = t.getStandings().deployedAt;
+  assert.equal(resetGuard(t, undefined).ok, false, 'a blind POST must not reset');
+  assert.equal(resetGuard(t, '').ok, false, 'nor an empty confirm');
+  assert.equal(resetGuard(t, 'true').ok, false, 'nor a guessed value');
+  assert.equal(resetGuard(t, before + 1).ok, false, 'nor a near-miss');
+  assert.equal(t.getStandings().deployedAt, before, 'the forward clock is untouched by every refused attempt');
+});
+
+test('a reset WITH the current deployedAt succeeds, and the echoed value then changes', async () => {
+  const t = await createTournament({ seed: CASH_SEED, backfillData: { NIFTY: series() }, persist: false, evolutionEnabled: false });
+  await t.init();
+  const before = t.getStandings().deployedAt;
+  assert.equal(resetGuard(t, before).ok, true, 'the control panel, which has read the board, can still reset');
+  // Replay protection falls out of the design: the value the caller just used is now stale.
+  assert.equal(resetGuard(t, before).ok, false, 'the same confirm cannot be replayed against the new run');
+});
+
+// --- (7) a spec must not be able to name a market proxy that is silently ignored --------------
+
+test('a basket naming its own marketSymbol is REJECTED, not quietly evaluated against NIFTY', async () => {
+  const { validateSpec } = await import('../backtest/dsl.mjs');
+  const base = {
+    kind: 'BASKET', name: 'gated', universe: ['AAA', 'BBB', 'CCC'], rank: ['mom', 252, 21], k: 2,
+    marketGate: ['>', ['price'], ['sma', 100]], rebalanceBars: 21,
+  };
+  assert.equal(validateSpec(base), null, 'the same spec without marketSymbol is valid');
+  const err = validateSpec({ ...base, marketSymbol: 'INDIAVIX' });
+  assert.ok(err, 'naming a proxy that does not exist must be an ERROR, never a silent no-op');
+  assert.match(err, /marketSymbol/, 'and the error must name the offending field');
+  assert.match(err, /NIFTY/, 'and say what would actually have happened');
+});

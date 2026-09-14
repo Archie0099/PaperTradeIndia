@@ -117,7 +117,38 @@ app.post('/api/tournament/evolve', tournRateLimit, (req, res) => {
   res.json({ ...result, standings: tournament.getStandings() });
 });
 // Control-panel actions (no request body needed — keeps the server middleware-light).
+//
+// RESET IS GUARDED, and it is the only one of these that is. The old rationale for leaving every
+// tournament POST open was "it is all virtual money", which was written before the ADVISOR
+// existed and is no longer the whole picture. A reset restarts `deployedAt` and clears the live
+// suggestion log — and while the log itself is ARCHIVED rather than destroyed, the 90-day
+// "track record before trust" CLOCK genuinely restarts, and that clock cannot be recomputed from
+// data. Rebuilding it means waiting weeks of real trading days (missed days are never
+// back-filled, by design). So a single drive-by POST to a public URL could throw away the one
+// artifact here that time alone can produce.
+//
+// The guard deliberately is NOT a password. It requires the caller to echo the CURRENT
+// `deployedAt`, which it can only learn by first reading GET /api/tournament. That:
+//   * stops blind/drive-by POSTs and endpoint scanners cold — they never read the state;
+//   * stops a double-click or a replayed request, since the value changes on every reset;
+//   * doubles as an optimistic-concurrency check: you are asserting WHICH run you mean to end;
+//   * changes nothing about how the site is used — the control panel already holds the board
+//     payload and passes the value itself.
+// It is not a defence against someone determined who reads the API first; that is what
+// APP_PASSWORD is for (it gates the whole site when set). This closes the accidental and
+// automated cases, which are the realistic ones for an obscure URL.
+//
+// `evolve`, `add` and `remove` stay open: each is recoverable by the opposite action, breeding
+// is off so `evolve` is a no-op, and none of them touches the forward record.
 app.post('/api/tournament/reset', tournRateLimit, (req, res) => {
+  const standings = tournament.getStandings();
+  const expected = standings && standings.deployedAt;
+  const got = typeof req.query.confirm === 'string' ? req.query.confirm : '';
+  if (!expected || String(expected) !== got) {
+    return res.status(400).json({
+      error: 'Reset needs confirmation. Reload the board and try again — this guards the forward record (the advisor’s trust clock cannot be rebuilt except by waiting).',
+    });
+  }
   res.json({ ...tournament.reset(), standings: tournament.getStandings() });
 });
 app.post('/api/tournament/add', tournRateLimit, (req, res) => {

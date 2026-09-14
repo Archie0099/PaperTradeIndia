@@ -288,6 +288,14 @@ function validateBasket(spec) {
   if (spec.gross !== undefined && !(Number.isFinite(spec.gross) && spec.gross > 0 && spec.gross <= 1)) return 'basket.gross must be in (0,1]';
   if (spec.gate !== undefined && !validExpr(spec.gate)) return 'basket.gate must be a valid expression';
   if (spec.marketGate !== undefined && !validExpr(spec.marketGate)) return 'basket.marketGate must be a valid expression';
+  // REJECT `marketSymbol` rather than ignoring it. There is no per-bot market proxy: the
+  // tournament hardcodes NIFTY as the gate series for EVERY basket, so a spec naming a
+  // different proxy would have its gate silently evaluated against NIFTY's closes instead —
+  // a completely different rule, live, contradicting the bot's own note, with nothing in the
+  // UI to reveal it. A spec that was almost written this way was caught in review and deleted.
+  // Failing loudly is the honest behaviour until the proxy actually exists; a validation error
+  // is cheap, whereas a gate reading the wrong series is a wrong result that looks right.
+  if (spec.marketSymbol !== undefined) return 'basket.marketSymbol is not supported: every basket gate is evaluated against NIFTY, so naming another proxy would silently evaluate the gate on the wrong series';
   // The MIRROR of the `rank` guard above, in the other direction: a gate must evaluate
   // to a BOOLEAN. portfolio.mjs applies both gates with a strict `evalNode(...) !== true`
   // test, so a numeric-valued expression (say ['regime',100], which returns 1 or 0 — never

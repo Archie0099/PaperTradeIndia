@@ -46,7 +46,10 @@ const api = {
   tournament: () => getJson('/api/tournament'),
   tournamentBot: (id) => getJson(`/api/tournament/bot?id=${encodeURIComponent(id)}`),
   evolveTournament: () => postJson('/api/tournament/evolve'),
-  resetTournament: () => postJson('/api/tournament/reset'),
+  // Reset echoes the board's CURRENT deployedAt back to the server, which is how the server
+  // knows the caller has actually read the state it is about to destroy (see server.js). The
+  // caller passes the value it already holds from the last /api/tournament poll.
+  resetTournament: (deployedAt) => postJson(`/api/tournament/reset?confirm=${encodeURIComponent(deployedAt ?? '')}`),
   addTournamentBot: () => postJson('/api/tournament/add'),
   removeTournamentBot: (id) => postJson(`/api/tournament/remove?id=${encodeURIComponent(id)}`),
 };
