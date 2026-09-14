@@ -80,4 +80,5 @@ function getMarketState(date = new Date(), holidays = HOLIDAYS) {
   return { state: 'CLOSED', isOpen: false, reason: 'Outside trading hours' };
 }
 
-export { getMarketState, istClockString, HOLIDAYS };
+// `istNow` and `isoDate` are exported so callers that need "what IST date is it?" use THIS
+export { getMarketState, istClockString, istNow, isoDate, HOLIDAYS };

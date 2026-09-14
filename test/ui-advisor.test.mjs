@@ -36,8 +36,14 @@ const advisorPayload = (over = {}) => ({
   ...over,
 });
 
-function standings(advisor, persist) {
+// asOf PINS THE PAYLOAD CLOCK. The suggestions panel measures how many trading sessions have
+// closed since the recorded entry, and it reads that "now" from the payload rather than the
+// browser — so a fixture must state it, or every advisor test would drift day by day and start
+// failing on its own schedule. 2026-08-05 is the day after the fixture's entry (2026-08-04),
+// i.e. nothing missed, which is what the pre-existing tests assume.
+function standings(advisor, persist, asOf = Date.parse('2026-08-05T06:00:00Z')) {
   return {
+    asOf,
     startingCash: 1e7,
     advisor,
     persist,
@@ -55,10 +61,10 @@ function standings(advisor, persist) {
   };
 }
 
-const appWith = (dom, advisor, persist) => {
+const appWith = (dom, advisor, persist, asOf) => {
   const app = dom.makeApp({
     api: Object.assign(dom.makeApiStub(), {
-      tournament: async () => standings(advisor, persist),
+      tournament: async () => standings(advisor, persist, asOf),
       tournamentBot: async (id) => ({ ok: true, id, name: 'Sharpe King', mirror: { followable: true, equity: 1.08e7, positions: [] } }),
     }),
   });
@@ -209,7 +215,9 @@ test('an excluded (F&O) champion shows the stand-aside state with its reason —
   initAutoPilot(app);
   await renderAutoPilot(app);
   const txt = dom.$('#ap-suggestions').textContent;
-  assert.match(txt, /Stand aside today/i);
+  // Reworded deliberately: the entry it describes can be days old, so calling it "today" was
+  // wrong. It now names the recorded date.
+  assert.match(txt, /Stand aside on 2026-08-04./);
   assert.match(txt, /modelled\/indicative/, 'the exclusion reason is stated, not hidden');
   assert.ok(!dom.$('#adv-capital'), 'no capital input in the stand-aside state');
 });
@@ -444,6 +452,89 @@ test("a WIPED champion gets no rupee VaR — the panel refuses to size a total l
   const txt = dom.$("#ap-suggestions").textContent;
   assert.match(txt, /Tomorrow’s risk on this ₹[\d,]+: not quantifiable — the champion’s last 500 trading days include a TOTAL LOSS, so a rupee VaR is not a meaningful figure for it\. Treat the downside of following it as unbounded, and re-read the honesty check above\./, "a warning, not a number");
   assert.ok(!/not lose more than ₹/.test(txt), "and NO rupee VaR/ES figure is printed for a wiped champion");
+});
+
+// ---------------------------------------------------------------------------
+// STALENESS. The server records a suggestion only when it is awake AND the feed has published
+// that session's close, and the measured capture rate is well under half — so the entry on
+// screen is often not the latest session. The panel used to call it "today" regardless.
+// ---------------------------------------------------------------------------
+
+test('a suggestion with finished sessions behind it is labelled STALE, with the count', async () => {
+  const dom = setupDom();
+  // Entry 2026-08-04 (Tue), payload clock 2026-08-12 (Wed). Sessions strictly between:
+  // Wed 5th, Thu 6th, Fri 7th, Mon 10th, Tue 11th = 5. The 8th/9th are a weekend, and the
+  // 12th itself is excluded because its session may still be running.
+  const app = appWith(dom, advisorPayload(), undefined, Date.parse('2026-08-12T06:00:00Z'));
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  const txt = dom.$('#ap-suggestions').textContent;
+  assert.match(txt, /These suggestions are from 2026-08-04\. 5 trading sessions have closed since then with no new suggestion recorded, so they do not reflect those sessions\. Prices and weights below are as at 2026-08-04 — check live quotes before acting on them\./,
+    'it names the date, counts the finished sessions, and says the prices are as at that date');
+});
+
+test('the staleness banner does NOT fire across a weekend, when nothing was actually missed', async () => {
+  // The control, and the reason the count is sessions rather than calendar days: a Friday
+  // suggestion read on Monday is three days old with nothing missed at all. Counting days
+  // would cry wolf every weekend and train the reader to ignore the warning.
+  const dom = setupDom();
+  const friday = advisorPayload({ today: { ...advisorPayload().today, date: '2026-08-07' } });
+  const app = appWith(dom, friday, undefined, Date.parse('2026-08-10T06:00:00Z')); // Monday
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  const txt = dom.$('#ap-suggestions').textContent;
+  assert.ok(!/trading session/.test(txt), 'no staleness banner over a plain weekend');
+  assert.match(txt, /recorded 2026-08-07/, 'but the recorded date is still stated plainly');
+});
+
+test('a market HOLIDAY between the entry and now does not count as a missed session', async () => {
+  // 2026-08-15 (Independence Day) is a Saturday in 2026, so use a listed weekday holiday:
+  // the panel reads the SAME holiday list the rest of the app does, rather than re-deriving one.
+  const dom = setupDom();
+  const before = advisorPayload({ today: { ...advisorPayload().today, date: '2026-09-11' } });
+  // 12th/13th weekend, 14th Ganesh Chaturthi (a listed holiday), 15th excluded as "today".
+  const app = appWith(dom, before, undefined, Date.parse('2026-09-15T06:00:00Z'));
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  assert.ok(!/trading session/.test(dom.$('#ap-suggestions').textContent),
+    'a weekend plus a holiday is not a missed session');
+});
+
+test('the action list names the suggestion date instead of calling it "today"', async () => {
+  const dom = setupDom();
+  const app = appWith(dom, advisorPayload());
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  app.tabs.show('autopilot');
+  dom.setPrompt('25');
+  dom.$('#adv-capital').value = '1000000';
+  dom.fire(dom.$('#adv-capital-set'), 'click');
+  await new Promise((r) => setTimeout(r, 0));
+  const txt = dom.$('#ap-suggestions').textContent;
+  assert.match(txt, /From the 2026-08-04 suggestion, scaled to your ₹10,00,000/,
+    'the scaled action list says which day it came from');
+  assert.ok(!/No actions today/.test(txt), 'and never says "today" about a recorded date');
+});
+
+test('the EMPTY action list also names the date rather than saying "today"', async () => {
+  // Reaching the empty branch needs a state that genuinely produces no orders: an ELIGIBLE
+  // champion sitting in cash (targets: []) against a fresh book with nothing to sell. The
+  // previous test covers the populated list; this one covers the sentence shown when there is
+  // nothing to do, which is the one that actually said "today".
+  const dom = setupDom();
+  const inCash = advisorPayload({ today: { ...advisorPayload().today, targets: [] } });
+  const app = appWith(dom, inCash);
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  app.tabs.show('autopilot');
+  dom.setPrompt('25');
+  dom.$('#adv-capital').value = '1000000';
+  dom.fire(dom.$('#adv-capital-set'), 'click');
+  await new Promise((r) => setTimeout(r, 0));
+  const txt = dom.$('#ap-suggestions').textContent;
+  assert.match(txt, /No actions from the 2026-08-04 suggestion — the assumed book already matches the champion’s targets\./,
+    'the empty-list sentence names the recorded date');
+  assert.ok(!/No actions today/.test(txt), 'and never calls a recorded date "today"');
 });
 
 test("an all-cash champion gets no rupee VaR either — the panel refuses to call the downside ₹0", async () => {

@@ -32,6 +32,7 @@ import { bsPrice } from '../core/options.js';
 import { drawMultiLine, drawLineChart } from './chart.js';
 import { windowed, windowMsOf, spanOf, windowButtons, effectiveWindow } from './chartwindow.js';
 import { openBotPage } from './tournament.js'; // reuse the rich per-bot page for the followed strategy
+import { HOLIDAYS, istNow, isoDate } from '../core/marketHours.js';
 
 const CFG_KEY = 'paper-trade-india:autopilot';
 
@@ -1175,16 +1176,68 @@ function renderSuggestions(app) {
       `Champion strategy, live: max drawdown ${fmt(ap.metrics.maxDrawdownPct, 1)}% · last 1Y ${r1y} vs market ${b1y}.`));
   }
 
+  // How many COMPLETED trading sessions have closed since this suggestion was recorded?
+  //
+  // The panel used to call the recorded entry "today" everywhere — "No actions today", "Stand
+  // aside today" — while the entry can be several days old. The server only records a day when
+  // it is awake AND the feed has published that session's close, and the live capture rate is
+  // measured at well under half (advisor.coverage), so an entry being older than the last session
+  // is common rather than exceptional. Saying "today" about it is simply wrong, and the reader is
+  // sizing real orders off it.
+  //
+  // ★ CALENDAR AGE WOULD BE THE WRONG MEASURE and would cry wolf constantly: a Friday suggestion
+  // read on Monday is three days old with nothing missed at all. What matters is whether SESSIONS
+  // have closed without guidance. So count weekday non-holiday dates STRICTLY BETWEEN the entry
+  // date and today's IST date — today is deliberately excluded, because its session may still be
+  // running and a "missed" session that has not happened yet would be a false alarm. That makes
+  // the count unambiguous: every date it counts is a finished session with no suggestion.
+  //
+  // Holidays and the IST calendar both come from core/marketHours.js rather than being re-derived
+  // here; two definitions of "is the market open" would drift apart silently.
+  //
+  // ★ "NOW" IS THE SERVER'S `asOf`, NOT THE BROWSER CLOCK. Two reasons, and the second is the one
+  // that matters. It is more correct — asOf is the same clock that stamped the entry, so a browser
+  // with a skewed or differently-zoned clock cannot invent or hide a missed session. And it keeps
+  // this testable: a fixture that pins asOf gets the same answer forever, whereas reading the wall
+  // clock would make every advisor test drift day by day and fail on its own schedule, which is a
+  // trap this project has already been caught by in the session-close tests.
+  const sessionsMissedSince = (dateStr) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr || '')) return 0;
+    const nowMs = lastStandings && Number.isFinite(lastStandings.asOf) ? lastStandings.asOf : Date.now();
+    const todayIso = isoDate(istNow(new Date(nowMs)));
+    let n = 0;
+    const d = new Date(dateStr + 'T00:00:00Z');
+    for (let i = 0; i < 400; i++) { // bounded: a stale-by-a-year entry still terminates
+      d.setUTCDate(d.getUTCDate() + 1);
+      const iso = d.toISOString().slice(0, 10);
+      if (iso >= todayIso) break; // today and beyond are never counted
+      const dow = d.getUTCDay();
+      if (dow === 0 || dow === 6) continue;
+      if (HOLIDAYS.includes(iso)) continue;
+      n += 1;
+    }
+    return n;
+  };
+
   const today = advisor.today;
   if (!today) {
     box.append(el('div', { class: 'empty-state' }, 'No suggestion has been issued yet (the champion’s market data may still be loading).'));
     return;
   }
 
+  // ONE staleness banner, rendered above every other state below, because all of them describe
+  // the same recorded entry. It is deliberately not styled as an error: a gap is expected on the
+  // free tier, and the reader needs the fact, not alarm.
+  const missed = sessionsMissedSince(today.date);
+  if (missed > 0) {
+    box.append(el('div', { style: 'margin: 8px 0; font-size: 12px; color: var(--down); font-weight: 600' },
+      `These suggestions are from ${today.date}. ${missed} trading session${missed === 1 ? ' has' : 's have'} closed since then with no new suggestion recorded, so they do not reflect ${missed === 1 ? 'that session' : 'those sessions'}. Prices and weights below are as at ${today.date} — check live quotes before acting on them.`));
+  }
+
   // The stand-aside (excluded-champion) state: say WHY, never silently scale.
   if (!today.eligible) {
     box.append(el('div', { style: 'margin: 8px 0; font-size: 13px' }, [
-      el('strong', {}, 'Stand aside today. '),
+      el('strong', {}, `Stand aside on ${today.date}. `),
       `No new equity guidance issued: ${today.reason}. Keep whatever you already hold from earlier suggestions — the day still counts toward the track record, scored by holding the previous suggested book unchanged (cash if there was none).`,
     ]));
     renderSuggestionScore(box, advisor);
@@ -1274,7 +1327,7 @@ function renderSuggestions(app) {
 
   const actions = book.lastActions || [];
   if (!actions.length) {
-    box.append(el('div', { class: 'muted', style: 'font-size: 12px; margin: 8px 0' }, 'No actions today — the assumed book already matches the champion’s targets.'));
+    box.append(el('div', { class: 'muted', style: 'font-size: 12px; margin: 8px 0' }, `No actions from the ${today.date} suggestion — the assumed book already matches the champion’s targets.`));
   } else {
     const at = el('table', {}, [
       el('thead', {}, el('tr', {}, [el('th', {}, 'Suggested action'), el('th', { class: 'num' }, 'Value'), el('th', { class: 'num' }, 'Est. cost')])),
@@ -1284,7 +1337,7 @@ function renderSuggestions(app) {
         el('td', { class: 'num' }, a.skipped ? '–' : rupee(a.estCost, 0)),
       ]))),
     ]);
-    box.append(el('div', { class: 'muted', style: 'font-size: 11px; margin: 8px 0 2px' }, `Scaled to your ₹${fmt(adv.capital, 0)} (whole shares, affordability-capped; costs estimated from the real delivery schedule incl. slippage):`));
+    box.append(el('div', { class: 'muted', style: 'font-size: 11px; margin: 8px 0 2px' }, `From the ${today.date} suggestion, scaled to your ₹${fmt(adv.capital, 0)} (whole shares, affordability-capped; costs estimated from the real delivery schedule incl. slippage):`));
     box.append(el('div', { class: 'table-wrap' }, at));
   }
   // NAMES TOO SMALL TO ACT ON AT THIS CAPITAL. Scaling the champion's book down can put a name's
