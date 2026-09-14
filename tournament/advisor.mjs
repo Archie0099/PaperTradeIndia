@@ -122,6 +122,22 @@ function buildAdvisorEntry({ autopilot, getBotDetail, seriesFor }) {
   if (!champ) return null;
   const detail = getBotDetail(champ.id);
   if (!detail || detail.ok === false || !detail.mirror || detail.mirror.followable === false) return null;
+  // NO-HINDSIGHT, ENFORCED RATHER THAN ASSUMED. The entry is stamped from NIFTY's edge, but the
+  // champion's book is marked on its OWN timeline — for a basket, the UNION of its constituents'
+  // timestamps (alignSeries). Those are different clocks. If any universe name's daily close
+  // publishes before NIFTY's (the feed's per-symbol publication lag is variable and measured), the book is
+  // marked at a bar LATER than the date this entry will carry, and the log silently records a
+  // decision made with data it claims not to have had. Nothing enforced the ordering; it held only
+  // because NIFTY happens to be a required source that refetches fresh.
+  // REFUSE rather than restamp: a restamped entry would sit on a date NIFTY has no close for,
+  // and the log is append-only so a wrong entry is permanent. A skipped day costs one tick of an
+  // already-slow clock; a look-ahead entry costs the only claim the log makes. Logged loudly so a
+  // frequent skip shows up as a message rather than as a mysteriously stalled trust clock.
+  const asOf = detail.mirror.asOf;
+  if (Number.isFinite(asOf) && asOf > edge.t) {
+    console.warn(`advisor: skipping ${istDate(edge.t)} — the champion's book is marked ${istDate(asOf)}, ahead of the NIFTY edge this entry would be stamped with. Recording it would put look-ahead into an append-only record.`);
+    return null;
+  }
 
   const positions = (detail.mirror.positions || []).filter((p) => p && p.qty !== 0);
   // GROUND RULE: real-capital guidance covers CASH-MARKET equity/ETF buys only.
@@ -157,16 +173,47 @@ function buildAdvisorEntry({ autopilot, getBotDetail, seriesFor }) {
   // and local persistence would keep a NaN/0-equity entry forever (only the Gist restore
   // sanitises). Better to skip the day than to write junk (same bar the sanitiser holds).
   if (!Number.isFinite(equity) || equity <= 0) return null;
+  // An ELIGIBLE entry with no targets is a real and meaningful state: the champion is mirrorable
+  // and is sitting entirely in CASH (a gated basket whose gate shut). That is guidance — "sell
+  // everything" — and downstream readers treat it as such. So it must never be produced by a DATA
+  // FAILURE instead. If the bot genuinely holds positions but every one of them is unpriceable,
+  // the filter below would silently turn "I hold ten names" into "I hold nothing", which reads as
+  // an instruction to liquidate. Refuse the day instead, exactly as the bogus-equity guard above
+  // does: skipping a day costs one tick of a slow clock, writing junk into an append-only
+  // real-money record costs the record.
+  if (eligible && positions.length && !positions.some((p) => Number.isFinite(p.price) && p.price > 0)) return null;
   const targets = !eligible
     ? []
     : positions
         .filter((p) => Number.isFinite(p.price) && p.price > 0)
-        .map((p) => ({
-          symbol: p.symbol,
-          qty: p.qty, // the bot's own share count (the client scales by capital/equity)
-          price: +p.price.toFixed(2), // the recorded reference mark for scaling/display (scoring itself is close-to-close via closeAtOrBefore)
-          weight: +((p.qty * p.price) / equity).toFixed(6), // fraction of the bot's equity
-        }));
+        .map((p) => {
+          // ★ RECORD THE CLOSE, NOT THE FILL. `p.price` comes from the engine's `lastPrices`,
+          // which `engine.js` sets to the FILL price on every execution (`lastPrices[key] =
+          // fillPrice`). The portfolio backtester marks each name at the close and then, on a
+          // rebalance bar, executes at `close x (1 +/- rate)` — overwriting the mark. So for any
+          // name that TRADED on this bar, `p.price` is the close inflated or deflated by the
+          // delivery cost rate, while a name merely HELD keeps its true close.
+          // ★★ THIS IS THE MECHANISM behind a long-standing mark discrepancy, now closed. Predicted drift against
+          // the served close is 1/(1-sellRate)-1 = +0.15384% for a name sold and 1/(1+buyRate)-1
+          // = -0.16832% for one bought, with exactly 0 for one held. MEASURED, across three
+          // separate dates and different symbol sets, +0.1536..+0.1541% and -0.1683..-0.1686%,
+          // with 5 of 9 entries exact. It uniquely explains every property recorded there — a
+          // factor SHARED across unrelated symbols (it is a constant rate, not per-symbol),
+          // STABLE across dates, BOTH signs inside one entry (a rebalance trims and tops up), and
+          // exactly zero for held names. The two candidates previously documented (a forming-bar
+          // mark; a provisional close later revised) were both wrong.
+          // The close is what this field claims to be, what a user comparing against their broker
+          // screen expects, and what the scoring path already uses. Fall back to the engine's mark
+          // only if the series cannot be read, which is better than recording nothing.
+          const close = closeAtOrBefore(seriesFor(p.symbol), edge.t);
+          const mark = Number.isFinite(close) && close > 0 ? close : p.price;
+          return {
+            symbol: p.symbol,
+            qty: p.qty, // the bot's own share count (the client scales by capital/equity)
+            price: +mark.toFixed(2), // the edge bar's CLOSE (scoring itself re-reads closes via closeAtOrBefore)
+            weight: +((p.qty * mark) / equity).toFixed(6), // fraction of the bot's equity, on the same mark
+          };
+        });
 
   return {
     date: istDate(edge.t), // one entry per IST data date — the append-once key
@@ -404,9 +451,22 @@ function buildAdvisorPayload({ log, seriesFor, universe = [], minDays = ADVISOR_
   // targets: [], so diffing today against the raw previous entry announced every name the
   // user already holds as "New". The server's own scoring carries the last ELIGIBLE book
   // forward; the panel must describe the same book.
+  // ★ KEYED ON `eligible` ALONE, deliberately. This used to also require `targets.length`, which
+  // conflated two states that record the same empty array and mean opposite things:
+  //   eligible:false, targets:[] -> STAND-ASIDE. No guidance was issued; carry the previous book.
+  //   eligible:true,  targets:[] -> IN CASH. Guidance WAS issued, and it was "sell everything"
+  //                                 (a gated basket whose gate shut). Skipping it is wrong.
+  // With the old guard, a gated champion that went to cash and then re-entered was diffed against
+  // the book from BEFORE the cash day. Today's book matched it, so the panel rendered "No change
+  // — nothing to do today" at a user who had been told to liquidate and was sitting in cash: they
+  // never bought back in. MEASURED on a three-day log (hold / cash / hold): the server's own
+  // scoring charged estCostPct 0.3% for the full round trip while the panel showed no action.
+  // `eligible` alone still excludes stand-aside entries, which is all the original guard was for
+  // — and `buildAdvisorEntry` now refuses to record an eligible-but-empty entry that came from
+  // unpriceable positions, so an empty book here always means genuinely in cash.
   let prevEligible = null;
   for (let i = entries.length - 2; i >= 0; i--) {
-    if (entries[i].eligible && (entries[i].targets || []).length) { prevEligible = entries[i]; break; }
+    if (entries[i].eligible) { prevEligible = entries[i]; break; }
   }
   // COVERAGE — how many of the trading days it COULD have recorded did it actually record?
   // The log only grows while the server is awake to see a new bar, and a free host sleeps.

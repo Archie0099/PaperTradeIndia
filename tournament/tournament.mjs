@@ -609,7 +609,22 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
           // board until the file is deleted.
           state = { deployedAt: s.deployedAt || null, live: s.live || {}, roster: s.roster || null, generation: s.generation || 0, history: Array.isArray(s.history) ? s.history : [], advisorLog: sanitizeAdvisorLog(s.advisorLog), advisorLogArchive: sanitizeAdvisorLog(s.advisorLogArchive) };
           if (Array.isArray(s.roster) && s.roster.length) {
-            roster = s.roster.map((b) => asRosterEntry(b, b.gen || 0));
+            // IDENTITY FLAGS COME FROM THE SEED, NOT FROM THE SAVED FILE. A restored entry carries
+            // only the keys that existed when it was written, so any field added to seed.mjs later
+            // silently reads as false — and `protected` and `benchmark` are not state, they are
+            // statements about what a row IS. `benchmark` shipped the same day the advisor learned
+            // to refuse the fair-bar control; without this, a state file written the morning before
+            // would restore that control WITHOUT the flag and hand the advisor ~105 names to
+            // suggest as real-money orders, which is the exact hole that change closed.
+            // Latent in production (the host's disk is ephemeral, and the remote restore sets
+            // `roster: null` by design), reachable on any box with a persistent data/ dir.
+            // Only these two are re-applied: everything else about a restored bot — its spec, its
+            // generation, whether a user removed it — is legitimately the saved file's business.
+            const seedIdentity = new Map(seed.map((b) => [b.id, { prot: !!b.protected, bench: !!b.benchmark }]));
+            roster = s.roster.map((b) => {
+              const id = seedIdentity.get(b.id);
+              return asRosterEntry(id ? { ...b, protected: id.prot, benchmark: id.bench } : b, b.gen || 0);
+            });
             rebuildBots();
             // If a stale/incompatible save compiles to NO bots, fall back to the
             // seed line-up rather than coming up with an empty leaderboard.
@@ -763,6 +778,14 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       followable: hasData,
       equity: finalEquity,
       positions: (res.finalPositions || []).map((p) => ({ ...p, side: p.qty >= 0 ? 'BUY' : 'SELL' })),
+      // WHEN this book was marked. A basket runs on the UNION of its constituents' timestamps
+      // (alignSeries), which is NOT the same clock as NIFTY — and the advisor stamps its
+      // append-only entries from NIFTY's edge. If any universe name publishes a daily close
+      // before NIFTY does (the feed's per-symbol publication lag is variable and measured),
+      // this runs AHEAD of that stamp, and an entry dated D would carry marks — and a rebalance
+      // decision — from D+1. That is look-ahead in the one record whose entire purpose is to have
+      // none. Publishing the timestamp lets the advisor refuse such a day instead of recording it.
+      asOf: (spansUniverse(bot.kind) ? (res.times || []) : (series || []).map((c) => c.t)).slice(-1)[0] ?? null,
     };
     // The bot's FULL equity curve, packed as light multi-resolution tiers, so the per-bot
     // PAGE can offer time-window zoom (1D/1W/.../MAX) at full resolution in every window.

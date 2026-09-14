@@ -432,3 +432,126 @@ test('a stand-aside stretch compounds the HELD book, not a daily re-levering (re
   assert.equal(track.retPct, 4, `a carried book must compound as held shares (got ${track.retPct}%)`);
   assert.equal(track.estCostPct, 0, 'and a carried book trades nothing at any point');
 });
+
+// --- IN CASH is guidance; STAND-ASIDE is not. They record the same empty array. ---------------
+// A gated champion whose gate shuts records `eligible:true, targets:[]` — it is mirrorable and
+// holds nothing, i.e. "sell everything". An F&O/PAIRS/control champion records
+// `eligible:false, targets:[]` — no guidance at all, so the previous book is carried.
+// `prevEligible` used to require targets.length and so skipped BOTH, which meant a champion that
+// went to cash and re-entered was diffed against the book from before the cash day: the panel
+// said "nothing to do today" to a user sitting in cash who never bought back in, while the
+// server's own scoring charged the full round trip.
+
+const cashDay = (t, date, eligible, targets) => ({ date, t, eligible, equity: 1_000_000, targets });
+
+test('prevEligible is the IN-CASH day, not the book from before it', () => {
+  const T0 = START, T1 = START + DAY, T2 = START + 2 * DAY;
+  const hold = [{ symbol: 'AAA', qty: 100, price: 100, weight: 0.01 }];
+  const log = [
+    cashDay(T0, '2026-09-01', true, hold),
+    cashDay(T1, '2026-09-02', true, []),   // gate shut -> in cash, still mirrorable
+    cashDay(T2, '2026-09-03', true, hold), // gate reopens
+  ];
+  const data = { AAA: [{ t: T0, c: 100 }, { t: T1, c: 100 }, { t: T2, c: 100 }], NIFTY: [{ t: T0, c: 200 }, { t: T1, c: 200 }, { t: T2, c: 200 }] };
+  const p = buildAdvisorPayload({ log, seriesFor: (s) => data[s] || [], universe: ['AAA'], minDays: 90, costRates: { buyRate: 0.001, sellRate: 0.001 } });
+  assert.equal(p.prevEligible.date, '2026-09-02', 'the cash day issued guidance ("sell everything") and must be what today is diffed against');
+  assert.equal(p.prevEligible.targets.length, 0, 'and it is genuinely an empty book, which the panel renders as "New: ..." for every name');
+});
+
+test('a STAND-ASIDE day is still skipped — the behaviour the old guard existed for (control)', () => {
+  const T0 = START, T1 = START + DAY, T2 = START + 2 * DAY;
+  const hold = [{ symbol: 'AAA', qty: 100, price: 100, weight: 0.01 }];
+  const log = [
+    cashDay(T0, '2026-09-01', true, hold),
+    cashDay(T1, '2026-09-02', false, []),  // F&O/PAIRS/control champion -> no guidance
+    cashDay(T2, '2026-09-03', true, hold),
+  ];
+  const data = { AAA: [{ t: T0, c: 100 }, { t: T1, c: 100 }, { t: T2, c: 100 }], NIFTY: [{ t: T0, c: 200 }, { t: T1, c: 200 }, { t: T2, c: 200 }] };
+  const p = buildAdvisorPayload({ log, seriesFor: (s) => data[s] || [], universe: ['AAA'], minDays: 90, costRates: { buyRate: 0.001, sellRate: 0.001 } });
+  assert.equal(p.prevEligible.date, '2026-09-01', 'an ineligible day issued no guidance, so the book before it still stands');
+});
+
+test('an eligible entry whose positions are ALL unpriceable is refused, not recorded as "in cash"', () => {
+  // Otherwise a data failure — a bot holding ten names whose prices all came back junk — would be
+  // written into the append-only record as an empty book, which downstream now reads as an
+  // instruction to liquidate.
+  const mk = (positions) => buildAdvisorEntry({
+    autopilot: { currentBot: { id: 'x' } },
+    getBotDetail: () => ({ ok: true, id: 'x', name: 'X', kind: 'BASKET', mirror: { followable: true, equity: 1_000_000, positions } }),
+    seriesFor: (s) => (s === 'NIFTY' ? [{ t: START, c: 100 }] : []),
+  });
+  assert.equal(mk([{ symbol: 'AAA', qty: 10, price: NaN }, { symbol: 'BBB', qty: 5, price: 0 }]), null, 'a held book with no usable price must skip the day');
+  const inCash = mk([]);
+  assert.ok(inCash, 'but a genuinely EMPTY book still records — that is the in-cash state, not a failure');
+  assert.equal(inCash.eligible, true);
+  assert.deepEqual(inCash.targets, []);
+  const partial = mk([{ symbol: 'AAA', qty: 10, price: 100 }, { symbol: 'BBB', qty: 5, price: NaN }]);
+  assert.equal(partial.targets.length, 1, 'a partially-priceable book still records what it can price');
+});
+
+// --- NO-HINDSIGHT is enforced, not assumed ----------------------------------------------------
+// The entry's DATE comes from NIFTY's edge; the champion's BOOK is marked on its own timeline —
+// for a basket, the union of its constituents' timestamps. Those are different clocks, and the
+// feed publishes each symbol's settled close on its own schedule. If a universe name's close
+// lands before NIFTY's, the book is marked a bar AHEAD of the date the entry will carry, and the
+// append-only log records a decision made with data it claims not to have had.
+
+test('an entry is REFUSED when the champion’s book is marked ahead of the NIFTY edge', () => {
+  const edgeT = START;
+  const mk = (asOf) => buildAdvisorEntry({
+    autopilot: { currentBot: { id: 'x' } },
+    getBotDetail: () => ({
+      ok: true, id: 'x', name: 'X', kind: 'BASKET',
+      mirror: { followable: true, equity: 1_000_000, asOf, positions: [{ symbol: 'AAA', qty: 10, price: 100 }] },
+    }),
+    seriesFor: (s) => (s === 'NIFTY' ? [{ t: edgeT, c: 100 }] : []),
+  });
+  assert.equal(mk(edgeT + DAY), null, 'a book marked a day AHEAD of the stamp is look-ahead and must not be recorded');
+  assert.ok(mk(edgeT), 'a book marked exactly at the edge is fine');
+  assert.ok(mk(edgeT - DAY), 'and a book marked BEHIND the edge is fine — stale, never look-ahead');
+  assert.ok(mk(null), 'a missing asOf must not block recording (older payloads, single-symbol bots)');
+});
+
+// --- the recorded mark is the CLOSE, not the engine's fill price -----------------------------
+// `engine.js` sets `lastPrices[key] = fillPrice` on every execution, and the portfolio backtester
+// executes at `close x (1 +/- rate)` after marking at the close — so a name that TRADED carried a
+// mark inflated/deflated by the delivery cost rate while a name merely HELD kept its true close.
+// That is exactly the drift measured in the log: +0.15384% sold, -0.16832% bought, 0 held.
+
+test('a recorded target price is the edge close, even when the engine hands over a fill price', () => {
+  const edgeT = START;
+  const CLOSE = 100;
+  const entry = buildAdvisorEntry({
+    autopilot: { currentBot: { id: 'x' } },
+    getBotDetail: () => ({
+      ok: true, id: 'x', name: 'X', kind: 'BASKET',
+      mirror: {
+        followable: true, equity: 1_000_000, asOf: edgeT,
+        positions: [
+          { symbol: 'SOLD', qty: 10, price: CLOSE * (1 - 0.001536046) },  // engine mark after a SELL fill
+          { symbol: 'BOUGHT', qty: 10, price: CLOSE * (1 + 0.001686046) }, // after a BUY fill
+          { symbol: 'HELD', qty: 10, price: CLOSE },                       // never traded this bar
+        ],
+      },
+    }),
+    seriesFor: (s) => (s === 'NIFTY' ? [{ t: edgeT, c: 200 }] : [{ t: edgeT, c: CLOSE }]),
+  });
+  for (const t of entry.targets) {
+    assert.equal(t.price, CLOSE, `${t.symbol} must record the CLOSE (${CLOSE}), not the engine's fill mark`);
+  }
+  // weight rides on the same mark, so it cannot disagree with the price beside it.
+  for (const t of entry.targets) assert.equal(t.weight, +((10 * CLOSE) / 1_000_000).toFixed(6));
+});
+
+test('the mark falls back to the engine price when the series cannot be read', () => {
+  const edgeT = START;
+  const entry = buildAdvisorEntry({
+    autopilot: { currentBot: { id: 'x' } },
+    getBotDetail: () => ({
+      ok: true, id: 'x', name: 'X', kind: 'BASKET',
+      mirror: { followable: true, equity: 1_000_000, asOf: edgeT, positions: [{ symbol: 'GONE', qty: 10, price: 77.5 }] },
+    }),
+    seriesFor: (s) => (s === 'NIFTY' ? [{ t: edgeT, c: 200 }] : []), // no series for GONE
+  });
+  assert.equal(entry.targets[0].price, 77.5, 'recording the engine mark beats recording nothing');
+});

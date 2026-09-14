@@ -477,3 +477,33 @@ test('evolve() DOES return challengers once the data is there (the control for t
   });
   assert.ok(challengers.length > 0, 'otherwise the test above proves only that evolve is broken');
 });
+
+// --- (10) a restored roster must not lose IDENTITY flags --------------------------------------
+// A state file carries only the keys that existed when it was written. `benchmark` shipped the
+// same day the advisor learned to refuse the fair-bar control — so a file written that morning
+// would restore the control WITHOUT the flag and hand the advisor ~105 names to suggest as
+// real-money orders. `protected` and `benchmark` describe what a row IS, so they come from the
+// seed; everything else about a restored bot is the saved file's business.
+
+import { mkdtempSync as mkdtemp2, writeFileSync as write2 } from 'node:fs';
+import { tmpdir as tmp2 } from 'node:os';
+import { join as join2 } from 'node:path';
+
+test('identity flags are re-applied from the seed when a roster is restored', async () => {
+  const seed = [
+    { ...CASH_SEED[0] },
+    { id: 'ctrl', name: 'The fair bar', kind: 'EQ', symbol: 'NIFTY', benchmark: true, spec: { kind: 'EQ', name: 'The fair bar', weight: 1 } },
+    { id: 'bh', name: 'Buy & Hold', kind: 'EQ', symbol: 'NIFTY', protected: true, spec: { kind: 'EQ', name: 'Buy & Hold', weight: 1 } },
+  ];
+  // A state file from BEFORE either flag existed: same ids, same specs, no identity keys.
+  const stale = seed.map(({ benchmark, protected: p, ...rest }) => rest);
+  const dir = mkdtemp2(join2(tmp2(), 'pti-roster-'));
+  const stateFile = join2(dir, 'tournament.json');
+  write2(stateFile, JSON.stringify({ deployedAt: 1700000000000, live: {}, generation: 0, history: [], roster: stale }));
+
+  const t = await createTournament({ seed, backfillData: { NIFTY: series() }, persist: true, stateFile, evolutionEnabled: false });
+  await t.init();
+  assert.equal(t.getBotDetail('ctrl').benchmark, true, 'the control must come back flagged, or the advisor would suggest it');
+  assert.equal(t._roster().find((b) => b.id === 'bh').protected, true, 'and the protected row must come back protected');
+  assert.equal(t.getBotDetail('gated').benchmark, false, 'an ordinary bot stays unflagged');
+});
