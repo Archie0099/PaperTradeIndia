@@ -82,13 +82,73 @@ function closeStdev(closes, end, n) {
 }
 
 // Evaluate a DSL node at bar i. Returns number | boolean | null.
-function evalNode(node, closes, i) {
+// `ctx` (OPTIONAL, default null) carries the extra series an expression may need beyond the
+// one `closes` array. It was added because THREE separate research candidates were blocked by
+// the same thing — a rank expression could only ever see one price series — and they looked
+// like unrelated dead ends until that was noticed.
+//
+// It is deliberately ADDITIVE: every existing call site passes three arguments and behaves
+// byte-identically, and any op that needs `ctx` returns null when it is absent. A null score
+// is already how the engine represents "not warm yet" (the name is simply excluded from that
+// rebalance), so a spec used in a context that cannot supply the series degrades to holding
+// nothing rather than to a wrong number — which is the only safe direction for it to fail.
+//
+//   ctx.raw   the symbol's RAW (unadjusted-for-dividends) closes, parallel to `closes`.
+//             `closes` is the ADJUSTED series, so the two together carry the dividend stream.
+function evalNode(node, closes, i, ctx = null) {
   if (typeof node === 'number') return node;
   if (typeof node === 'boolean') return node;
   if (!Array.isArray(node) || node.length === 0) return null;
   const [op, ...a] = node;
   switch (op) {
     case 'price': return closes[i];
+    // TRAILING DIVIDEND YIELD over the last n bars, recovered from price data alone.
+    //
+    // Yahoo discounts PAST prices for every dividend that comes AFTER them, so for a given bar
+    // k = adjusted/raw is the product of all LATER adjustment factors and therefore RISES
+    // forward in time toward exactly 1.0 at the final bar. Between ex-dates k is flat; at each
+    // ex-date it steps UP. So k[i] / k[i-n] − 1 is precisely the cumulative dividend return
+    // paid over those n bars, and nothing else — splits and bonuses cancel because BOTH series
+    // carry them (Yahoo's raw close is itself already split-adjusted).
+    //
+    // ★ MEASURED before this op existed, across all 105 universe names: 4,228 ex-dates, median
+    // implied yield 1.11%/yr, COALINDIA highest at 7.29% and ABCAPITAL at 0.00% — both
+    // independently correct. Largest move anywhere was a real special dividend, and nothing
+    // corporate-action-sized leaked in. See backtest/research/adjusted-vs-raw.mjs.
+    //
+    // ★ TWO TRAPS, both of which produced confident nonsense before being caught, so they are
+    // handled here rather than left to the caller: the direction is the opposite of the
+    // intuitive one (a step UP is the dividend), and the ratio jitters ~1e-6 every bar because
+    // both series are stored rounded — hence the explicit guards below rather than a bare
+    // division.
+    case 'divYield': {
+      const n = a[0];
+      const raw = ctx && ctx.raw;
+      if (!raw || i < n) return null;                       // no raw series, or not warm yet
+      const cNow = closes[i], cPast = closes[i - n];
+      const rNow = raw[i], rPast = raw[i - n];
+      if (!(cNow > 0 && cPast > 0 && rNow > 0 && rPast > 0)) return null;
+      const kNow = cNow / rNow, kPast = cPast / rPast;
+      if (!(kPast > 0) || !Number.isFinite(kNow) || !Number.isFinite(kPast)) return null;
+      const y = kNow / kPast - 1;
+      // ★ A NOISE FLOOR IS MANDATORY HERE, in BOTH directions, and it is not decoration.
+      //
+      // Negative side: a dividend stream cannot be negative (adjustment can only raise k going
+      // forward), so anything below zero is jitter or a feed quirk. Emitting it would rank a
+      // name ABOVE a genuine payer whenever the sign is flipped for a "lowest yield" sort.
+      //
+      // Positive side: this is a ratio of ratios, so a NON-PAYER comes back at ~1e-16 rather
+      // than exactly 0 — pure floating-point residue from the multiply/divide round trip. As a
+      // RANK that is actively harmful: it orders companies that pay nothing at all against each
+      // other by arithmetic noise, producing a confident-looking selection out of nothing.
+      // (The same trap, at a larger scale, made an earlier universe-wide check flag 103 of 105
+      // names as contaminated — see backtest/research/adjusted-vs-raw.mjs.)
+      //
+      // 1e-6 is 0.0001% of yield: orders of magnitude below the smallest real dividend (a token
+      // payout is ~0.1%), and orders of magnitude above float residue. So non-payers tie at
+      // exactly 0, as they should.
+      return y > 1e-6 ? y : 0;
+    }
     case 'sma': return sma(closes, i, a[0]);
     case 'ema': return ema(closes, i, a[0]);
     case 'rsi': return rsi(closes, i, a[0] || 14);
@@ -121,7 +181,7 @@ function evalNode(node, closes, i) {
       return m == null ? null : closes[i] > m ? 1 : 0;
     }
     case '+': case '-': case '*': case '/': case 'min': case 'max': {
-      const x = evalNode(a[0], closes, i), y = evalNode(a[1], closes, i);
+      const x = evalNode(a[0], closes, i, ctx), y = evalNode(a[1], closes, i, ctx);
       if (x == null || y == null) return null;
       if (op === '+') return x + y;
       if (op === '-') return x - y;
@@ -131,21 +191,21 @@ function evalNode(node, closes, i) {
       return Math.max(x, y);
     }
     case 'clamp': {
-      const x = evalNode(a[0], closes, i), lo = evalNode(a[1], closes, i), hi = evalNode(a[2], closes, i);
+      const x = evalNode(a[0], closes, i, ctx), lo = evalNode(a[1], closes, i, ctx), hi = evalNode(a[2], closes, i, ctx);
       if (x == null || lo == null || hi == null) return null;
       return Math.max(lo, Math.min(hi, x));
     }
     case '>': case '<': case '>=': case '<=': {
-      const x = evalNode(a[0], closes, i), y = evalNode(a[1], closes, i);
+      const x = evalNode(a[0], closes, i, ctx), y = evalNode(a[1], closes, i, ctx);
       if (x == null || y == null) return false; // unknown -> false (stay flat)
       if (op === '>') return x > y;
       if (op === '<') return x < y;
       if (op === '>=') return x >= y;
       return x <= y;
     }
-    case 'and': return a.every((nd) => evalNode(nd, closes, i) === true);
-    case 'or': return a.some((nd) => evalNode(nd, closes, i) === true);
-    case 'not': return evalNode(a[0], closes, i) !== true;
+    case 'and': return a.every((nd) => evalNode(nd, closes, i, ctx) === true);
+    case 'or': return a.some((nd) => evalNode(nd, closes, i, ctx) === true);
+    case 'not': return evalNode(a[0], closes, i, ctx) !== true;
     default: return null; // unknown op -> null (false in a condition)
   }
 }
@@ -154,7 +214,7 @@ function evalNode(node, closes, i) {
 // Single-period indicators take one integer 1..400. The richer ones added for
 // baskets (slope/distHigh/zscore/atr/regime) follow the same one-int shape;
 // macd (3 ints) and volratio (2 ints) get explicit arity checks below.
-const PERIOD_OPS = new Set(['sma', 'ema', 'rsi', 'mom', 'high', 'low', 'vol', 'slope', 'distHigh', 'zscore', 'atr', 'regime']);
+const PERIOD_OPS = new Set(['sma', 'ema', 'rsi', 'mom', 'high', 'low', 'vol', 'slope', 'distHigh', 'zscore', 'atr', 'regime', 'divYield']);
 const BINARY_OPS = new Set(['+', '-', '*', '/', 'min', 'max', '>', '<', '>=', '<=']);
 const isPeriod = (x) => Number.isInteger(x) && x >= 1 && x <= 400;
 

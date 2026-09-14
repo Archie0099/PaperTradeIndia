@@ -157,7 +157,7 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
   } else {
     A = alignSeries(dataForUniverse, marketSeries);
   }
-  const { master, priceGrid, realIdx, closesBy } = A;
+  const { master, priceGrid, realIdx, closesBy, rawsBy } = A;
 
   const engine = freshEngine(cash);
   const cm = costModel || flatCosts(costBps);
@@ -379,7 +379,7 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
           const ri = realIdx[s][gi];
           if (ri < 0) continue; // not listed yet
           const realCloses = closesBy[s];
-          if (spec.gate !== undefined && evalNode(spec.gate, realCloses, ri) !== true) continue;
+          if (spec.gate !== undefined && evalNode(spec.gate, realCloses, ri, { raw: rawsBy[s] }) !== true) continue;
           eligible.push({ sym: s, closes: realCloses, ri });
         }
       }
@@ -394,7 +394,7 @@ function runPortfolioBacktest({ spec, dataBySymbol, marketSeries = null, cash = 
       const candidates = [];
       for (const e of eligible) {
         const { sym: s, closes: realCloses, ri } = e;
-        const ruleScore = evalNode(spec.rank, realCloses, ri);
+        const ruleScore = evalNode(spec.rank, realCloses, ri, { raw: rawsBy[s] });
         let score = ruleScore;
         let factorBreakdown = null;
         if (spec.factors) {
