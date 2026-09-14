@@ -63,4 +63,29 @@ function checkResetConfirm(standings, query = {}) {
   return { ok: true };
 }
 
-module.exports = { checkResetConfirm };
+/**
+ * The Express middleware that applies the rule above.
+ *
+ * It lives here rather than inline in server.js for the same reason the comparison does: an
+ * inline arrow function cannot be called by a test, so inverting `if (!verdict.ok)` would leave
+ * the whole suite green while the route stood wide open. A factory taking a GETTER (rather than
+ * the tournament itself) is what makes that testable without booting a twenty-year backfill —
+ * server.js passes `() => tournament`, a test passes `() => stub`.
+ *
+ * ★ RESIDUAL GAP, stated rather than hidden: this covers the middleware's LOGIC, not the route's
+ * WIRING. Deleting it from the `app.post(...)` chain is still only caught by a live request, and
+ * so is the ordering (it must run BEFORE `tournRateLimit`, or refused resets burn the shared
+ * mutation window). Both are verified by repro against a running server, not by this suite.
+ */
+function resetConfirmMiddleware(getTournament) {
+  return (req, res, next) => {
+    const tournament = typeof getTournament === 'function' ? getTournament() : null;
+    if (!tournament) return res.status(503).json({ error: 'Tournament is warming up' });
+    // `req.query` is forwarded WHOLESALE so the parameter name lives in exactly one place.
+    const verdict = checkResetConfirm(tournament.getStandings(), req.query || {});
+    if (!verdict.ok) return res.status(verdict.status).json({ error: verdict.error });
+    return next();
+  };
+}
+
+module.exports = { checkResetConfirm, resetConfirmMiddleware };

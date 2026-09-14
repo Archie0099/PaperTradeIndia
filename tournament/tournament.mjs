@@ -1409,10 +1409,15 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     const keyOf = (sym, spec) => `${sym}|${specKey(spec)}`;
     const existing = new Set(roster.map((b) => keyOf(b.symbol, b.spec)));
     const best = challengers.find((ch) => !existing.has(keyOf(ch.symbol, ch.spec)));
-    // Every challenger duplicates something already on the board — a STRUCTURAL cause, not a
-    // competitive one, so say which it is rather than letting the UI report 'no challenger beat
-    // the field'. (Grow mode keeps every bot forever, so a mature board genuinely runs out of
-    // novel mutations; that is worth knowing rather than looking like repeated bad luck.)
+    // TWO DIFFERENT STRUCTURAL CAUSES, and conflating them would repeat the very bug this was
+    // meant to fix. `evolve()` ends with `.filter((ch) => ch.score)`, and `scoreSpec` returns null
+    // whenever a mutated spec cannot be scored on the loaded data — a failed `safeCompile`, a
+    // BASKET with fewer than 2 present names, a PAIRS with fewer than 4. So an empty
+    // `challengers` means NOTHING WAS SCORABLE, which is a data/pool problem, while a non-empty
+    // list with no `best` means every candidate was a structural DUPLICATE of a bot already on
+    // the board, which is what a mature grow-mode roster genuinely runs into. Reporting the
+    // second when the first happened would send someone hunting for duplicates that do not exist.
+    if (!challengers.length) return { generation: state.generation, promoted: null, retired: null, reason: 'no bred challenger could be scored on the loaded data (too few present names for its kind, or a spec that failed to compile)' };
     if (!best) return { generation: state.generation, promoted: null, retired: null, reason: 'every bred challenger duplicates a bot already on the board' };
 
     // Weakest current bot — the quality bar a challenger must clear to enter the

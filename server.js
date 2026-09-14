@@ -22,7 +22,7 @@ const marketRoutes = require('./src/routes/market');
 // The reset confirmation rule — its own module so the route and its TEST run the same code,
 // including the query-parameter name. See src/resetGuard.js for what it protects and why it is
 // a state token rather than a password.
-const { checkResetConfirm } = require('./src/resetGuard');
+const { resetConfirmMiddleware } = require('./src/resetGuard');
 
 const app = express();
 
@@ -148,19 +148,18 @@ app.post('/api/tournament/evolve', tournRateLimit, (req, res) => {
 // ORDER MATTERS: the confirm check runs BEFORE `tournRateLimit`, not after. `tournRateLimit`
 // stamps the shared 600ms mutation window as it passes a request through, so running it first
 // meant every REFUSED reset burned that window — measured: a bogus reset 400s, and a legitimate
-// `add` one moment later gets 429. That handed an anonymous script a way to keep every mutating
-// route locked out indefinitely, which is a denial-of-control path introduced by the very commit
-// that added the guard. It also told a legitimate user who reloaded and clicked again "Too fast"
-// — a second, unrelated-looking failure. Refusing before the limiter costs nothing: the check is
-// a string compare against an already-cached board.
-const resetConfirm = (req, res, next) => {
-  if (!tournament) return res.status(503).json({ error: 'Tournament is warming up' });
-  // `req.query` is forwarded WHOLESALE so the parameter name lives in exactly one place — the
-  // shared guard the tests also call. See src/resetGuard.js for why that matters.
-  const verdict = checkResetConfirm(tournament.getStandings(), req.query);
-  if (!verdict.ok) return res.status(verdict.status).json({ error: verdict.error });
-  next();
-};
+// `add` one moment later gets 429. It also told a legitimate user who reloaded and clicked again
+// "Too fast", a second unrelated-looking failure. Refusing before the limiter costs nothing: the
+// check is a string compare against an already-cached board.
+//
+// ★ WHAT THIS DOES *NOT* FIX, so nobody reads the above as more than it is: the generic
+// window-holding DoS is still open. `remove` and `add` stamp the window in `tournRateLimit` and
+// only then decide the request was bad — so a script POSTing `/api/tournament/remove?id=nope`
+// every ~600ms still holds the shared window continuously and makes every legitimate click race
+// for a gap. That predates this change and is part of the open "lock the mutating POSTs"
+// decision; the reorder closes it for RESET only, which is the door with the irreversible blast
+// radius behind it.
+const resetConfirm = resetConfirmMiddleware(() => tournament);
 app.post('/api/tournament/reset', resetConfirm, tournRateLimit, (req, res) => {
   res.json({ ...tournament.reset(), standings: tournament.getStandings() });
 });

@@ -303,8 +303,17 @@ test('the leaderboard row carries the benchmark flag, and ordinary rows carry fa
 import guardMod from '../src/resetGuard.js';
 const { checkResetConfirm } = guardMod;
 
-// Called exactly as the route calls it: the live standings object, and a query-shaped object.
-const tryReset = (t, confirm) => checkResetConfirm(t.getStandings(), confirm === undefined ? {} : { confirm: String(confirm) });
+// Called exactly as the ROUTE calls it — and, crucially, it also does what the route does NEXT.
+// ★ The first version returned the verdict and stopped there, which quietly made the "the clock
+// is untouched" assertion below VACUOUS: a pure predicate cannot mutate anything, so that line
+// passed no matter what the guard decided. That is the same defect this file's header describes,
+// reintroduced one layer up while fixing it. Performing the reset on a passing verdict restores
+// the linkage, so "refused" and "the clock did not move" are once again the same claim.
+const tryReset = (t, confirm) => {
+  const verdict = checkResetConfirm(t.getStandings(), confirm === undefined ? {} : { confirm: String(confirm) });
+  if (verdict.ok) t.reset(); // exactly what the route does once the guard passes
+  return verdict;
+};
 
 test('a reset without the current deployedAt is refused', async () => {
   const t = await createTournament({ seed: CASH_SEED, backfillData: { NIFTY: series() }, persist: false, evolutionEnabled: false });
@@ -324,7 +333,7 @@ test('a reset WITH the current deployedAt is allowed, and the value then goes st
   await t.init();
   const before = t.getStandings().deployedAt;
   assert.equal(tryReset(t, before).ok, true, 'the control panel, which has read the board, can still reset');
-  t.reset();
+  assert.notEqual(t.getStandings().deployedAt, before, 'a PASSING verdict must actually have reset the run — otherwise the refusal tests prove nothing by contrast');
   // Replay protection falls out of the design rather than being a separate mechanism: reset
   // re-stamps deployedAt, so the value the caller just used no longer matches anything.
   assert.equal(tryReset(t, before).ok, false, 'the same confirm cannot be replayed against the new run');
@@ -360,4 +369,111 @@ test('a basket naming its own marketSymbol is REJECTED, not quietly evaluated ag
   assert.ok(err, 'naming a proxy that does not exist must be an ERROR, never a silent no-op');
   assert.match(err, /marketSymbol/, 'and the error must name the offending field');
   assert.match(err, /NIFTY/, 'and say what would actually have happened');
+});
+
+// --- (8) the MIDDLEWARE itself, not just the comparison inside it ----------------------------
+// Extracting `checkResetConfirm` closed the "test copies the logic" gap for the comparison, but
+// the Express middleware wrapping it was still an inline arrow in server.js that no test could
+// call — so inverting `if (!verdict.ok)` left the whole suite green with the route wide open.
+// `resetConfirmMiddleware` is a factory taking a GETTER precisely so it can be driven here
+// without booting a 20-year backfill.
+// ★ STILL NOT COVERED, and said out loud rather than implied: the route's WIRING (is this
+// middleware actually attached, and is it attached BEFORE tournRateLimit?). Both are verified by
+// repro against a running server, not by this file.
+
+const { resetConfirmMiddleware } = guardMod;
+
+// A fake res that records what the middleware did, in the shape Express gives it.
+const fakeRes = () => {
+  const out = { status: null, body: null };
+  return {
+    out,
+    status(code) { out.status = code; return this; },
+    json(body) { out.body = body; return this; },
+  };
+};
+
+test('the reset middleware refuses a bad confirm and does NOT call next()', () => {
+  const stub = { getStandings: () => ({ deployedAt: 1750000000000 }) };
+  const mw = resetConfirmMiddleware(() => stub);
+  let nexted = 0;
+  const res = fakeRes();
+  mw({ query: { confirm: 'nope' } }, res, () => { nexted++; });
+  assert.equal(nexted, 0, 'a refused reset must never reach the handler');
+  assert.equal(res.out.status, 400);
+  assert.match(res.out.body.error, /trust clock/);
+});
+
+test('the reset middleware calls next() exactly once on a good confirm, and answers nothing itself', () => {
+  const stub = { getStandings: () => ({ deployedAt: 1750000000000 }) };
+  const mw = resetConfirmMiddleware(() => stub);
+  let nexted = 0;
+  const res = fakeRes();
+  mw({ query: { confirm: '1750000000000' } }, res, () => { nexted++; });
+  assert.equal(nexted, 1, 'a valid reset must pass through');
+  assert.equal(res.out.status, null, 'and the middleware must not have written a response itself');
+});
+
+test('the reset middleware 503s before the tournament exists, and never calls next()', () => {
+  // Ordering detail that matters: it must not dereference a null tournament, and "not ready" is
+  // not the same answer as "wrong token".
+  const mw = resetConfirmMiddleware(() => null);
+  let nexted = 0;
+  const res = fakeRes();
+  mw({ query: { confirm: 'anything' } }, res, () => { nexted++; });
+  assert.equal(nexted, 0);
+  assert.equal(res.out.status, 503);
+});
+
+test('the reset middleware treats a missing query object as a refusal, not a crash', () => {
+  // Express always supplies `req.query`, but a middleware that throws on a malformed request is
+  // a 500 where a 400 belongs, and on this route a 500 is indistinguishable from an outage.
+  const stub = { getStandings: () => ({ deployedAt: 1750000000000 }) };
+  const mw = resetConfirmMiddleware(() => stub);
+  let nexted = 0;
+  const res = fakeRes();
+  assert.doesNotThrow(() => mw({}, res, () => { nexted++; }));
+  assert.equal(nexted, 0);
+  assert.equal(res.out.status, 400);
+});
+
+// --- (9) "no challenger could be scored" is a REAL state, not a defensive branch --------------
+// `runGeneration` reports two different structural causes: an empty `challengers` list means
+// nothing was SCORABLE, while a non-empty list with no winner means every candidate DUPLICATED a
+// bot already on the board. Conflating them would repeat the "reports the wrong cause" bug the
+// round set out to fix — so the premise is worth pinning: evolve() really can return nothing.
+// ★ The runGeneration BRANCH itself is not driven here. Forcing it needs a roster whose every
+// mutation is unscorable, and a fixture I cannot verify actually reaches the branch is worse
+// than none (twice today a fixture passed while locking nothing). The reachability below is the
+// honest half; the reason string is diagnostic-only, so the residual risk is a wrong toast.
+
+test('evolve() returns NO challengers when none can be scored on the loaded data', async () => {
+  const { evolve } = await import('../tournament/evolve.mjs');
+  const parent = {
+    id: 'bk', name: 'Basket', kind: 'BASKET', symbol: '2 stocks',
+    spec: { kind: 'BASKET', name: 'Basket', universe: ['AAA', 'BBB'], rank: ['mom', 252, 21], k: 1, rebalanceBars: 21 },
+  };
+  // No price data at all: a BASKET/PAIRS challenger fails its present-names check and an EQ/FNO
+  // one finds no series for its symbol, so every scoreSpec returns null and the .filter drops it.
+  const challengers = evolve({
+    roster: [parent], dataBySymbol: {},
+    eqSymbols: [], fnoSymbols: [], basketSymbols: ['AAA', 'BBB'],
+    n: 16, seed: 101, cash: 10_000_000, scoreFromT: null,
+  });
+  assert.equal(challengers.length, 0, 'with no loaded data, nothing is scorable — so the empty-list branch is genuinely reachable');
+});
+
+test('evolve() DOES return challengers once the data is there (the control for the above)', async () => {
+  const { evolve } = await import('../tournament/evolve.mjs');
+  const bars = series(600);
+  const parent = {
+    id: 'eq', name: 'SMA cross', kind: 'EQ', symbol: 'NIFTY',
+    spec: { kind: 'EQ', name: 'SMA cross', entry: ['>', ['sma', 20], ['sma', 100]], exit: ['<', ['sma', 20], ['sma', 100]] },
+  };
+  const challengers = evolve({
+    roster: [parent], dataBySymbol: { NIFTY: bars },
+    eqSymbols: ['NIFTY'], fnoSymbols: [], basketSymbols: [],
+    n: 16, seed: 101, cash: 10_000_000, scoreFromT: null,
+  });
+  assert.ok(challengers.length > 0, 'otherwise the test above proves only that evolve is broken');
 });
