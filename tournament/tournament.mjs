@@ -910,6 +910,15 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
         note: bot.note || res.note || '',
         explain: explainSpec(bot.spec),
         protected: !!bot.protected,
+        // Is this row the fair-bar CONTROL? The leaderboard needs it to say so out loud: the row
+        // otherwise looks exactly like a strategy, sits in a ranked position like a strategy, and
+        // a reader sorting by Sharpe has no way to know it is the yardstick the others are being
+        // measured AGAINST. Its name does some of that work; a marker does it reliably.
+        // NOTE the protected Buy & Hold is deliberately NOT flagged, even though it is also a
+        // reference line. It is an INVESTABLE baseline — one ETF — that the advisor may legitimately
+        // suggest, whereas this is a no-information control over ~105 names. Folding both under one
+        // flag would silently mute the advisor for Buy & Hold, which would be a real regression.
+        benchmark: !!bot.benchmark,
         equity: Math.round(res.metrics.finalEquity),
         liveReturnPct: +liveReturnPct.toFixed(2), // 1D (today's move; intraday = today's session)
         // Trailing-window returns (marked-to-market). null = not enough history for that window.

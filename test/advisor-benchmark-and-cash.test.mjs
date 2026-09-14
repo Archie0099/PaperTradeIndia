@@ -261,3 +261,25 @@ test('the control is not breeding stock even when it is the ONLY thing left to b
     assert.doesNotMatch(b.name, /fair bar/i, `a challenger bred off the control reached the board: ${b.name}`);
   }
 });
+
+// --- (5) the leaderboard ROW must carry the flag too -----------------------------------------
+// getBotDetail already carried it (the advisor reads it there), but the board row did not, so
+// the leaderboard had no way to mark the control and it read as an ordinary competitor.
+
+test('the leaderboard row carries the benchmark flag, and ordinary rows carry false', async () => {
+  const t = await createTournament({
+    seed: [
+      { ...CASH_SEED[0] },
+      { id: 'ctrl', name: 'The fair bar', kind: 'EQ', symbol: 'NIFTY', benchmark: true, spec: { kind: 'EQ', name: 'The fair bar', weight: 1 } },
+    ],
+    backfillData: { NIFTY: series() },
+    persist: false,
+    evolutionEnabled: false,
+  });
+  await t.init();
+  const bots = t.getStandings().bots;
+  const ctrl = bots.find((b) => b.id === 'ctrl');
+  const ordinary = bots.find((b) => b.id === 'gated');
+  assert.equal(ctrl.benchmark, true, 'the control must be identifiable from the board payload alone');
+  assert.equal(ordinary.benchmark, false, 'and an ordinary strategy must be a real false, not undefined');
+});

@@ -565,3 +565,56 @@ test('an older payload without the cash fields renders exactly as before', async
   assert.doesNotMatch(page, /fully in cash/);
   assert.doesNotMatch(page, /undefined/, 'a missing field must never reach the screen');
 });
+
+// --- the REF marker: the fair bar must not read as a competitor -------------------------------
+// The control ranks in place like a strategy, so without a marker a reader sorting by Sharpe has
+// no way to tell that the row mid-table is the yardstick the others are measured against. These
+// lock the marker AND the explanation, because a badge nobody can decode is decoration.
+
+test('a benchmark row is marked REF and explained under the table', async () => {
+  const dom = setupDom();
+  const data = standings();
+  data.bots[2].benchmark = true; // the BASKET row stands in for the fair bar
+  const app = dom.makeApp({ api: Object.assign(dom.makeApiStub(), { tournament: async () => data }) });
+  await renderTournament(app);
+
+  const row = dom.$('#tourn-table tr[data-id="bk"]');
+  assert.ok(row.className.includes('bot-row-ref'), 'the row itself is styled as a reference line');
+  assert.match(row.textContent, /REF/, 'the name cell carries the badge');
+
+  const note = dom.$('#tourn-table').textContent;
+  assert.match(note, /marks a reference row, not a competitor/, 'the badge is explained in words');
+  assert.match(note, /no ranking signal, no filter and no market timing/, 'and says exactly what the row holds');
+  assert.match(note, /has shown survivorship rather than stock-picking/, 'and states the conclusion a reader is meant to draw');
+});
+
+test('the REF row keeps its ranked position — the marker is a label, never a re-sort', async () => {
+  // Seeing who sits above and below the bar is the entire point of putting it on the board, so
+  // it must never be pinned to the top or floated out of the ranking.
+  // Assert the INVARIANT, not a hardcoded order: the board applies its own default column sort,
+  // so the payload order is not the render order and writing one down would only lock in
+  // whatever today's default happens to be. Render the same board twice — once with the flag,
+  // once without — and require the two orderings to be identical.
+  const order = async (withFlag) => {
+    const dom = setupDom();
+    const data = standings();
+    if (withFlag) data.bots[2].benchmark = true;
+    const app = dom.makeApp({ api: Object.assign(dom.makeApiStub(), { tournament: async () => data }) });
+    await renderTournament(app);
+    return [...dom.$('#tourn-table').querySelectorAll('tr[data-id]')].map((r) => r.getAttribute('data-id'));
+  };
+  const withoutFlag = await order(false);
+  const withFlag = await order(true);
+  assert.equal(withFlag.length, 3, 'all three rows render either way');
+  assert.deepEqual(withFlag, withoutFlag, 'marking a row REF must not move it in the ranking');
+});
+
+test('with no benchmark on the board there is no badge and no footnote', async () => {
+  // The explanation must not become permanent furniture on a board that has no control row.
+  const dom = setupDom();
+  await renderTournament(appWith(dom)); // standings() has no benchmark flag anywhere
+  const txt = dom.$('#tourn-table').textContent;
+  assert.doesNotMatch(txt, /REF/);
+  assert.doesNotMatch(txt, /reference row/);
+  assert.equal(dom.$('#tourn-table .bot-row-ref'), null);
+});

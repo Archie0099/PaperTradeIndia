@@ -264,11 +264,20 @@ function render(app, data) {
       ? el('td', {}, [kindBadge, el('span', { class: 'muted', style: 'font-size:10px;margin-left:5px' }, b.interval)])
       : el('td', {}, kindBadge);
     // The Bot cell carries the name + a "›" open-hint (the whole row opens the bot page).
+    // A CONTROL row also carries a REF badge. Without it the fair bar is indistinguishable from a
+    // strategy: it ranks in place like one, and a reader sorting by Sharpe cannot tell that the
+    // row sitting mid-table is the yardstick every row above and below it is measured against.
+    // It deliberately keeps its ranked POSITION — seeing who is above and below it is the entire
+    // point of putting it on the board — so the marker is a label, never a re-sort or a pin.
     const nameCell = el('td', {}, [
       el('span', { title: b.note || '' }, b.gen > 0 ? `${b.name}  ·g${b.gen}` : b.name),
+      ...(b.benchmark ? [el('span', {
+        class: 'ref-badge',
+        title: 'A reference row, not a competitor: the whole universe held at equal weight with no ranking signal, no filter and no market timing. A strategy that cannot beat this has shown survivorship, not stock-picking.',
+      }, 'REF')] : []),
       el('span', { class: 'open-hint', style: 'margin-left:7px;font-weight:700' }, '›'),
     ]);
-    const row = el('tr', { 'data-id': b.id, class: 'bot-row' }, [
+    const row = el('tr', { 'data-id': b.id, class: 'bot-row' + (b.benchmark ? ' bot-row-ref' : '') }, [
       el('td', { class: 'num' }, String(i + 1)),
       nameCell,
       el('td', { class: 'num' }, b.symbol),
@@ -306,6 +315,20 @@ function render(app, data) {
   });
   table.append(tbody);
   root.append(table);
+  // Say what REF means, once, under the table — a badge nobody can decode is decoration. Shown
+  // only when a control is actually on the board, so this never becomes permanent furniture.
+  // The point it makes is the board's whole reason for existing: this universe is today's
+  // survivors held fixed across history, so a no-signal portfolio of the same names already
+  // beats the index for free. "Beats NIFTY" is therefore not an achievement, and the REF row is
+  // the line that makes that unavoidable rather than something you have to be told.
+  if (ordered.some((b) => b.benchmark)) {
+    root.append(el('div', { class: 'muted', style: 'font-size:12px;margin-top:8px;line-height:1.5' }, [
+      el('span', { class: 'ref-badge', style: 'margin:0 6px 0 0' }, 'REF'),
+      'marks a reference row, not a competitor — the whole universe at equal weight, with no ranking signal, no filter and no market timing. This universe is today’s survivors held fixed across history, so a portfolio of the same names with no information in it already beats the index. Read every strategy against ',
+      el('span', { style: 'font-weight:600' }, 'that row'),
+      ', not against NIFTY: one that beats the index but lands below it has shown survivorship rather than stock-picking.',
+    ]));
+  }
 
   // Equity race: every bot, normalised; the last-opened (selected) one bright. Each line is
   // coloured by its KIND (matching the table badges) so 20+ curves read as a few strategy
