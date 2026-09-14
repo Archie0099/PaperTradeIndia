@@ -29,11 +29,15 @@
 //   (2) STRUCTURAL — for a bot carrying a `marketGate`, the fraction of bars on which that
 //       gate expression is FALSE, evaluated directly on the NIFTY series. This is exact and
 //       owes nothing to the flat-bar heuristic.
-//       MEASURED: (1) comes out LARGER than (2) for every gated bot. That is not an error in
-//       either — a periodic bot reads its gate only at a REBALANCE bar, so one
-//       shut gate on a rebalance day buys a whole period in cash and the bot does not re-enter
-//       when NIFTY recovers mid-period. The gap between the columns is the rebalance grid's
-//       contribution, distinct from the gate's own.
+//       ★ CORRECTED. This note used to say (1) comes out LARGER than (2) for EVERY gated bot,
+//       and attributed the whole ~6pp gap to the rebalance grid — a periodic bot reads its gate
+//       only at a rebalance bar, so one shut gate buys a whole period in cash. Most of that gap
+//       was NOT the grid: it was the ~1.2 years of leading bars in which the gate proxy did not
+//       exist at all (see the trim below). With those removed the gaps collapse to ~0.7-1.2pp,
+//       and for momentum-guarded the sign FLIPS — 29.3% cash against 30.7% gate-shut, i.e. less
+//       time in cash than its gate was closed, which the grid story cannot produce. The grid
+//       effect is real but small; it was never worth ~6pp. Read the two columns as close
+//       agreement between an empirical and a structural measure, not as a gap needing a story.
 //
 // WHAT "REPAIRED" MEANS
 // ---------------------
@@ -117,10 +121,32 @@ function repairCurve(curve) {
   return out;
 }
 
+// ★ TRIM EVERY SYMBOL TO THE MARKET'S OWN SPAN BEFORE MEASURING ANYTHING.
+// MEASURED: 68 of 114 universe names have history from 2006-07-03, while NIFTY — the gate proxy
+// every basket reads — only starts 2007-09-17. `alignSeries` builds its timeline from the UNION
+// of timestamps, so without this trim a GATED basket is evaluated over ~1.2 years in which its
+// gate expression has no series to evaluate against. It cannot trade, sits flat, and those bars
+// were counted as "life spent in cash" — which is this tool's headline number.
+// Measured cost of NOT trimming: the five gated bots read 24.2% in cash instead of 19.4%, and
+// their xSharpe understatement reads 0.071 instead of 0.055. The six UNGATED bots move by 0.0pp
+// and 0.000 — they have no gate to be starved of, which is exactly the signature that identifies
+// the cause. So roughly a fifth of the reported cash time was the shape of the DATA, not the
+// behaviour of the strategy, and it fell entirely on the bots the tool exists to measure.
+// ★ The LIVE BOARD does not trim: its basket curves start 2006-09-14 against NIFTY's 2007-09-17.
+// Whether to change that is an open decision — it restates published board figures.
+const marketFrom = market[0].t;
+const trimmed = {};
+for (const [s, c] of Object.entries(data)) { const w = c.filter((x) => x.t >= marketFrom); if (w.length) trimmed[s] = w; }
+{
+  const before = Object.values(data).reduce((n, c) => n + c.length, 0);
+  const after = Object.values(trimmed).reduce((n, c) => n + c.length, 0);
+  console.log(`trimmed to the market's span (from ${new Date(marketFrom).toISOString().slice(0, 10)}): dropped ${before - after} leading bars across ${Object.keys(trimmed).length} names — bars with no gate proxy to read.\n`);
+}
+
 const rows = [];
 for (const bot of bots) {
   const dbs = {};
-  for (const s of bot.spec.universe) if (data[s]) dbs[s] = data[s];
+  for (const s of bot.spec.universe) if (trimmed[s]) dbs[s] = trimmed[s];
   if (Object.keys(dbs).length < 2) { console.log(`skip ${bot.id}: universe not loaded`); continue; }
   const rankSource = bot.spec.mlConfig ? makeRankSource({ spec: bot.spec, dataBySymbol: dbs }) : null;
   const r = runPortfolioBacktest({ spec: bot.spec, dataBySymbol: dbs, marketSeries: market, cash: 10_000_000, costModel: EQ, rankSource, recordTrades: false, intraday: false, alignCache: null });
@@ -310,7 +336,7 @@ if (process.argv.includes('--phase')) {
       const toT = market[market.length - 1].t;
       const win = (arr) => arr.filter((c) => c.t >= fromT && c.t <= toT);
       const sliced = {};
-      for (const [s, c] of Object.entries(data)) { const w = win(c); if (w.length) sliced[s] = w; }
+      for (const [s, c] of Object.entries(trimmed)) { const w = win(c); if (w.length) sliced[s] = w; }
       const mkt = win(market);
       const res = {};
       for (const bot of phaseBots) {
