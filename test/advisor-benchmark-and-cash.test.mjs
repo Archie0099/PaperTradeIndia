@@ -146,3 +146,118 @@ test('the benchmark flag survives the seed -> roster -> detail path', async () =
   await t.init();
   assert.equal(t.getBotDetail('ctrl').benchmark, true, 'the control flag must reach the advisor intact');
 });
+
+// --- (3) a CONTROL must survive evolution, and must not breed --------------------------------
+// Both paths below are DORMANT in production (breeding is off, and grow mode never retires), so
+// these lock intent rather than today's behaviour. That is exactly why they are worth having:
+// re-enabling breeding is an open decision, and it is the moment nobody would think to re-check
+// what happens to the row every other comparison on the board is measured against.
+
+import { EVOLVE_WINDOW, EVOLVE_WARMUP } from '../tournament/tournament.mjs';
+
+// Long enough that runGeneration takes its real branch and can actually score bots.
+function longSeries() {
+  const n = EVOLVE_WINDOW + EVOLVE_WARMUP + 200;
+  const out = [];
+  let p = 100;
+  for (let i = 0; i < n; i++) { p *= 1 + Math.sin(i / 23) * 0.004 + 0.0002; out.push({ t: START + i * DAY, c: +p.toFixed(2) }); }
+  return out;
+}
+
+// A roster with a protected benchmark, a CONTROL, and two ordinary strategies. The control is
+// given a deliberately feeble spec so it sorts to the BOTTOM on fitness — i.e. it is exactly the
+// bot the legacy replace-the-weakest path would reach for first.
+const evoSeedWithControl = () => [
+  { id: 'bh', name: 'Buy & Hold', kind: 'EQ', symbol: 'NIFTY', protected: true, spec: { kind: 'EQ', name: 'Buy & Hold', weight: 1 } },
+  { id: 'ctrl', name: 'The fair bar', kind: 'EQ', symbol: 'NIFTY', benchmark: true, spec: { kind: 'EQ', name: 'Control', entry: ['<', ['rsi', 2], 1], exit: ['>', ['rsi', 2], 99] } },
+  { id: 'sma', name: 'SMA cross', kind: 'EQ', symbol: 'NIFTY', spec: { kind: 'EQ', name: 'SMA cross', entry: ['>', ['sma', 20], ['sma', 100]], exit: ['<', ['sma', 20], ['sma', 100]] } },
+  { id: 'rsi', name: 'RSI dip', kind: 'EQ', symbol: 'NIFTY', spec: { kind: 'EQ', name: 'RSI dip', entry: ['<', ['rsi', 14], 30], exit: ['>', ['rsi', 14], 60] } },
+];
+
+test('the CONTROL is never retired, even in legacy replace-the-weakest mode', async () => {
+  const t = await createTournament({ seed: evoSeedWithControl(), backfillData: { NIFTY: longSeries() }, persist: false, retireWeakest: true });
+  await t.init();
+  for (let g = 1; g <= 8; g++) {
+    t.runGeneration({ seed: g * 101 });
+    assert.ok(t._roster().some((b) => b.id === 'ctrl'), `generation ${g} retired the board’s own yardstick`);
+    assert.ok(t._roster().some((b) => b.id === 'bh'), `generation ${g} retired the protected benchmark`);
+  }
+});
+
+test('the CONTROL is never used as breeding stock', async () => {
+  // A mutated no-information control is not a control, and "hold everything, but tweaked" is not
+  // a hypothesis anyone meant to test. Checked structurally: whatever the GA promotes, it must
+  // never be descended from the control's spec.
+  const t = await createTournament({ seed: evoSeedWithControl(), backfillData: { NIFTY: longSeries() }, persist: false, maxRosterBots: 50 });
+  await t.init();
+  const ctrlSpec = JSON.stringify(t._roster().find((b) => b.id === 'ctrl').spec.entry);
+  for (let g = 1; g <= 8; g++) {
+    t.runGeneration({ seed: g * 101 });
+    for (const b of t._roster()) {
+      if (b.id === 'ctrl' || b.gen === 0) continue;
+      assert.notEqual(JSON.stringify(b.spec.entry), ctrlSpec, `generation ${g} bred a child straight off the control`);
+    }
+  }
+});
+
+// --- (4) the two edge cases a fresh-context review found in (3) -------------------------------
+// Excluding benchmarks from breeding and culling created a roster state that was previously
+// UNREACHABLE: one where every eligible row is protected or a benchmark. Both of these were
+// reproduced before being fixed — 4 of 8 challengers descended from the control, and the stall
+// was permanent and reported the wrong cause.
+
+// Nothing left to breed from or score against: only a protected row and a control.
+const barrenSeed = () => [
+  { id: 'bh', name: 'Buy & Hold', kind: 'EQ', symbol: 'NIFTY', protected: true, spec: { kind: 'EQ', name: 'Buy & Hold', weight: 1 } },
+  { id: 'ctrl', name: 'The fair bar', kind: 'EQ', symbol: 'NIFTY', benchmark: true, spec: { kind: 'EQ', name: 'The fair bar', entry: ['<', ['rsi', 2], 1], exit: ['>', ['rsi', 2], 99] } },
+];
+
+test('with no ordinary strategy left, evolution declines with a STATED reason (never a silent stall)', async () => {
+  // Before the guard, `weakest` was simply undefined and the promote branch never fired: no
+  // promotion, generation frozen, and the UI toast said "no challenger beat the field" — the
+  // wrong cause, because there was no field. Silence that names the wrong reason is worse than
+  // an error.
+  const t = await createTournament({ seed: barrenSeed(), backfillData: { NIFTY: longSeries() }, persist: false, maxRosterBots: 50 });
+  await t.init();
+  const r = t.runGeneration({ seed: 101 });
+  assert.equal(r.promoted, null, 'nothing may be admitted when there is no quality bar to clear');
+  assert.ok(r.reason, 'the refusal must be diagnosable — a bare null is indistinguishable from "nobody won"');
+  assert.match(r.reason, /quality bar|breedable/, `the reason must name the structural cause (got: ${r.reason})`);
+});
+
+test('the control is not breeding stock even when it is the ONLY thing left to breed from', async () => {
+  // The exclusion was defeated by a pre-existing fallback: with no breedable bot, `parents` fell
+  // back to EVERY compilable bot, controls included. Measured at the time: 4 of 8 challengers
+  // came back named after the control.
+  //
+  // ★ THE FIXTURE MATTERS, and the obvious one is VACUOUS. On a roster of just {protected,
+  // control} the stall guard fires first — nothing is ever promoted — so this passes with or
+  // without the fallback fix and locks nothing. To isolate the fallback we need `breedable`
+  // EMPTY while `scored` is NOT, and those two arrays differ in exactly one way: `breedable`
+  // additionally requires `safeCompile`. So add a bot with a MALFORMED spec (an FNO with no
+  // legs — a shape only external corruption of the state file produces). It is invisible to
+  // `compilable`, so nothing is breedable; it IS in `scored`, where it scores -Infinity and
+  // becomes the quality bar. Promotion therefore proceeds, and the only question left is WHO
+  // the parent was.
+  //
+  // ★ AND THE CONTROL'S SPEC MUST BE GOOD. The cull test above gives it a deliberately feeble
+  // spec so it sorts weakest; reusing that here made this test VACUOUS for a second reason —
+  // a flat bot's descendants score badly, never win `challengers.find(...)`, and so never reach
+  // the board even with the guard removed. That is a property of the fixture, not of the code.
+  // The real `bar-universe-equal` is a TOP-5 performer, so a competent spec is also the honest
+  // one: give it a strategy whose mutations can actually out-score the protected row's.
+  const seed = [
+    { id: 'bh', name: 'Buy & Hold', kind: 'EQ', symbol: 'NIFTY', protected: true, spec: { kind: 'EQ', name: 'Buy & Hold', weight: 1 } },
+    { id: 'ctrl', name: 'The fair bar', kind: 'EQ', symbol: 'NIFTY', benchmark: true, spec: { kind: 'EQ', name: 'The fair bar', entry: ['>', ['sma', 20], ['sma', 100]], exit: ['<', ['sma', 20], ['sma', 100]] } },
+    { id: 'broken', name: 'Broken', kind: 'FNO', symbol: 'NIFTY', spec: { kind: 'FNO', name: 'broken' } }, // malformed: no legs
+  ];
+  const t = await createTournament({ seed, backfillData: { NIFTY: longSeries() }, persist: false, maxRosterBots: 50 });
+  await t.init();
+  let promotions = 0;
+  for (let g = 1; g <= 6; g++) if (t.runGeneration({ seed: g * 101 }).promoted) promotions++;
+  assert.ok(promotions > 0, 'the fixture must actually REACH the promote branch, or it proves nothing');
+  for (const b of t._roster()) {
+    if (b.id === 'ctrl') continue;
+    assert.doesNotMatch(b.name, /fair bar/i, `a challenger bred off the control reached the board: ${b.name}`);
+  }
+});

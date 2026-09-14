@@ -718,6 +718,11 @@ function wireAction(btn, app, action, { confirm: confirmMsg } = {}) {
         ? `Gen ${r.generation}: promoted “${r.promoted}” (retired “${r.retired}”)`
         : `Gen ${r.generation}: added “${r.promoted}”`);
       else if (r && r.full) showToast(`Board is full (${r.max} bots) — keeping all, not adding more.`);
+      // A `reason` means evolution declined for a STRUCTURAL cause (no breedable parent, or no
+      // quality bar because every eligible row is protected or a benchmark). Report that
+      // verbatim — the generic line below says "no challenger beat the field", which in those
+      // cases names the wrong cause entirely: there was no field to beat.
+      else if (r && r.promoted === null && r.reason) showToast(`Evolution declined: ${r.reason}`);
       else if (r && r.promoted === null && r.generation != null) showToast(`Gen ${r.generation}: no challenger beat the field`);
       else if (r && r.added) showToast(`Added “${r.added}”`);
       // After an Evolve that added a bot, HIGHLIGHT that new bot (its id is r.promotedId)

@@ -1353,9 +1353,23 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     // never be bred onto daily symbols nor used as the weakest-bar (which is scored on
     // DAILY fullData below). They still count toward the grow-mode cap (board size).
     const compilable = roster.filter((b) => !isIntradayInterval(b.interval) && safeCompile(b.spec).ok);
-    const breedable = compilable.filter((b) => !b.protected);
-    const parents = breedable.length ? breedable : compilable;
-    if (!parents.length) return { generation: state.generation, promoted: null, retired: null };
+    // `!b.benchmark` alongside `!b.protected`: the comment above says "the benchmark is a
+    // yardstick, not breeding stock", but until now `protected` was the only thing enforcing it
+    // and `protected` means exactly ONE row — the Buy & Hold the walk-forward uses as its bench
+    // series. The fair bar (`bar-universe-equal`) is a yardstick too and is NOT protected, so it
+    // was silently breeding stock: a mutated no-information control is not a control, and
+    // "hold the whole universe, but tweaked" is not a hypothesis anyone meant to test.
+    // Dormant today (breeding is OFF), which is precisely why it is fixed NOW — re-enabling
+    // evolution is an open decision, and that is the moment nobody would think to check this.
+    const breedable = compilable.filter((b) => !b.protected && !b.benchmark);
+    // The fallback has to drop benchmarks TOO, or the exclusion above is decorative: with no
+    // ordinary strategy left to breed from, `parents` used to fall back to every compilable bot
+    // — controls included — and evolve() duly returned challengers descended from the control
+    // (measured: 4 of 8, all named after it). Falling back to the PROTECTED row is the original
+    // intent and is kept; falling back to a yardstick never was. If that leaves nothing, the
+    // guard below returns cleanly with a reason.
+    const parents = breedable.length ? breedable : compilable.filter((b) => !b.benchmark);
+    if (!parents.length) return { generation: state.generation, promoted: null, retired: null, reason: 'no breedable parents: every eligible bot is a benchmark or fails to compile' };
     // Score evolution on a bounded recent window (see EVOLVE_WINDOW) so a generation
     // stays a few seconds, not ~30, on the free host. Symbol eligibility above still
     // uses the FULL fullData length; only the per-bot backtest series is trimmed.
@@ -1386,11 +1400,33 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     const scoreBot = (b) => spansUniverse(b.kind)
       ? scoreSpec(b.spec, null, b.symbol, CASH, recentData, scoreFromT)
       : (recentData[b.symbol] ? scoreSpec(b.spec, recentData[b.symbol], b.symbol, CASH, null, scoreFromT) : null);
+    // Benchmarks are excluded here for TWO distinct reasons, both worth stating because this one
+    // array feeds two different decisions:
+    //   * as a CULL TARGET (retireWeakest mode, `roster[idx] = newBot` below) — the fair bar is
+    //     not protected, so a bad ~3-year scoring window could have retired the board's own
+    //     yardstick and nothing would have said so. Losing the row that makes every other
+    //     comparison honest is the single worst thing this function could do.
+    //   * as the QUALITY BAR a challenger must clear — the bar is meant to be "beat the weakest
+    //     STRATEGY we keep", and a no-information control is not a strategy. Note the direction
+    //     this moves things: `weakest` is a MINIMUM, so removing a candidate can only RAISE the
+    //     bar, never lower it. The conservative side, which is the right side for admission.
     const scored = roster
-      .filter((b) => !b.protected && !isIntradayInterval(b.interval))
+      .filter((b) => !b.protected && !b.benchmark && !isIntradayInterval(b.interval))
       .map((b) => ({ b, fit: fitness(scoreBot(b)) }))
       .sort((a, z) => a.fit - z.fit);
     const weakest = scored[0];
+    // `scored` can now be EMPTY — a state that was UNREACHABLE before benchmarks were excluded,
+    // because the benchmark itself always supplied the bar. Without this guard the code below
+    // simply never fires: nothing is promoted, `state.generation` never advances, and the UI
+    // reports "no challenger beat the field", which is the WRONG CAUSE — there was no field.
+    // Refuse EXPLICITLY and say why.
+    //
+    // Refusing, rather than admitting on some absolute threshold, is deliberate. A challenger
+    // admitted with no quality bar at all is unvetted by construction, and in GROW mode (the
+    // production default) nothing is ever retired, so that noise would sit on the board forever.
+    // It also interacts with the fallback above: relaxing this into an "admit anyway" path is
+    // exactly what would make breeding-off-the-control reachable again.
+    if (!weakest) return { generation: state.generation, promoted: null, retired: null, reason: 'no quality bar: every eligible bot is protected or a benchmark, so there is nothing for a challenger to beat' };
 
     let promoted = null, retired = null, promotedId = null;
     if (weakest && fitness(best.score) > weakest.fit + 1e-9) {
@@ -1456,6 +1492,13 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     opSeq++;
     const idx = roster.findIndex((b) => b.id === id);
     if (idx < 0) return { ok: false, error: 'No such bot' };
+    // NOTE a deliberate asymmetry: a `benchmark` row (the fair bar) is guarded against the
+    // AUTOMATIC paths — evolution can neither cull it nor breed from it — but is left REMOVABLE
+    // here. The line is silent-and-automatic versus explicit-and-recoverable: losing the board's
+    // yardstick to a GA scoring window is a bug nobody would notice, while clicking Remove is a
+    // stated intent, is visible, and `reset()` restores the full seed line-up. Guarding it here
+    // too would also be inconsistent while these routes carry no auth at all (an open decision,
+    // see the plan) — the fix for a stranger removing bots is auth, not one special-cased row.
     if (roster[idx].protected) return { ok: false, error: 'That bot is protected' };
     if (roster.length <= 2) return { ok: false, error: 'Need at least 2 bots' };
     const removed = roster[idx].name;
