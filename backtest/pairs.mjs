@@ -170,7 +170,7 @@ function runPairsBacktest({ spec, dataBySymbol, cash = 10_000_000, costBps = 5, 
   // Liquidity honesty flag (see backtester.mjs): fills bigger than this share of
   // the bar's real traded value are counted, never silently absorbed.
   const PARTICIPATION_CAP = 0.10;
-  let liqChecked = 0, liqFlagged = 0;
+  let liqChecked = 0, liqFlagged = 0, liqZeroVol = 0;
   const lookback = spec.lookback;
   const entryZ = spec.entryZ;
   const exitZ = spec.exitZ;
@@ -232,6 +232,11 @@ function runPairsBacktest({ spec, dataBySymbol, cash = 10_000_000, costBps = 5, 
     // Liquidity flag: fill value vs the bar's real traded value (raw volume × raw close).
     const idx = realIdx[s][gi];
     const vol = idx >= 0 ? A.volsBy[s][idx] : null;
+    // A bar with EXACTLY ZERO volume is the least executable fill there is, and the
+    // participation rule cannot speak to it (10% of zero is zero). Counted separately so the
+    // ABSENCE of the warning on a bot's page means "measured, none found" rather than "never
+    // looked" — which is why this lives here too, not only in portfolio.mjs.
+    if (Number.isFinite(vol) && vol === 0) liqZeroVol++;
     if (Number.isFinite(vol) && vol > 0) {
       liqChecked++;
       if (qty * fillPrice > PARTICIPATION_CAP * vol * (A.rawsBy[s][idx] || px)) liqFlagged++;
@@ -433,7 +438,7 @@ function runPairsBacktest({ spec, dataBySymbol, cash = 10_000_000, costBps = 5, 
     finalPositions: snapshotPositions(engine), // current long/short legs (for the Auto-Pilot copy)
     metrics: summarize(equityCurve, { years, trades, periodsPerYear: intraday ? inferPeriodsPerYear(master) : undefined }),
     costs: { model: cm.kind, feesPaid: +feesCharged(engine).toFixed(2) },
-    liquidity: { cap: PARTICIPATION_CAP, checked: liqChecked, flagged: liqFlagged },
+    liquidity: { cap: PARTICIPATION_CAP, checked: liqChecked, flagged: liqFlagged, zeroVol: liqZeroVol },
     ...(tradeLog ? { trades: tradeLog, decision: lastDecision } : {}),
   };
 }

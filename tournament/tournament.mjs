@@ -1696,6 +1696,14 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     // assignment between awaits is atomic, so no reader can see a torn value.
     getStandings: () => {
       if (standings) {
+        // WALL-CLOCK NOW, stamped per RESPONSE. `asOf` is the last RECOMPUTE, which is a
+        // different fact: a recompute happens only on init, a control op, or a tick that admitted
+        // a NEW bar. So across a weekend — or whenever the feed withholds a close — `asOf`
+        // stalls in lockstep with the very log whose staleness the advisor panel is trying to
+        // measure, and the panel under-reports exactly when it matters. Readers that need "how
+        // long since that entry" must use this; readers that need "when was this computed" keep
+        // using `asOf`.
+        standings.now = Date.now();
         standings.persist = {
           ...persistState,
           readFailed: typeof persistStore.readFailed === 'function' ? persistStore.readFailed() : persistState.readFailed,

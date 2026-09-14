@@ -734,3 +734,29 @@ test('tick() admits a bar once its SESSION has closed, and NEVER a forming one',
     freeProvider.getHistory = orig;
   }
 });
+
+// ---------------------------------------------------------------------------
+// `now` is stamped PER RESPONSE, `asOf` is the last RECOMPUTE.
+// The advisor panel measures "how many sessions closed since this entry" and needs the former.
+// A review found it reading `asOf`, which only advances when a recompute admits a NEW bar — so
+// across a weekend, or whenever the feed withholds a close, it stalls in lockstep with the very
+// log whose staleness it is measuring, and the panel under-reports exactly when it matters.
+// ---------------------------------------------------------------------------
+
+test('getStandings stamps a fresh `now` on every response, distinct from the recompute `asOf`', async () => {
+  const t = await createTournament({ seed: SEED, backfillData: { NIFTY: niftySeries() }, persist: false });
+  await t.init();
+  const first = t.getStandings();
+  assert.ok(Number.isFinite(first.now), '`now` is published');
+  assert.ok(Number.isFinite(first.asOf), 'and `asOf` still is too — they are different facts');
+  assert.ok(first.now >= first.asOf, '`now` is never older than the recompute that produced the board');
+
+  // No recompute between these two reads: `asOf` must hold still while `now` keeps up with
+  // the clock. That difference is the whole point of the field.
+  const before = first.now;
+  const asOfBefore = first.asOf;
+  await new Promise((r) => setTimeout(r, 5));
+  const second = t.getStandings();
+  assert.equal(second.asOf, asOfBefore, '`asOf` does NOT move without a recompute');
+  assert.ok(second.now >= before, 'but `now` is re-stamped on the later read');
+});

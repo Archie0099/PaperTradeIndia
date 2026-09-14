@@ -33,6 +33,11 @@ import { drawMultiLine, drawLineChart } from './chart.js';
 import { windowed, windowMsOf, spanOf, windowButtons, effectiveWindow } from './chartwindow.js';
 import { openBotPage } from './tournament.js'; // reuse the rich per-bot page for the followed strategy
 import { HOLIDAYS, istNow, isoDate } from '../core/marketHours.js';
+// Which YEARS does the hand-maintained holiday list actually cover? Outside them it cannot
+// distinguish a holiday from a trading day, and the suggestions panel must not claim a session
+// closed when the exchange was shut. Derived from the list itself so it can never go stale
+// separately from it.
+const HOLIDAY_YEARS = new Set(HOLIDAYS.map((d) => d.slice(0, 4)));
 
 const CFG_KEY = 'paper-trade-india:autopilot';
 
@@ -1195,15 +1200,20 @@ function renderSuggestions(app) {
   // Holidays and the IST calendar both come from core/marketHours.js rather than being re-derived
   // here; two definitions of "is the market open" would drift apart silently.
   //
-  // ★ "NOW" IS THE SERVER'S `asOf`, NOT THE BROWSER CLOCK. Two reasons, and the second is the one
-  // that matters. It is more correct — asOf is the same clock that stamped the entry, so a browser
-  // with a skewed or differently-zoned clock cannot invent or hide a missed session. And it keeps
-  // this testable: a fixture that pins asOf gets the same answer forever, whereas reading the wall
-  // clock would make every advisor test drift day by day and fail on its own schedule, which is a
-  // trap this project has already been caught by in the session-close tests.
+  // ★ "NOW" COMES FROM THE SERVER, and it must be `now` — NOT `asOf`.
+  // Server rather than browser so a skewed or differently-zoned client cannot invent or hide a
+  // missed session, and so this stays testable: a fixture pins the value and the answer is the
+  // same forever, where reading the wall clock would make every advisor test drift daily and fail
+  // on its own schedule (a trap this project has already been caught by in the session-close tests).
+  // ★★ BUT NOT `asOf`, which an earlier version of this used with the rationale that it "is the
+  // same clock that stamped the entry". A review pointed out that is exactly backwards: `asOf` is
+  // the last RECOMPUTE time, and a recompute needs a NEW bar — so across a weekend, or whenever
+  // the feed withholds a close, `asOf` stalls in lockstep with the log and the banner
+  // under-reports precisely in the case it exists for. `now` is stamped per response.
   const sessionsMissedSince = (dateStr) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr || '')) return 0;
-    const nowMs = lastStandings && Number.isFinite(lastStandings.asOf) ? lastStandings.asOf : Date.now();
+    const stamp = lastStandings && (Number.isFinite(lastStandings.now) ? lastStandings.now : lastStandings.asOf);
+    const nowMs = Number.isFinite(stamp) ? stamp : Date.now();
     const todayIso = isoDate(istNow(new Date(nowMs)));
     let n = 0;
     const d = new Date(dateStr + 'T00:00:00Z');
@@ -1214,6 +1224,13 @@ function renderSuggestions(app) {
       const dow = d.getUTCDay();
       if (dow === 0 || dow === 6) continue;
       if (HOLIDAYS.includes(iso)) continue;
+      // ★ THE HOLIDAY LIST COVERS ONE YEAR AND IS UPDATED BY HAND EACH JANUARY. Outside the years
+      // it actually lists, every holiday looks like a trading day — which on THIS panel would
+      // assert, in words, that a session closed without guidance when the exchange was simply
+      // shut. Silence is the right failure here: a missed warning costs the reader nothing, an
+      // invented one costs them trust in every other warning on the page. So only count dates
+      // inside the list's own coverage.
+      if (!HOLIDAY_YEARS.has(iso.slice(0, 4))) continue;
       n += 1;
     }
     return n;

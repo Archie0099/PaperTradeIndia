@@ -304,7 +304,14 @@ function render(app, data) {
             notes.push(`In cash ${b.flatBarsPct.toFixed(1)}% of its life and charged the ~6.5% hurdle for those bars without earning it — re-scored as if idle cash paid that rate it would be ${b.sharpeCashAdj}.`);
           }
           if (b.sharpePostProxy != null && b.preProxyBars > 0 && b.sharpePostProxy !== b.sharpe) {
-            notes.push(`Its first ${b.preProxyBars} bars predate the market proxy it gates on, so it sits flat through them and is charged the hurdle anyway — scored only from the proxy's start it would be ${b.sharpePostProxy}.`);
+            // ★ BRANCH ON `gated`, exactly as the bot page does. This note used to assert the
+            // gated story for every row — a review caught that it was telling the board's own
+            // UNGATED fair-bar control it "gates on" the proxy and "sits flat" through 249 bars
+            // it actually traded 774 times in. The fix had been applied to the per-bot page and
+            // not to the hover, in the very change that identified the problem.
+            notes.push(b.gated
+              ? `Its first ${b.preProxyBars} bars predate the market proxy it gates on, so it sits flat through them and is charged the hurdle anyway — scored only from the proxy's start it would be ${b.sharpePostProxy}.`
+              : `Its first ${b.preProxyBars} bars predate the market proxy, and it does not gate on that proxy — it trades through them normally, so scoring only from the proxy's start is a shorter window rather than a correction: ${b.sharpePostProxy}.`);
           }
           return notes.length
             ? `${b.sharpe} as ranked. ${notes.join(' ')} Open the bot for the full note.`

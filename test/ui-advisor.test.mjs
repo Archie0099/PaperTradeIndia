@@ -41,9 +41,10 @@ const advisorPayload = (over = {}) => ({
 // browser — so a fixture must state it, or every advisor test would drift day by day and start
 // failing on its own schedule. 2026-08-05 is the day after the fixture's entry (2026-08-04),
 // i.e. nothing missed, which is what the pre-existing tests assume.
-function standings(advisor, persist, asOf = Date.parse('2026-08-05T06:00:00Z')) {
+function standings(advisor, persist, asOf = Date.parse('2026-08-05T06:00:00Z'), now = asOf) {
   return {
     asOf,
+    now,
     startingCash: 1e7,
     advisor,
     persist,
@@ -61,10 +62,10 @@ function standings(advisor, persist, asOf = Date.parse('2026-08-05T06:00:00Z')) 
   };
 }
 
-const appWith = (dom, advisor, persist, asOf) => {
+const appWith = (dom, advisor, persist, asOf, now) => {
   const app = dom.makeApp({
     api: Object.assign(dom.makeApiStub(), {
-      tournament: async () => standings(advisor, persist, asOf),
+      tournament: async () => standings(advisor, persist, asOf, now),
       tournamentBot: async (id) => ({ ok: true, id, name: 'Sharpe King', mirror: { followable: true, equity: 1.08e7, positions: [] } }),
     }),
   });
@@ -498,6 +499,39 @@ test('a market HOLIDAY between the entry and now does not count as a missed sess
   await renderAutoPilot(app);
   assert.ok(!/trading session/.test(dom.$('#ap-suggestions').textContent),
     'a weekend plus a holiday is not a missed session');
+});
+
+test('staleness is measured from `now`, not `asOf` — a stalled recompute must not hide a missed session', async () => {
+  // A review caught the original rationale being backwards. `asOf` is the last RECOMPUTE time, and
+  // a recompute needs a NEW bar — so across a weekend, or whenever the feed withholds a close,
+  // `asOf` stalls in lockstep with the very log whose staleness this measures. Here the board last
+  // recomputed on 08-05 (entry day + 1, nothing missed by that clock) while the real time is
+  // 08-12. Reading `asOf` renders no banner at all; reading `now` correctly reports 5 sessions.
+  const dom = setupDom();
+  const app = appWith(dom, advisorPayload(), undefined,
+    Date.parse('2026-08-05T06:00:00Z'),   // asOf: the stalled recompute
+    Date.parse('2026-08-12T06:00:00Z'));  // now: stamped per response
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  const txt = dom.$('#ap-suggestions').textContent;
+  assert.match(txt, /5 trading sessions have closed since then/,
+    'the banner counts from the per-response clock, not the stalled recompute stamp');
+});
+
+test('a holiday OUTSIDE the maintained list is not claimed as a missed session', async () => {
+  // The holiday list is hand-updated one year at a time. Beyond its coverage every holiday looks
+  // like a trading day, and on THIS panel that would assert in words that a session closed with no
+  // guidance when the exchange was shut. Silence is the correct failure: a missed warning costs
+  // nothing, an invented one costs trust in every other warning here.
+  const dom = setupDom();
+  const entry = advisorPayload({ today: { ...advisorPayload().today, date: '2029-01-01' } });
+  const app = appWith(dom, entry, undefined,
+    Date.parse('2029-01-10T06:00:00Z'), Date.parse('2029-01-10T06:00:00Z'));
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  const txt = dom.$('#ap-suggestions').textContent;
+  assert.ok(!/trading session/.test(txt),
+    'a year the holiday list does not cover produces no staleness claim at all');
 });
 
 test('the action list names the suggestion date instead of calling it "today"', async () => {

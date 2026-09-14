@@ -69,7 +69,13 @@ const nifty = new Set(market.map((c) => c.t));
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const iso = (t) => new Date(t).toISOString().slice(0, 10);
 
+// ★ SAY WHAT THE HOLIDAY LIST ACTUALLY COVERS. It is hand-maintained one year at a time, so over
+// a ~20-year grid the "declared holiday" bucket is structurally EMPTY outside those years, and any
+// holiday beyond them is silently reclassified as a dropped session or a stray print. The counts
+// this tool prints get quoted into the project docs, so the caveat has to travel with them.
+const holYears = [...new Set([...HOLIDAYS].map((d) => d.slice(0, 4)))].sort();
 console.log(`master grid ${master.length} bars from ${names.length} names; NIFTY ${market.length} bars.`);
+console.log(`holiday list covers ${holYears.length ? holYears.join(', ') : '(nothing)'} only — outside those years a holiday cannot be told from a trading day here.`);
 console.log(`grid dates NIFTY has no bar for, in total: ${master.filter((t) => !nifty.has(t)).length}`);
 console.log(`  ...of which BEFORE the index series even starts: ${master.filter((t) => !nifty.has(t) && t < market[0].t).length}  <- history, NOT missing sessions\n`);
 

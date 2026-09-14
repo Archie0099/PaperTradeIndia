@@ -42,7 +42,7 @@ function runBacktest({ strategy, candles, symbol = 'TEST', cash = 1_000_000, cos
   // We do NOT model impact — we FLAG that the fill wouldn't be executable as
   // simulated, so an over-sized bot can't quietly claim an impossible result.
   const PARTICIPATION_CAP = 0.10;
-  let liqChecked = 0, liqFlagged = 0;
+  let liqChecked = 0, liqFlagged = 0, liqZeroVol = 0;
 
   const equityCurve = [];
   let target = 0; // weight decided on the PREVIOUS bar, executed on THIS bar
@@ -162,6 +162,11 @@ function runBacktest({ strategy, candles, symbol = 'TEST', cash = 1_000_000, cos
           // traded value (raw volume × the raw close where we have it — `craw` is
           // carried when the series is dividend/split-adjusted).
           const vol = candles[i].v;
+          // A bar with EXACTLY ZERO volume is the least executable fill there is, and the
+          // participation rule cannot speak to it (10% of zero is zero). Counted separately so the
+          // ABSENCE of the warning on a bot's page means "measured, none found" rather than "never
+          // looked" — which is why this lives here too, not only in portfolio.mjs.
+          if (Number.isFinite(vol) && vol === 0) liqZeroVol++;
           if (Number.isFinite(vol) && vol > 0) {
             liqChecked++;
             if (delta * fillPrice > PARTICIPATION_CAP * vol * (candles[i].craw || price)) liqFlagged++;
@@ -209,7 +214,7 @@ function runBacktest({ strategy, candles, symbol = 'TEST', cash = 1_000_000, cos
     costs: { model: cm.kind, feesPaid: +feesCharged(engine).toFixed(2) },
     // Honesty flag, not an impact model: how many fills exceeded the participation
     // cap of that bar's traded value (only bars with volume data are checked).
-    liquidity: { cap: PARTICIPATION_CAP, checked: liqChecked, flagged: liqFlagged },
+    liquidity: { cap: PARTICIPATION_CAP, checked: liqChecked, flagged: liqFlagged, zeroVol: liqZeroVol },
     ...(tradeLog ? { trades: tradeLog } : {}),
   };
 }

@@ -222,3 +222,37 @@ test('a flat equity curve scores Sharpe 0, not an astronomical number', () => {
   const nearFlat = flat.slice(); nearFlat[400] = 1e7 * (1 + 1e-6);
   assert.equal(sharpe(nearFlat), 0, `a single 1e-6 move in 800 bars is not a risk-adjusted return (got ${sharpe(nearFlat)})`);
 });
+
+// ---------------------------------------------------------------------------
+// A fill on a ZERO-VOLUME bar is counted in the single-symbol backtester too.
+// The disclosure shipped in portfolio.mjs first, which made its ABSENCE ambiguous everywhere
+// else: a review pointed out that an EQ/FNO bot's page then reads as clean when in truth
+// nothing was ever measured. The cached data really does carry v:0 bars.
+// ---------------------------------------------------------------------------
+
+test('a fill on a zero-volume bar is counted, and never mistaken for a volume-checked one', () => {
+  const closes = [100, 101, 102, 103, 104, 105, 106, 107];
+  const buyHold = { name: 'BH', note: '', make: () => () => 1 };
+
+  // Every bar deeply liquid: the fill is volume-CHECKED and nothing is flagged as zero-volume.
+  const liquid = runBacktest({
+    strategy: buyHold, symbol: 'TEST', cash: 1_000_000,
+    candles: closes.map((c, i) => ({ t: i * 864e5, c, v: 1e9 })),
+  });
+  assert.ok(liquid.liquidity.checked > 0, 'the control really does volume-check its fills');
+  assert.equal(liquid.liquidity.zeroVol, 0, 'and reports no zero-volume fills');
+
+  // The entry bar has NO traded volume — the market was shut, or nothing changed hands.
+  const zero = runBacktest({
+    strategy: buyHold, symbol: 'TEST', cash: 1_000_000,
+    candles: closes.map((c, i) => ({ t: i * 864e5, c, v: i === 1 ? 0 : 1e9 })),
+  });
+  assert.ok(zero.liquidity.zeroVol > 0, 'the zero-volume fill is counted');
+  assert.equal(zero.liquidity.checked + zero.liquidity.zeroVol, liquid.liquidity.checked,
+    'every fill is accounted for exactly once — it moved OUT of `checked`, not into it');
+
+  // Volume absent entirely is "no claim", which is a different fact from "nothing traded".
+  const unknown = runBacktest({ strategy: buyHold, symbol: 'TEST', cash: 1_000_000, candles: candlesFrom(closes) });
+  assert.equal(unknown.liquidity.checked, 0, 'nothing can be volume-checked without volume');
+  assert.equal(unknown.liquidity.zeroVol, 0, 'and absent volume is NOT reported as zero-volume');
+});

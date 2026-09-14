@@ -490,6 +490,31 @@ test("a bot with no risk block (curve too short) shows NO VaR stat and NO back-t
   assert.ok(!/VaR back-test/.test(page), "no back-test line without a tail");
 });
 
+test("the leaderboard Sharpe hover branches on `gated` too, not just the bot page", async () => {
+  // A review found the gated story asserted on the hover for EVERY row while the bot page
+  // branched — so the board's own UNGATED fair-bar control was being told, on hover, that it
+  // "gates on" the proxy and "sits flat" through bars it actually traded. Reachable on the live
+  // board: that row has gated:false, preProxyBars 249 and a post-proxy Sharpe that differs.
+  const dom = setupDom();
+  const data = standings();
+  Object.assign(data.bots[2], { sharpe: 0.79, sharpePostProxy: 0.78, preProxyBars: 249, gated: false });
+  Object.assign(data.bots[1], { sharpe: 0.97, sharpePostProxy: 1.01, preProxyBars: 249, gated: true });
+  const app = dom.makeApp({ api: Object.assign(dom.makeApiStub(), { tournament: async () => data, tournamentBot: async (id) => baseDetail(id) }) });
+  await renderTournament(app);
+  // Find the Sharpe cell by its own tooltip rather than a hardcoded column index: the leaderboard
+  // has 16 columns and counting them in a test is exactly the kind of literal that rots silently.
+  const titleOf = (id) => [...dom.$(`#tourn-table tr[data-id="${id}"]`).querySelectorAll('td')]
+    .map((td) => td.getAttribute('title'))
+    .find((t) => t && /as ranked\.|Risk-adjusted return/.test(t));
+
+  const ungated = titleOf('bk');
+  assert.match(ungated, /it does not gate on that proxy|does not gate on the proxy/, 'the ungated row says it does NOT gate');
+  assert.ok(!/sits flat through them/.test(ungated), 'and is never told it sat flat through bars it traded');
+
+  const gated = titleOf('str');
+  assert.match(gated, /predate the market proxy it gates on, so it sits flat through them/, 'the gated row keeps the gated wording');
+});
+
 test("a bot whose timeline opens before its gate proxy exists says so, and states both figures", async () => {
   // The board publishes the size of its own gate-proxy artifact rather than correcting it, so the
   // page has to say what the second number means — and in particular that it is the SAME run

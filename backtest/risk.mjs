@@ -432,10 +432,17 @@ function riskProfile(equity, { conf = 0.99, window = 500, testDays = 250 } = {})
   // sentence, since the Kupiec test rejects a 0% VaR for having too FEW exceptions and the page
   // renders that as "it OVERSTATES the bot's risk" — which a VaR of zero cannot do.
   //
-  // So report nothing, and flag WHY, exactly as `wiped` does for the opposite extreme. The
-  // back-test goes too: every day's VaR in it is the same uninformative 0, so its exception
-  // count and Basel zone describe the arithmetic rather than the bot. `null` already flows
-  // through both UIs (it is what an intraday bot ships), so nothing renders a bare zero.
+  // So report nothing, and flag WHY, exactly as `wiped` does for the opposite extreme. `null`
+  // already flows through both UIs (it is what an intraday bot ships), so nothing renders a zero.
+  //
+  // The back-test is withheld too — but ★ NOT for the reason first written here. That said "every
+  // day's VaR in it is the same uninformative 0", and a review showed this is false in a reachable
+  // case: `noLoss` looks at the last `window` returns, while `rollingVaRBacktest` builds each
+  // tested day's VaR from the 500 returns BEFORE it, reaching back to roughly n-750. A bot that
+  // traded normally until ~500 bars ago therefore has a genuinely non-zero VaR on its earliest
+  // tested days. The real reason is simpler and survives that case: the tested DAYS are the last
+  // 250, and if nothing was lost across them there are no exceptions to count whatever the VaR
+  // was. Zero exceptions against a model nothing tested is not evidence the model is good.
   //
   // ★ "No loss" here means FEWER LOSING DAYS THAN THE TAIL NEEDS, which is not the same as
   // none at all: at 99% on a 500-bar window the estimator takes the 5th-worst day, so a window
