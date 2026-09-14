@@ -24,6 +24,14 @@ const INDEX_TO_YAHOO = {
   BANKNIFTY: '^NSEBANK',
   FINNIFTY: '^CNXFIN',
   SENSEX: '^BSESN',
+  // India VIX — NSE's 30-day implied-volatility index, quoted in PERCENT (12.3 = 12.3%),
+  // and free from Yahoo — but only from 2015-08 (MEASURED; NSE's own series starts 2008, Yahoo's
+  // does not), so anything using it cannot see the 2008 crisis. NOT tradeable here either (NSE listed India VIX futures
+  // in 2014 and discontinued them in 2017 for lack of liquidity, and no variance swap or
+  // inverse-VIX product exists in India), so nothing trades it — it is a research input.
+  // It matters because the F&O backtests price options at realizedVol x an ASSUMED premium
+  // of 1.2, and this is the only free series that can say what that multiplier really is.
+  INDIAVIX: '^INDIAVIX',
 };
 
 // Symbols NSE serves from the index option-chain endpoint (vs. equities).
