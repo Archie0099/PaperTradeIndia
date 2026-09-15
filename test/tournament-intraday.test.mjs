@@ -309,3 +309,41 @@ test('no shipped bot claims squareOffDaily — the cheaper MIS schedule must be 
   assert.ok(hourly, 'the roster still has an hourly bot to guard');
   assert.ok(!hourly.squareOffDaily, 'the hourly bot holds overnight — it must keep paying delivery costs');
 });
+
+// ---------------------------------------------------------------------------
+// A ZERO-VOLUME 60m bar is never admitted either.
+//
+// The daily path refuses these because the feed emits carried-forward rows on days the exchange
+// was shut, and admitting one writes a fabricated session into an append-only record. This path
+// is ALSO gated on getMarketState().isOpen, which does consult the holiday list — but that list
+// is hand-maintained one year at a time and fails OPEN once it lapses, so the outer guard has a
+// known expiry and this one does not. One rule for "a bar with no trading in it".
+// ---------------------------------------------------------------------------
+test('tickIntraday REFUSES a zero-volume 60m bar, and still admits one with unknown volume', async () => {
+  const T = Date.UTC(2026, 0, 6, 4, 45);   // a fresh 60m bar at IST 10:15 Tue
+  const OPEN = Date.UTC(2026, 0, 6, 6, 0); // IST 11:30 Tue — mid-session, that hour has closed
+  const orig = freeProvider.getHistory;
+  const fresh = async () => {
+    const t = await createTournament({ seed: intradaySeed(), backfillData: { NIFTY: dailySeries(), '60m:RELIANCE': intradaySeries(7, 1) }, persist: false });
+    await t.init();
+    return t;
+  };
+  try {
+    freeProvider.getHistory = async (sym) => ({ symbol: sym, candles: [{ t: T, c: 9999, v: 0 }] });
+    const shut = await fresh();
+    assert.equal(await shut.tickIntraday({ now: OPEN }), false, 'a zero-volume 60m bar is refused');
+    assert.equal(shut.getStandings().liveBars, 0, 'and nothing is appended');
+
+    freeProvider.getHistory = async (sym) => ({ symbol: sym, candles: [{ t: T, c: 9999, v: 5000 }] });
+    const traded = await fresh();
+    assert.equal(await traded.tickIntraday({ now: OPEN }), true, 'a bar with real volume is admitted');
+
+    // Absent volume is "no claim", not "nothing traded" — the pre-existing fixtures above send no
+    // `v` at all, so treating unknown as zero would break the whole intraday track.
+    freeProvider.getHistory = async (sym) => ({ symbol: sym, candles: [{ t: T, c: 9999 }] });
+    const quiet = await fresh();
+    assert.equal(await quiet.tickIntraday({ now: OPEN }), true, 'an unknown volume is still admitted');
+  } finally {
+    freeProvider.getHistory = orig;
+  }
+});

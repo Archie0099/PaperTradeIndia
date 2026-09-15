@@ -1332,7 +1332,31 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
         // A reset/add/remove/evolve landed during the network round-trip — abort
         // so we never push stale live data onto (or clobber) the new state.
         if (opSeq !== seq0) return changed;
-        const cs = (res.candles || []).filter((c) => Number.isFinite(c.c) && c.c > 0 && sessionClosed(c.t)).sort((a, b) => a.t - b.t);
+        // ★ A ZERO-VOLUME BAR IS NOT A SESSION, AND THE FORWARD RECORD IS APPEND-ONLY.
+        // On a day the exchange was shut the feed still emits a daily row. MEASURED across the
+        // cached history: 2,774 such rows, and on four declared 2026 NSE holidays ~110 stocks each
+        // carry one — previous close repeated verbatim, volume EXACTLY 0, while NIFTY correctly has
+        // no bar at all. The row starts life with a null close (which freeProvider rightly skips)
+        // and is later backfilled with the carry-forward, which is finite and positive and so
+        // sails through every other condition here.
+        //
+        // Admitting one writes a FABRICATED trading day into a live series that is never edited
+        // afterwards, and only for the stocks that carry it — so the board's own timeline gains a
+        // day the index does not have, which is the grid defect this project already has a warning
+        // about, arriving live instead of in history.
+        //
+        // Nothing has been contaminated yet: every measured phantom date precedes `deployedAt`.
+        // The next live NSE holiday is 2026-10-02, which is why this is here now.
+        //
+        // ★ Scope is deliberately LIVE ADMISSION ONLY. It changes which bars enter the record from
+        // here on and restates no published figure — unlike refusing to TRADE the historical ones,
+        // which would move every number on the board and stays an open decision.
+        // ★ An ABSENT volume is NOT treated as zero: "no claim" and "nothing traded" are different
+        // facts, and rejecting on unknown data would silently stall a series the feed is simply
+        // terse about. Only an explicit 0 is refused.
+        const cs = (res.candles || [])
+          .filter((c) => Number.isFinite(c.c) && c.c > 0 && !(c.v === 0) && sessionClosed(c.t))
+          .sort((a, b) => a.t - b.t);
         const series = seriesFor(symbol, interval);
         // Append EVERY completed bar newer than our cursor, not just the single
         // newest one: if the host slept/froze across 2+ sessions (a free-tier dyno
@@ -1385,7 +1409,14 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
         // window has elapsed (`c.t + period <= now`); the still-forming bar is picked up
         // once its hour closes — kept reproducible vs a clean offline backtest.
         const period = intervalMs(interval);
-        const cs = (res.candles || []).filter((c) => Number.isFinite(c.c) && c.c > 0 && c.t + period <= now).sort((a, b) => a.t - b.t);
+        // Same zero-volume refusal as the daily path above, for the same reason and with the same
+        // "explicit 0 only, never absent" rule. This path is ALSO gated on getMarketState().isOpen,
+        // which does consult the holiday list — but that list is hand-maintained one year at a time
+        // and fails OPEN when it lapses, so the outer guard has a known expiry and this one does
+        // not. One rule for "a bar with no trading in it", applied on both admission paths.
+        const cs = (res.candles || [])
+          .filter((c) => Number.isFinite(c.c) && c.c > 0 && !(c.v === 0) && c.t + period <= now)
+          .sort((a, b) => a.t - b.t);
         const series = seriesFor(symbol, interval);
         let cursor = series.length ? series[series.length - 1].t : 0; // advance as we append
         for (const bar of cs) {

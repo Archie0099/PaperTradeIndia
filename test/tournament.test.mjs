@@ -760,3 +760,51 @@ test('getStandings stamps a fresh `now` on every response, distinct from the rec
   assert.equal(second.asOf, asOfBefore, '`asOf` does NOT move without a recompute');
   assert.ok(second.now >= before, 'but `now` is re-stamped on the later read');
 });
+
+// ---------------------------------------------------------------------------
+// A ZERO-VOLUME bar is never admitted to the live forward record.
+//
+// On a day the exchange was shut the feed still emits a daily row. Measured across the cached
+// history: 2,774 such rows, and on four declared NSE holidays ~110 stocks each carry one — the
+// previous close repeated verbatim, volume EXACTLY 0, while the index correctly has no bar. The
+// row starts with a null close (which the provider rightly skips) and is later backfilled with
+// the carry-forward, which is finite and positive and passes every other admission condition.
+//
+// Admitting one writes a FABRICATED trading day into a series that is append-only and never
+// edited — and only for the stocks carrying it, so the board's timeline gains a day the index
+// does not have. `now` is injected, never the wall clock (§5).
+// ---------------------------------------------------------------------------
+test('tick() REFUSES a zero-volume bar, and still admits one whose volume is simply unknown', async () => {
+  const series = niftySeries();
+  const lastT = series[series.length - 1].t;
+  const barT = lastT + 864e5;
+  const close = Date.parse(new Date(barT + 5.5 * 3600e3).toISOString().slice(0, 10) + 'T10:00:00.000Z');
+  const after = close + 2 * 3600e3; // well past the settle margin: timing is not what is being tested
+  const orig = freeProvider.getHistory;
+
+  try {
+    // (a) A carried-forward holiday row: finite, positive, past the margin — and no trading in it.
+    freeProvider.getHistory = async () => ({ symbol: 'NIFTY', candles: [{ t: barT, c: series[series.length - 1].c, v: 0 }] });
+    const shut = await createTournament({ seed: SEED, backfillData: { NIFTY: series }, persist: false });
+    await shut.init();
+    const before = shut.getStandings().liveBars;
+    assert.equal(await shut.tick({ now: after }), false, 'a zero-volume bar is refused');
+    assert.equal(shut.getStandings().liveBars, before, 'and the live record does not grow');
+
+    // (b) The SAME bar with volume — a real session — must still be admitted, or the guard has
+    // simply broken the tick rather than filtered it.
+    freeProvider.getHistory = async () => ({ symbol: 'NIFTY', candles: [{ t: barT, c: 30000, v: 12345 }] });
+    const open = await createTournament({ seed: SEED, backfillData: { NIFTY: series }, persist: false });
+    await open.init();
+    assert.equal(await open.tick({ now: after }), true, 'a bar with real volume is admitted');
+
+    // (c) ABSENT volume is "no claim", not "nothing traded". Rejecting on unknown data would
+    // stall a series the feed is merely terse about, so it must still be admitted.
+    freeProvider.getHistory = async () => ({ symbol: 'NIFTY', candles: [{ t: barT, c: 30000 }] });
+    const quiet = await createTournament({ seed: SEED, backfillData: { NIFTY: series }, persist: false });
+    await quiet.init();
+    assert.equal(await quiet.tick({ now: after }), true, 'an unknown volume is not treated as zero');
+  } finally {
+    freeProvider.getHistory = orig;
+  }
+});
