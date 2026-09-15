@@ -135,16 +135,45 @@ function report() {
         if (seen != null && e.close !== seen) changes.push({ from: seen, to: e.close, at: e.hoursSinceClose });
         seen = e.close;
       }
-      const appear = firstNonNull ? `first value +${firstNonNull.hoursSinceClose}h = ${firstNonNull.close.toFixed(2)}` : 'NEVER appeared';
-      const stillNull = lastNull && (!firstNonNull || lastNull.at > firstNonNull.at) ? `  (still null at +${lastNull.hoursSinceClose}h)` : '';
+      // ★ "NEVER appeared" is a claim this log usually cannot support, and it used to print it
+      // from a single sample. Now that a close is known to be servable at +1.3h and gone by
+      // +8.7h, one late sample showing null is equally consistent with "not published yet" and
+      // with "published, then withdrawn before I looked". Say what was observed — no value in the
+      // samples taken — and let the reader see how many that was.
+      const appear = firstNonNull
+        ? `first value +${firstNonNull.hoursSinceClose}h = ${firstNonNull.close.toFixed(2)}`
+        : `no value in ${arr.length} sample${arr.length === 1 ? '' : 's'}`;
+      // ★ A NULL AFTER A VALUE IS NOT THE SAME STORY AS A NULL BEFORE ONE, AND THIS LINE USED TO
+      // TELL BOTH THE SAME WAY. "still null" is right when the close has not appeared yet; it is
+      // exactly backwards once a value HAS been served and the row has gone empty again, which is
+      // a WITHDRAWAL — the feed taking back something it had already published. Telling those two
+      // apart is the entire reason this log exists, so the wording has to branch.
+      const trailingNull = lastNull && (!firstNonNull || lastNull.at > firstNonNull.at);
+      const stillNull = !trailingNull
+        ? ''
+        : firstNonNull
+          ? `  ★ WITHDRAWN: served a close, then null again at +${lastNull.hoursSinceClose}h`
+          // Not "has not appeared yet" — that asserts the close was never served, which a late
+          // sample cannot establish now that withdrawal is known to happen.
+          : `  (null as of +${lastNull.hoursSinceClose}h — not published yet, OR published and withdrawn before this sample)`;
       console.log(`  ${sym.padEnd(14)} samples ${String(arr.length).padStart(2)}  ${appear}${stillNull}`);
       for (const c of changes) console.log(`      REVISED at +${c.at}h: ${c.from.toFixed(2)} -> ${c.to.toFixed(2)}  (${(((c.to / c.from) - 1) * 100).toFixed(4)}%)`);
-      if (firstNonNull && !changes.length && arr.length > 1) console.log('      no revision observed across the samples taken');
+      // Say "no revision" only about the values actually seen. A withdrawal is not a revision,
+      // and printing the reassuring line beside one would read as "nothing happened".
+      if (firstNonNull && !changes.length && arr.length > 1 && !trailingNull) {
+        console.log('      no revision observed across the samples taken');
+      } else if (firstNonNull && !changes.length && trailingNull) {
+        console.log('      (no REVISION among the values served — but see the withdrawal above)');
+      }
     }
     console.log();
   }
   console.log('Reading this: a first value that never changes across a +24h sample is evidence the');
   console.log('feed SETTLES on publication; any REVISED line is direct evidence it does not.');
+  console.log('★ A WITHDRAWN line is a third outcome, and it was not anticipated: the close was');
+  console.log('  served and then taken back. It means availability is a WINDOW, not a threshold —');
+  console.log('  sampling late can miss a close that really was published. Treat any single late');
+  console.log('  null as "not seen", never as "never published".');
   console.log(`\n★ Count only the ${sessionDates} SESSION date${sessionDates === 1 ? '' : 's'} above toward that.`);
   if (skipped) {
     console.log(`  ${skipped} date${skipped === 1 ? ' is' : 's are'} marked NOT A SESSION — the feed emits a daily row for days the`);
