@@ -518,11 +518,18 @@ test('staleness is measured from `now`, not `asOf` — a stalled recompute must 
     'the banner counts from the per-response clock, not the stalled recompute stamp');
 });
 
-test('a holiday OUTSIDE the maintained list is not claimed as a missed session', async () => {
+test('a year OUTSIDE the maintained holiday list gives an upper bound, never a session count', async () => {
   // The holiday list is hand-updated one year at a time. Beyond its coverage every holiday looks
-  // like a trading day, and on THIS panel that would assert in words that a session closed with no
-  // guidance when the exchange was shut. Silence is the correct failure: a missed warning costs
-  // nothing, an invented one costs trust in every other warning here.
+  // like a trading day, and on THIS panel asserting in words that a session closed with no
+  // guidance — when the exchange was simply shut — would be an invented warning.
+  //
+  // ★ THIS TEST USED TO REQUIRE COMPLETE SILENCE, and that was changed deliberately after a review
+  // measured the blast radius of the silence. The skip applied to every weekday in an uncovered
+  // year, not just to holidays: ~250 trading days suppressed to avoid ~15 false claims, so from
+  // the day the list lapsed this banner could never fire again until somebody hand-updated it —
+  // on the panel used to size real orders, where a reader told nothing concludes nothing was
+  // missed. The honest answer is neither the count nor silence. It is the upper bound, plus the
+  // reason it is only a bound.
   const dom = setupDom();
   const entry = advisorPayload({ today: { ...advisorPayload().today, date: '2029-01-01' } });
   const app = appWith(dom, entry, undefined,
@@ -530,8 +537,30 @@ test('a holiday OUTSIDE the maintained list is not claimed as a missed session',
   initAutoPilot(app);
   await renderAutoPilot(app);
   const txt = dom.$('#ap-suggestions').textContent;
-  assert.ok(!/trading session/.test(txt),
-    'a year the holiday list does not cover produces no staleness claim at all');
+  // Six weekdays fall strictly between 01-01 and 01-10 (today is never counted); none can be
+  // judged, because the list stops at 2026.
+  assert.match(txt, /These suggestions are from 2029-01-01\. 6 weekdays have passed since then with no new suggestion recorded — at most that many trading sessions, because the exchange-holiday list ends at 2026 and cannot say which of 6 of them the market was shut for\./,
+    'the banner states the bound, the count it cannot make, and why');
+  assert.ok(!/\d+ trading sessions have closed since then/.test(txt),
+    'it must NOT assert a definite number of missed sessions outside the list’s coverage');
+});
+
+test('a window STRADDLING the end of the holiday list counts both halves honestly', async () => {
+  // The case that will actually occur, on the first working day of the year the list runs out: a
+  // late-December entry read in January. Three weekdays fall inside the list's coverage and three
+  // outside it, and the banner must fold them into one bound rather than reporting only the half
+  // it happens to be sure about (which would understate) or all six as sessions (which would
+  // overstate on the panel someone sizes real orders from).
+  const dom = setupDom();
+  const entry = advisorPayload({ today: { ...advisorPayload().today, date: '2026-12-28' } });
+  const app = appWith(dom, entry, undefined,
+    Date.parse('2027-01-06T06:00:00Z'), Date.parse('2027-01-06T06:00:00Z'));
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  const txt = dom.$('#ap-suggestions').textContent;
+  assert.match(txt, /6 weekdays have passed since then/, 'both halves are in the bound');
+  assert.match(txt, /cannot say which of 3 of them the market was shut for/,
+    'only the three January weekdays are unjudged — the December ones the list still covers');
 });
 
 test('the action list names the suggestion date instead of calling it "today"', async () => {

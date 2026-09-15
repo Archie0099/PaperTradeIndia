@@ -23,6 +23,10 @@ const marketRoutes = require('./src/routes/market');
 // including the query-parameter name. See src/resetGuard.js for what it protects and why it is
 // a state token rather than a password.
 const { resetConfirmMiddleware } = require('./src/resetGuard');
+// The NSE holiday list is hand-maintained one year at a time and FAILS OPEN when it lapses — from
+// 1 January of the year after the last one it lists, every holiday reads as a normal trading
+// session. Nothing downstream can detect that, so the server says it out loud at boot.
+const { reportHolidayCoverage } = require('./src/marketHours');
 
 const app = express();
 
@@ -188,6 +192,10 @@ app.post('/api/tournament/remove', tournRateLimit, (req, res) => {
     // tick() itself now back-fills any missed sessions from its 5-day window).
     let tickBusy = false;
     setInterval(async () => {
+      // Re-check the holiday list's coverage on the way past. It prints at most once per IST day
+      // and nothing at all while the list is current, so this costs a string compare — and it is
+      // the only thing that will notice the lapse on a container that has been up since December.
+      reportHolidayCoverage();
       if (tickBusy) return;
       tickBusy = true;
       try { await t.tick(); } catch { /* no new bar this tick */ } finally { tickBusy = false; }
@@ -231,4 +239,9 @@ app.listen(config.port, () => {
   if (publicUrl) console.log(` Live at:  ${publicUrl}`);
   else console.log(` Open your browser at:  http://localhost:${config.port}`);
   console.log('-----------------------------------------------------------');
+  // Printed AFTER the banner so it is the last thing on screen at boot, and on stderr where a
+  // host's log viewer highlights it. Silent while the list is current. It is repeated from the
+  // tick loop below rather than only here, because this process is kept awake round the clock and
+  // a container that booted in December would otherwise sail through the lapse in silence.
+  reportHolidayCoverage();
 });

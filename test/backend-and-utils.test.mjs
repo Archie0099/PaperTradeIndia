@@ -22,11 +22,24 @@ import fallback from '../src/dataSources/fallback.js';
 import freeProvider from '../src/dataSources/freeProvider.js';
 
 // Frontend utilities are ES modules (public/js has its own package.json).
-import { getMarketState as clientMarketState, istClockString, HOLIDAYS as clientHolidays } from '../public/js/core/marketHours.js';
+import {
+  getMarketState as clientMarketState,
+  istClockString,
+  HOLIDAYS as clientHolidays,
+  HOLIDAY_YEARS as clientHolidayYears,
+} from '../public/js/core/marketHours.js';
 import { guessLotSize, parseExpiryMs } from '../public/js/ui/instruments.js';
 import { fmt, rupee, signed, moveClass } from '../public/js/ui/dom.js';
 
-const { getMarketState, HOLIDAYS } = serverMarketHours;
+const {
+  getMarketState,
+  HOLIDAYS,
+  HOLIDAY_YEARS,
+  holidayYearsOf,
+  holidaysCoverDate,
+  holidayCoverageWarning,
+  reportHolidayCoverage,
+} = serverMarketHours;
 const { TtlCache } = cachePkg;
 
 // A small helper: build a UTC instant from an IST wall-clock time. IST = UTC+5:30.
@@ -107,6 +120,129 @@ test('every listed holiday falls on a weekday and reads CLOSED', () => {
     assert.equal(m.state, 'CLOSED', `${d} should be CLOSED`);
     assert.equal(m.reason, 'Exchange holiday', `${d} reason`);
   }
+});
+
+// --- The holiday list's EXPIRY (it fails OPEN, which is the dangerous way) --
+// The list is hand-maintained one year at a time. On 1 January of the year after the last one it
+// lists, every NSE holiday starts reading as an ordinary trading session, and nothing downstream
+// can tell the difference — a holiday and a quiet trading day look identical from here. These
+// tests lock the three things that make the lapse LOUD rather than silent: the coverage is
+// DERIVED from the list, every market-state read carries it, and the server shouts once at boot.
+// Every one of them injects a fixed date: a test that read the wall clock for session logic would
+// go red on its own schedule, which has already happened here once.
+
+test('holiday coverage is derived from the list, and both copies agree', () => {
+  // The PROPERTY, not a re-derivation of the same expression (which would only prove that the
+  // code equals itself): every listed date's year must count as covered...
+  for (const d of HOLIDAYS) {
+    assert.ok(HOLIDAY_YEARS.includes(d.slice(0, 4)), `${d} is listed, so its year must be covered`);
+  }
+  // ...and a year the list says nothing about must NOT.
+  assert.ok(!HOLIDAY_YEARS.includes('1999'), 'a year with no listed dates is not covered');
+  // Server and client are two copies of one list, so they must answer identically.
+  assert.deepEqual([...clientHolidayYears], [...HOLIDAY_YEARS], 'client and server coverage must match');
+  // And the client's coverage must describe the client's OWN list (the two are kept in sync by the
+  // test above, so a constant computed from the wrong array would otherwise hide here).
+  for (const d of clientHolidays) assert.ok(clientHolidayYears.includes(d.slice(0, 4)), `${d}`);
+});
+
+test('a date outside the list reports holidayListStale — and still fails OPEN', () => {
+  const covered = getMarketState(istInstant('2026-06-15T12:00:00'));
+  assert.equal(covered.holidayListStale, false, '2026 is listed, so the list was useful here');
+  assert.equal(holidaysCoverDate(istInstant('2026-06-15T12:00:00')), true);
+
+  // Republic Day 2027 is a real NSE holiday, but the list stops at 2026. This test EXISTS to
+  // document the failure direction honestly: the answer is REGULAR (open), and the only defence
+  // is that it announces the list could not have known.
+  const beyond = getMarketState(istInstant('2027-01-26T12:00:00'));
+  assert.equal(beyond.state, 'REGULAR', 'documents the fail-open: an unlisted holiday reads open');
+  assert.equal(beyond.holidayListStale, true, 'but the caller is told the list did not cover it');
+  assert.equal(holidaysCoverDate(istInstant('2027-01-26T12:00:00')), false);
+
+  // The flag rides on EVERY branch, so a caller never has to know which one answered to know
+  // whether the list was consulted usefully.
+  for (const t of ['2027-01-23T12:00:00', '2027-01-26T09:05:00', '2027-01-26T20:00:00']) {
+    assert.equal(getMarketState(istInstant(t)).holidayListStale, true, `${t} should carry the flag`);
+  }
+  assert.equal(clientMarketState(istInstant('2027-01-26T12:00:00')).holidayListStale, true);
+  assert.equal(clientMarketState(istInstant('2026-06-15T12:00:00')).holidayListStale, false);
+});
+
+test('the client reports coverage of the list it was GIVEN, not of its own constant', () => {
+  // The status bar injects the SERVER's list (via /api/status). If the server has been updated for
+  // 2027 while this browser tab still runs older bundled code, the answer must follow the injected
+  // list — reporting staleness about a list nobody used would be a lie in the safe-looking
+  // direction (it would cry wolf) and, worse, the reverse case would stay silent.
+  // A realistic year's worth of dates, because one date is deliberately NOT a year (see the
+  // partial-year test below) — the injected list has to be a real update to be treated as one.
+  const server2027 = [
+    '2027-01-26', '2027-03-11', '2027-03-26', '2027-04-01', '2027-04-14', '2027-05-03',
+    '2027-06-16', '2027-08-16', '2027-09-10', '2027-10-04', '2027-10-20', '2027-11-01',
+    '2027-11-15', '2027-12-25',
+  ];
+  const m = clientMarketState(istInstant('2027-01-26T12:00:00'), server2027);
+  assert.equal(m.state, 'CLOSED', 'the injected list knows this date');
+  assert.equal(m.reason, 'Exchange holiday');
+  assert.equal(m.holidayListStale, false, 'coverage must follow the injected list');
+  // An EMPTY injected list covers nothing, and says so — it cannot rule anything out.
+  assert.equal(clientMarketState(istInstant('2026-06-15T12:00:00'), []).holidayListStale, true);
+});
+
+test('holidayCoverageWarning is silent while the list is current and loud the minute it lapses', () => {
+  // The boundary is deliberately checked in IST, not UTC: at this instant UTC is still 2026-12-31,
+  // so a UTC-based check would stay quiet through the first 5.5 hours of the year it stopped
+  // covering.
+  assert.equal(
+    holidayCoverageWarning(istInstant('2026-12-31T23:59:00')),
+    null,
+    'silent on the last day the list covers'
+  );
+
+  const warn = holidayCoverageWarning(istInstant('2027-01-01T00:01:00'));
+  assert.ok(warn, 'one IST minute later it must warn');
+  assert.match(warn, /2027/, 'names the year that is not covered');
+  assert.match(warn, /fails OPEN/i, 'says WHICH WAY it fails — an unlisted holiday reads as open');
+  assert.match(warn, /marketHours\.js/, 'names the files to edit');
+});
+
+test('a PARTIAL year does not count as covered', () => {
+  // The failure this prevents: next January's first date or two get pasted in ahead of the rest,
+  // year-presence flips the year to "covered", the boot warning goes quiet and every UNLISTED
+  // holiday that year silently reads as a trading session again. A year is covered only when the
+  // list holds a full year of it.
+  const partial = [...HOLIDAYS, '2027-01-26', '2027-03-11'];
+  assert.ok(!holidayYearsOf(partial).includes('2027'), 'two dates are not a year');
+  assert.equal(
+    clientMarketState(istInstant('2027-08-14T12:00:00'), partial).holidayListStale,
+    true,
+    'a partially-updated list must still report itself stale'
+  );
+  // The control: a full year IS covered, so the rule is a floor and not a blanket refusal.
+  const full = [...HOLIDAYS, ...Array.from({ length: 13 }, (_, i) => `2027-0${(i % 9) + 1}-1${i % 10}`)];
+  assert.ok(holidayYearsOf(full).includes('2027'), 'a full year of dates counts as covered');
+  assert.equal(clientMarketState(istInstant('2027-08-14T12:00:00'), full).holidayListStale, false);
+});
+
+test('the coverage warning repeats on a timer but at most once per IST day', () => {
+  // The boot shout alone cannot see the lapse it exists for: this process is kept awake round the
+  // clock, so a container booted in December runs through New Year without ever re-checking.
+  // `reportHolidayCoverage` is therefore called from the tick loop as well — which only works if
+  // it is quiet while the list is current, and quiet after it has already spoken today.
+  const said = [];
+  const log = (m) => said.push(m);
+
+  assert.equal(reportHolidayCoverage(istInstant('2026-06-15T10:00:00'), log), null, 'silent while current');
+  assert.equal(said.length, 0, 'nothing logged while the list is current');
+
+  const first = reportHolidayCoverage(istInstant('2027-04-01T10:00:00'), log);
+  assert.ok(first, 'speaks the first time it runs on a lapsed day');
+  assert.equal(said.length, 1);
+
+  assert.equal(reportHolidayCoverage(istInstant('2027-04-01T23:00:00'), log), null, 'not twice in a day');
+  assert.equal(said.length, 1, 'a tick every 10 minutes must not fill the log');
+
+  assert.ok(reportHolidayCoverage(istInstant('2027-04-02T00:30:00'), log), 'speaks again the next IST day');
+  assert.equal(said.length, 2);
 });
 
 test('istClockString renders IST wall-clock regardless of host timezone', () => {

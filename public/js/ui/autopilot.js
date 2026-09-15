@@ -32,12 +32,12 @@ import { bsPrice } from '../core/options.js';
 import { drawMultiLine, drawLineChart } from './chart.js';
 import { windowed, windowMsOf, spanOf, windowButtons, effectiveWindow } from './chartwindow.js';
 import { openBotPage } from './tournament.js'; // reuse the rich per-bot page for the followed strategy
-import { HOLIDAYS, istNow, isoDate } from '../core/marketHours.js';
-// Which YEARS does the hand-maintained holiday list actually cover? Outside them it cannot
-// distinguish a holiday from a trading day, and the suggestions panel must not claim a session
-// closed when the exchange was shut. Derived from the list itself so it can never go stale
-// separately from it.
-const HOLIDAY_YEARS = new Set(HOLIDAYS.map((d) => d.slice(0, 4)));
+// HOLIDAY_YEARS = which YEARS the hand-maintained holiday list actually covers. Outside them it
+// cannot distinguish a holiday from a trading day, and the suggestions panel must not claim a
+// session closed when the exchange was shut. It is derived from the list itself, in the same
+// module as the list, so it can never go stale separately from it — this panel used to re-derive
+// it here, which is exactly how two answers to one question drift apart.
+import { HOLIDAYS, istNow, isoDate, HOLIDAY_YEARS } from '../core/marketHours.js';
 
 const CFG_KEY = 'paper-trade-india:autopilot';
 
@@ -1210,12 +1210,20 @@ function renderSuggestions(app) {
   // the last RECOMPUTE time, and a recompute needs a NEW bar — so across a weekend, or whenever
   // the feed withholds a close, `asOf` stalls in lockstep with the log and the banner
   // under-reports precisely in the case it exists for. `now` is stamped per response.
+  // ★★ RETURNS TWO NUMBERS, NOT ONE, because "I could not tell" is a different answer from "none".
+  // `missed` counts finished sessions the list could vouch for; `unjudged` counts weekdays it
+  // could not, because they fall outside the years the holiday list covers. An earlier version
+  // returned only the count and simply skipped those weekdays — which meant that from the moment
+  // the list lapsed, EVERY weekday was skipped, the count was permanently 0, and this banner went
+  // dark for a whole year on the panel used to size real orders. Skipping the ~15 holidays was the
+  // intent; skipping the ~250 trading days with them was not.
   const sessionsMissedSince = (dateStr) => {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr || '')) return 0;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr || '')) return { missed: 0, unjudged: 0 };
     const stamp = lastStandings && (Number.isFinite(lastStandings.now) ? lastStandings.now : lastStandings.asOf);
     const nowMs = Number.isFinite(stamp) ? stamp : Date.now();
     const todayIso = isoDate(istNow(new Date(nowMs)));
-    let n = 0;
+    let missed = 0;
+    let unjudged = 0;
     const d = new Date(dateStr + 'T00:00:00Z');
     for (let i = 0; i < 400; i++) { // bounded: a stale-by-a-year entry still terminates
       d.setUTCDate(d.getUTCDate() + 1);
@@ -1224,16 +1232,15 @@ function renderSuggestions(app) {
       const dow = d.getUTCDay();
       if (dow === 0 || dow === 6) continue;
       if (HOLIDAYS.includes(iso)) continue;
-      // ★ THE HOLIDAY LIST COVERS ONE YEAR AND IS UPDATED BY HAND EACH JANUARY. Outside the years
-      // it actually lists, every holiday looks like a trading day — which on THIS panel would
-      // assert, in words, that a session closed without guidance when the exchange was simply
-      // shut. Silence is the right failure here: a missed warning costs the reader nothing, an
-      // invented one costs them trust in every other warning on the page. So only count dates
-      // inside the list's own coverage.
-      if (!HOLIDAY_YEARS.has(iso.slice(0, 4))) continue;
-      n += 1;
+      // ★ THE HOLIDAY LIST IS UPDATED BY HAND EACH JANUARY, AND OUTSIDE THE YEARS IT LISTS EVERY
+      // HOLIDAY LOOKS LIKE A TRADING DAY. Counting such a weekday as a missed session would
+      // assert, in words on the panel someone sizes real orders from, that a session closed
+      // without guidance when the exchange was simply shut. So it is NOT counted as missed — but
+      // it IS counted, separately, so the banner can say "I cannot tell" instead of "none".
+      if (!HOLIDAY_YEARS.includes(iso.slice(0, 4))) unjudged += 1;
+      else missed += 1;
     }
-    return n;
+    return { missed, unjudged };
   };
 
   const today = advisor.today;
@@ -1245,9 +1252,17 @@ function renderSuggestions(app) {
   // ONE staleness banner, rendered above every other state below, because all of them describe
   // the same recorded entry. It is deliberately not styled as an error: a gap is expected on the
   // free tier, and the reader needs the fact, not alarm.
-  const missed = sessionsMissedSince(today.date);
-  if (missed > 0) {
-    box.append(el('div', { style: 'margin: 8px 0; font-size: 12px; color: var(--down); font-weight: 600' },
+  const { missed, unjudged } = sessionsMissedSince(today.date);
+  const bannerStyle = 'margin: 8px 0; font-size: 12px; color: var(--down); font-weight: 600';
+  if (unjudged > 0) {
+    // The window reaches past the end of the holiday list, so the exact session count cannot be
+    // made honestly. Say the upper bound and WHY, rather than going quiet: a reader who is told
+    // nothing assumes nothing was missed, which is the one wrong conclusion available here.
+    const total = missed + unjudged;
+    box.append(el('div', { style: bannerStyle },
+      `These suggestions are from ${today.date}. ${total} weekday${total === 1 ? ' has' : 's have'} passed since then with no new suggestion recorded — at most that many trading sessions, because the exchange-holiday list ends at ${HOLIDAY_YEARS[HOLIDAY_YEARS.length - 1] || 'an earlier year'} and cannot say which of ${unjudged} of them the market was shut for. Prices and weights below are as at ${today.date} — check live quotes before acting on them.`));
+  } else if (missed > 0) {
+    box.append(el('div', { style: bannerStyle },
       `These suggestions are from ${today.date}. ${missed} trading session${missed === 1 ? ' has' : 's have'} closed since then with no new suggestion recorded, so they do not reflect ${missed === 1 ? 'that session' : 'those sessions'}. Prices and weights below are as at ${today.date} — check live quotes before acting on them.`));
   }
 

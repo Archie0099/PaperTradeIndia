@@ -34,6 +34,36 @@ const HOLIDAYS = [
   '2026-12-25', // Christmas
 ];
 
+// ★ THE LIST HAS AN EXPIRY, AND IT FAILS OPEN. Mirror of the note in src/marketHours.js: it is
+// maintained by hand one year at a time, so once "now" outruns it every NSE holiday reads as an
+// ordinary trading session. The coverage is derived FROM the list so the two can never drift
+// apart, and `getMarketState` publishes it — note it answers about the list it was GIVEN, not
+// about the constant below, since the status bar injects the server's list via /api/status and a
+// coverage answer about a list nobody used would be a lie.
+//
+// A year counts as covered only if the list holds a FULL year of it. Year-PRESENCE is not enough,
+// or the first date of next January pasted in ahead of the rest switches the alarm off while the
+// other fourteen are still missing. NSE publishes 13-17 weekday closures a year, so a real list
+// clears this floor with room to spare and a half-finished one does not. Keep the rule and the
+// floor identical to src/marketHours.js.
+const MIN_DATES_PER_COVERED_YEAR = 8;
+
+// Which years does a holiday list cover? A sorted array of "YYYY" strings — ONE shape for this
+// concept everywhere, so no caller has to remember whether it got a Set.
+function holidayYearsOf(holidays = HOLIDAYS) {
+  const perYear = new Map();
+  for (const d of holidays || []) {
+    const y = String(d).slice(0, 4);
+    perYear.set(y, (perYear.get(y) || 0) + 1);
+  }
+  return [...perYear.entries()]
+    .filter(([, n]) => n >= MIN_DATES_PER_COVERED_YEAR)
+    .map(([y]) => y)
+    .sort();
+}
+
+const HOLIDAY_YEARS = Object.freeze(holidayYearsOf(HOLIDAYS));
+
 // Get the current moment expressed in IST. IST is a FIXED UTC+5:30 (no DST), so
 // we shift the absolute epoch by +5:30 and then read the parts with the **UTC**
 // getters below. This is correct on any host timezone — including hosts that
@@ -61,7 +91,10 @@ function istClockString(date = new Date()) {
   return `${hh}:${mm}:${ss}`;
 }
 
-// Returns { state:'REGULAR'|'PREOPEN'|'CLOSED', isOpen, reason }.
+// Returns { state:'REGULAR'|'PREOPEN'|'CLOSED', isOpen, reason, holidayListStale }.
+// `holidayListStale` is true when the list in use does not cover the queried date's year — i.e.
+// the holiday branch below could not have fired even if that date IS a holiday. It says "the list
+// was no help here", never "this is a trading day".
 function getMarketState(date = new Date(), holidays = HOLIDAYS) {
   const ist = istNow(date);
   const weekday = ist.getUTCDay();
@@ -69,16 +102,21 @@ function getMarketState(date = new Date(), holidays = HOLIDAYS) {
   const PREOPEN = 9 * 60;
   const OPEN = 9 * 60 + 15;
   const CLOSE = 15 * 60 + 30;
+  const stale = !holidayYearsOf(holidays).includes(String(ist.getUTCFullYear()));
 
-  if (weekday === 0 || weekday === 6) return { state: 'CLOSED', isOpen: false, reason: 'Weekend' };
+  if (weekday === 0 || weekday === 6)
+    return { state: 'CLOSED', isOpen: false, reason: 'Weekend', holidayListStale: stale };
   if (holidays.includes(isoDate(ist)))
-    return { state: 'CLOSED', isOpen: false, reason: 'Exchange holiday' };
+    return { state: 'CLOSED', isOpen: false, reason: 'Exchange holiday', holidayListStale: stale };
   if (minutes >= PREOPEN && minutes < OPEN)
-    return { state: 'PREOPEN', isOpen: false, reason: 'Pre-open (09:00-09:15)' };
+    return { state: 'PREOPEN', isOpen: false, reason: 'Pre-open (09:00-09:15)', holidayListStale: stale };
   if (minutes >= OPEN && minutes < CLOSE)
-    return { state: 'REGULAR', isOpen: true, reason: 'Regular session' };
-  return { state: 'CLOSED', isOpen: false, reason: 'Outside trading hours' };
+    return { state: 'REGULAR', isOpen: true, reason: 'Regular session', holidayListStale: stale };
+  return { state: 'CLOSED', isOpen: false, reason: 'Outside trading hours', holidayListStale: stale };
 }
 
 // `istNow` and `isoDate` are exported so callers that need "what IST date is it?" use THIS
-export { getMarketState, istClockString, istNow, isoDate, HOLIDAYS };
+// definition rather than hand-rolling one. Getting IST right is subtler than it looks (see the
+// comment on istNow: a getTimezoneOffset-based version is wrong around a host's DST switch), and
+// a second copy would drift from this one silently.
+export { getMarketState, istClockString, istNow, isoDate, HOLIDAYS, HOLIDAY_YEARS, holidayYearsOf };
