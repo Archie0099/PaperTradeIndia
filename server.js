@@ -192,10 +192,6 @@ app.post('/api/tournament/remove', tournRateLimit, (req, res) => {
     // tick() itself now back-fills any missed sessions from its 5-day window).
     let tickBusy = false;
     setInterval(async () => {
-      // Re-check the holiday list's coverage on the way past. It prints at most once per IST day
-      // and nothing at all while the list is current, so this costs a string compare — and it is
-      // the only thing that will notice the lapse on a container that has been up since December.
-      reportHolidayCoverage();
       if (tickBusy) return;
       tickBusy = true;
       try { await t.tick(); } catch { /* no new bar this tick */ } finally { tickBusy = false; }
@@ -240,8 +236,17 @@ app.listen(config.port, () => {
   else console.log(` Open your browser at:  http://localhost:${config.port}`);
   console.log('-----------------------------------------------------------');
   // Printed AFTER the banner so it is the last thing on screen at boot, and on stderr where a
-  // host's log viewer highlights it. Silent while the list is current. It is repeated from the
-  // tick loop below rather than only here, because this process is kept awake round the clock and
-  // a container that booted in December would otherwise sail through the lapse in silence.
+  // host's log viewer highlights it. Silent while the list is current.
   reportHolidayCoverage();
+  // ★ AND REPEATED ON ITS OWN TIMER, because the boot shout cannot see the moment it exists for:
+  // this process is kept awake round the clock, so a container that started in December would
+  // otherwise run straight through New Year in silence. It prints at most once per IST day and
+  // nothing at all while the list is current, so the timer costs a string compare.
+  //
+  // It lives HERE, beside app.listen, and NOT in the tournament's tick loop where it started.
+  // That loop is registered only after `await t.init()` inside an async IIFE whose catch swallows
+  // a boot failure — so on any tournament-boot failure the recurring check would never have been
+  // registered at all, while the site carried on serving /api/status with a lapsed calendar. The
+  // holiday list has nothing to do with the tournament; its watchdog should not share its fate.
+  setInterval(() => reportHolidayCoverage(), 10 * 60 * 1000);
 });

@@ -7,6 +7,7 @@
 // ---------------------------------------------------------------------------
 
 import { $, el, clear, rupee, signed, moveClass } from './dom.js';
+import { priceIsLive } from './positions.js';
 
 // Read the current ticket form into a plain object.
 function readTicket() {
@@ -128,10 +129,18 @@ function initOrders(app) {
       return;
     }
     // For a MARKET order with no price typed, use the last known price.
+    // ★ AND SAY SO IF THAT PRICE IS NOT LIVE. This is the same frozen mark the Positions table
+    // marks and the Close button asks about — reached one tab away, by typing the contract into
+    // the ticket instead of clicking Close. Without this, an offsetting MARKET sell placed here
+    // books realised P&L against a stale price in silence, while the identical action taken from
+    // the Positions tab warns. One fact, so one warning, wherever you act on it.
     if (t.orderType === 'MARKET' && (!t.price || t.price <= 0)) {
       const key = keyForInstrument(t.instrument);
       const last = app.engine.state.lastPrices[key];
-      if (last) t.price = last;
+      if (last) {
+        if (!confirmStaleTicketFill(app, t.instrument, last)) return;
+        t.price = last;
+      }
     }
     const order = app.engine.placeOrder(t);
     app.tabs.show('orders');
@@ -192,6 +201,28 @@ function loadTicket(app, inst, side, price, lots = 1) {
 // This is a deliberate simplification (polling every held expiry in the background would hammer a
 // free, unofficial, rate-limited endpoint), so it is disclosed rather than papered over — but it
 // was only ever disclosed in a source comment, which is no use to the person watching the pill.
+// A MARKET order with no typed price fills at whatever the engine last saw. When nothing is
+// feeding that contract, "whatever it last saw" can be hours old, so this asks first — the same
+// question the Close button asks, because it is the same act with the same consequence.
+// Silent for anything being priced, and silent when a price was typed (then it is your number,
+// not a stale one).
+function confirmStaleTicketFill(app, inst, last) {
+  // No separate equity case: priceIsLive() already exempts equities, and a second check here
+  // would be a line no test can turn red — the kind of dead guard someone later "fixes" in the
+  // wrong direction. One definition of liveness, asked once.
+  if (priceIsLive(app, inst)) return true;
+  if (typeof window === 'undefined' || typeof window.confirm !== 'function') return true;
+  const what = inst.kind === 'FUT' ? 'future' : 'option';
+  return window.confirm(
+    `Place this MARKET order at ${last.toFixed(2)}?\n\n` +
+      `That is NOT a live price. Nothing is currently feeding this ${what} — it is only priced ` +
+      `while the Option Chain tab is OPEN on ${inst.symbol} ${inst.expiry} — so ${last.toFixed(2)} ` +
+      `is simply the last price seen, and this order will fill against it.\n\n` +
+      `To trade at a current price, cancel and open that expiry in the Option Chain, or type a ` +
+      `price into the ticket yourself.`
+  );
+}
+
 function dormantFno(o) {
   return o && o.status === 'PENDING' && o.instrument && o.instrument.kind !== 'EQ';
 }

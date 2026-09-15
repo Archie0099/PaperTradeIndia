@@ -62,6 +62,20 @@ class Engine {
     // a MARKET fill) and usually true live. Rebuilt whenever the order book is replaced
     // wholesale (load / import / reset). Not persisted (it's pure cache of state.orders).
     this._pending = new Set();
+    // ★ WHEN each instrument key was last handed a price, by wall clock. Deliberately NOT in
+    // `state`: it is not part of the portfolio, it must never be exported, imported or restored,
+    // and "nothing has been priced yet" is the CORRECT reading immediately after a reload — the
+    // first poll re-stamps whatever is actually being fed.
+    //
+    // This exists because the UI needs to answer "is this price still being fed?", and the only
+    // honest way to answer it is to OBSERVE the feed rather than model it. An earlier version
+    // modelled it — equities are polled, a copied leg is re-marked, an option is fed if the
+    // chain on screen matches its symbol and expiry — and the model was wrong twice over: the
+    // chain only refreshes while its own TAB is active (so nothing feeds an option while you are
+    // looking at the Positions table), and even then it only feeds strikes inside the visible
+    // window that carry a positive LTP. A stamp at the one place every price enters cannot drift
+    // from the feed, because it IS the feed.
+    this.lastPriceAt = Object.create(null);
     this.state = this.freshState();
     this.load();
     this._rebuildPending();
@@ -837,6 +851,10 @@ class Engine {
   onPriceUpdate(key, price, silent = false) {
     if (!Number.isFinite(price) || price <= 0) return;
     this.state.lastPrices[key] = price;
+    // Stamped here and nowhere else: this is the single door every live price comes through
+    // (the equity poll, the option chain, the Auto-Pilot re-mark). See the note in the
+    // constructor for why the UI needs it and why modelling it instead did not work.
+    this.lastPriceAt[key] = Date.now();
 
     let changed = false;
     // Only scan the order book for limit fills when something is actually resting (see

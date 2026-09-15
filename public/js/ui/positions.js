@@ -79,34 +79,42 @@ function renderPositions(app) {
   root.append(table);
 }
 
-// ★ IS THIS INSTRUMENT'S PRICE CURRENTLY BEING FED INTO THE ENGINE?
+// How recently a price must have arrived to count as live. The option chain refreshes every 6s
+// while its tab is open, so three missed refreshes means the feed really has stopped — which
+// happens the moment you navigate away from the Chain tab, since that refresh is gated on the tab
+// being active. Generous enough that arriving from the chain does not instantly cry stale.
+const LIVE_PRICE_MS = 20000;
+
+// ★ IS THIS INSTRUMENT'S PRICE STILL BEING FED INTO THE ENGINE?
 //
-// This is a STRUCTURAL question, not a timing one, which is why it needs no timestamps: it asks
-// whether any feed exists for this contract right now, and there are exactly three cases.
+// ★★ THIS IS AN OBSERVATION, NOT A MODEL, AND THAT DISTINCTION IS THE WHOLE POINT. The first
+// version answered it structurally — an equity is polled, a copied leg is re-marked, an option is
+// fed if `app.state.chain` matches its symbol and expiry — and a review showed the model was wrong
+// in both directions:
 //
-//   EQ  — always fed. app.js's symbolsToPoll() adds the symbol of EVERY open position, so a held
-//         equity is quoted on every poll whether or not it is on screen. (Whether that poll
-//         SUCCEEDED is a different question, and the status bar's own banner already answers it.)
-//   OPT carrying expiryMs + iv — always fed. These are Auto-Pilot copies living under a modelled
-//         expiry no real chain serves, and remarkOptionPositions() re-prices them off the live
-//         underlying on every poll. Their price is a model price, which the Auto-Pilot UI labels
-//         as indicative; it is not stale.
-//   OPT / FUT otherwise — fed ONLY while the option chain on screen is showing that exact symbol
-//         AND expiry, because feedEngineFromChain() is their only price source and it walks the
-//         displayed chain. Hold two expiries, or switch the chain to another underlying, and the
-//         contracts you are no longer looking at stop being marked entirely.
+//   * It said LIVE for the contract you had just been looking at, forever. `app.state.chain` is
+//     assigned once and never cleared, while the chain's 6s refresh is gated on the Chain TAB
+//     being active — and the Positions table lives in a different, mutually exclusive panel. So
+//     at the exact moment this marker renders, NOTHING is feeding any F&O contract, and the
+//     matching one was the single case the rule exempted. Buy an option, switch to the dashboard,
+//     sit for two hours: no marker, and Close filled at the two-hour-old price without asking.
+//   * It said LIVE for contracts the chain provably cannot feed: `feedEngineFromChain` only walks
+//     the strikes actually in the visible window and skips any leg without a positive LTP. Hold a
+//     26000 CE with spot at 23500 and the rule still called it live.
 //
-// The last case is the reachable one, and it is easy to hit by accident: the position keeps its
-// fill price as "LTP" and shows an unrealised P&L frozen at (usually) zero, while the portfolio
-// Greeks beside it DO keep moving, because those reprice off the live underlying spot. So the
-// screen can simultaneously say the position has not moved and that its delta has.
+// Both faults are the same mistake — re-deriving what the feed does instead of watching what it
+// did. `engine.lastPriceAt` is stamped inside `onPriceUpdate`, the one door every live price comes
+// through, so this cannot drift from the feed again and needs no knowledge of strike windows,
+// LTPs or which tab is open.
+//
+// Equities keep an explicit exemption: app.js polls every held symbol on a timer regardless of
+// tab, and a genuine feed OUTAGE is a different question that the status bar's own banner already
+// answers — marking every equity row during a blip would duplicate that alarm, badly.
 function priceIsLive(app, inst) {
   if (!inst) return true;
   if (inst.kind === 'EQ') return true;
-  if (inst.kind === 'OPT' && inst.expiryMs != null && inst.iv > 0) return true; // re-marked each poll
-  const chain = app.state && app.state.chain;
-  if (!chain) return false; // the chain tab has never loaded — nothing is feeding F&O at all
-  return chain.symbol === inst.symbol && chain.expiry === inst.expiry;
+  const at = app.engine.lastPriceAt && app.engine.lastPriceAt[instrumentKey(inst)];
+  return Number.isFinite(at) && Date.now() - at < LIVE_PRICE_MS;
 }
 
 // Every OPEN position being marked at a price nobody is feeding. ONE definition, used by the
@@ -126,14 +134,25 @@ function notLivePositions(app) {
 const countNotLive = (app) => notLivePositions(app).length;
 
 // The hover text. It names the ONE thing the reader can do about it, because "this is stale" with
-// no remedy just makes the screen feel broken.
+// no remedy just makes the screen feel broken — and the remedy differs by how the contract is
+// priced, so the sentence has to branch rather than assert the common case at everything.
 function staleReason(inst) {
   const what = inst.kind === 'FUT' ? 'future' : 'option';
+  // An Auto-Pilot copied leg lives under a modelled expiry no chain serves; it is re-priced off
+  // the live underlying on every poll, so if it has gone quiet the chain is not the remedy — the
+  // underlying quote is missing.
+  if (inst.kind === 'OPT' && inst.expiryMs != null && inst.iv > 0) {
+    return (
+      `Not a live price. This copied leg is re-priced from the live ${inst.symbol} quote on every ` +
+      `poll, and that has not happened recently — most likely the ${inst.symbol} quote is not ` +
+      `arriving. This is the last price seen, and the unrealised P&L beside it is frozen with it.`
+    );
+  }
   return (
-    `Not a live price. This ${what} is only marked while the Option Chain tab is showing ` +
-    `${inst.symbol} ${inst.expiry}; right now it is not, so this is the last price seen ` +
-    `(usually the price it was filled at) and the unrealised P&L beside it is frozen with it. ` +
-    `Open that expiry in the Option Chain to mark it again.`
+    `Not a live price. This ${what} is only marked while the Option Chain tab is OPEN on ` +
+    `${inst.symbol} ${inst.expiry} — the chain stops refreshing the moment you leave that tab, so ` +
+    `this is the last price seen (usually the price it was filled at) and the unrealised P&L ` +
+    `beside it is frozen with it. Open that expiry in the Option Chain to mark it again.`
   );
 }
 
@@ -149,10 +168,10 @@ function confirmStalePriceClose(app, pos, last) {
   if (typeof window === 'undefined' || typeof window.confirm !== 'function') return true;
   return window.confirm(
     `Close ${contractLabel(pos.instrument)} at ${last.toFixed(2)}?\n\n` +
-      `That is NOT a live price. This contract is only marked while the Option Chain tab is ` +
-      `showing ${pos.instrument.symbol} ${pos.instrument.expiry}, so ${last.toFixed(2)} is the ` +
-      `last price seen — usually the price you filled at — and the realised P&L this books will ` +
-      `be calculated from it.\n\n` +
+      `That is NOT a live price. This contract is only marked while the Option Chain tab is OPEN ` +
+      `on ${pos.instrument.symbol} ${pos.instrument.expiry} — the chain stops refreshing the ` +
+      `moment you leave that tab — so ${last.toFixed(2)} is the last price seen, usually the ` +
+      `price you filled at, and the realised P&L this books will be calculated from it.\n\n` +
       `To close at a current price, cancel and open that expiry in the Option Chain first.`
   );
 }

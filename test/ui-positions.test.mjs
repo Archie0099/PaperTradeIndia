@@ -9,7 +9,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { setupDom } from '../test-helpers/dom-harness.mjs';
+import { setupDom, syntheticChain } from '../test-helpers/dom-harness.mjs';
+import { renderChain } from '../public/js/ui/optionChain.js';
+import { remarkOptionPositions } from '../public/js/ui/autopilot.js';
 import { renderPositions, portfolioGreeks, confirmStaleSquareOff } from '../public/js/ui/positions.js';
 
 // Build the dashboard wired to re-render on engine changes (as app.js does).
@@ -18,6 +20,30 @@ function mount(dom) {
   app.engine.subscribe(() => renderPositions(app));
   renderPositions(app);
   return app;
+}
+
+// ★ FEED a contract the way the app really does, instead of DECLARING that it is fed.
+// renderChain() ends by calling feedEngineFromChain(), which walks the visible strikes and pushes
+// each positive LTP through engine.onPriceUpdate — the one door that stamps `lastPriceAt`. Driving
+// the real renderer means these fixtures exercise the real feed, including both of its conditions:
+// the strike must be IN the visible window, and its LTP must be positive.
+//
+// The first version of these controls set `app.state.chain = { ..., strikes: [] }` and then
+// asserted the option was live. A chain with no strikes feeds NOTHING, so the fixture built the
+// opposite of the state its own name claimed — it passed only because the rule under test was
+// modelling the feed rather than watching it, and the model agreed with the fixture's shape.
+function feedChain(app, expiry, strike) {
+  const chain = syntheticChain('NIFTY', expiry);
+  if (strike != null && !chain.strikes.some((r) => r.strike === strike)) {
+    chain.strikes.push({
+      strike,
+      ce: { ltp: 120, bid: 1, ask: 2, iv: 12.5, volume: 10, oi: 100, changeOi: 0 },
+      pe: { ltp: 90, bid: 1, ask: 2, iv: 13, volume: 10, oi: 100, changeOi: 0 },
+    });
+  }
+  app.state.chain = chain;
+  renderChain(app, chain);
+  return chain;
 }
 
 const buy = (engine, symbol, lots, price) =>
@@ -278,7 +304,7 @@ test('CONTROL: the same option IS live while its own expiry is the chain on scre
   const dom = setupDom();
   const app = mount(dom);
   buyOpt(app.engine, OPT('30-Oct-2026'), 120);
-  app.state.chain = { symbol: 'NIFTY', expiry: '30-Oct-2026', strikes: [] };
+  feedChain(app, '30-Oct-2026', 23500); // really feeds it, through the real chain renderer
   renderPositions(app);
   assert.ok(!dom.document.querySelector('.stale-mark'), 'a contract being fed must NOT be marked');
 });
@@ -292,16 +318,38 @@ test('CONTROL: an equity is never marked — every held symbol is polled regardl
   assert.ok(!dom.document.querySelector('.stale-mark'), 'equities are polled by symbolsToPoll(), never stale this way');
 });
 
-test('CONTROL: an Auto-Pilot copied leg is never marked — it is re-priced off the underlying each poll', () => {
+test('CONTROL: an Auto-Pilot copied leg that IS being re-marked is not called stale', () => {
   const dom = setupDom();
   const app = mount(dom);
   // A copied leg carries expiryMs + iv and lives under a modelled expiry no chain serves;
-  // remarkOptionPositions() re-marks it every poll, so it is a MODEL price but not a stale one.
+  // remarkOptionPositions() re-prices it off the live underlying on every poll, so its price is a
+  // MODEL price but not a stale one. Drive the REAL re-mark rather than exempting the leg by its
+  // shape: an earlier version of this rule trusted `expiryMs && iv` and would have called the leg
+  // live even when nothing was re-marking it.
   const leg = { ...OPT('cyc293'), expiryMs: Date.now() + 30 * 864e5, iv: 0.14 };
   buyOpt(app.engine, leg, 400);
-  app.state.chain = { symbol: 'NIFTY', expiry: '24-Sep-2026', strikes: [] };
+  app.state.quotes.NIFTY = { ltp: 23500 }; // the underlying quote the re-mark needs
+  remarkOptionPositions(app);
   renderPositions(app);
   assert.ok(!dom.document.querySelector('.stale-mark'), 'a re-marked copied leg must not be called stale');
+});
+
+test('a copied leg whose underlying quote never arrives IS marked', () => {
+  // The other half, and the reason the rule watches the feed instead of the instrument's shape:
+  // remarkOptionPositions() gives up when there is no underlying quote (`if (!(spot > 0)) continue`),
+  // so the leg silently stops being re-priced. Its shape still says "copied leg", which is exactly
+  // why shape is the wrong thing to trust.
+  const dom = setupDom();
+  const app = mount(dom);
+  const leg = { ...OPT('cyc293'), expiryMs: Date.now() + 30 * 864e5, iv: 0.14 };
+  buyOpt(app.engine, leg, 400);
+  delete app.state.quotes.NIFTY; // no underlying quote -> the re-mark cannot run
+  remarkOptionPositions(app);
+  renderPositions(app);
+  const mark = dom.$('#positions-table').querySelector('.stale-mark');
+  assert.ok(mark, 'an un-re-marked copied leg must be marked');
+  assert.match(mark.getAttribute('title'), /re-priced from the live NIFTY quote/,
+    'and the hover must give the copied-leg reason, not "open the Option Chain"');
 });
 
 test('with no chain ever loaded, a manual option is marked (nothing is feeding F&O at all)', () => {
@@ -359,7 +407,7 @@ test('CONTROL: closing an option whose own expiry is on screen never asks', () =
   const dom = setupDom();
   const app = mount(dom);
   buyOpt(app.engine, OPT('30-Oct-2026'), 120);
-  app.state.chain = { symbol: 'NIFTY', expiry: '30-Oct-2026', strikes: [] };
+  feedChain(app, '30-Oct-2026', 23500);
   renderPositions(app);
   dom.setConfirm(false);
   dom.fire(dom.$$('#positions-table tbody tr button').find((b) => b.textContent === 'Close'), 'click');
@@ -388,7 +436,7 @@ test('CONTROL: square off all asks nothing when every position is being fed', ()
   const app = mount(dom);
   buy(app.engine, 'RELIANCE', 10, 1200);
   buyOpt(app.engine, OPT('30-Oct-2026'), 120);
-  app.state.chain = { symbol: 'NIFTY', expiry: '30-Oct-2026', strikes: [] }; // the option IS fed
+  feedChain(app, '30-Oct-2026', 23500); // the option really IS fed
   dom.setConfirm(false);
   assert.equal(confirmStaleSquareOff(app), true, 'it proceeds without asking');
   assert.equal(dom.confirms.length, 0, 'no dialog when there is nothing to warn about');
@@ -421,7 +469,7 @@ test('CONTROL: the card says nothing when every position is being priced', () =>
   const app = mount(dom);
   buy(app.engine, 'RELIANCE', 10, 1200);
   buyOpt(app.engine, OPT('30-Oct-2026'), 120);
-  app.state.chain = { symbol: 'NIFTY', expiry: '30-Oct-2026', strikes: [] }; // the option IS fed
+  feedChain(app, '30-Oct-2026', 23500); // the option really IS fed
   renderPositions(app);
   assert.ok(!dom.$('#pnl-summary').querySelector('.stale-mark'),
     'no note when there is nothing to note — it must never be permanent furniture');
@@ -436,7 +484,7 @@ test('the headline note and the square-off guard count the same positions', () =
   buy(app.engine, 'RELIANCE', 10, 1200);
   buyOpt(app.engine, OPT('30-Oct-2026'), 120);
   buyOpt(app.engine, OPT('27-Nov-2026', 24000), 90);
-  app.state.chain = { symbol: 'NIFTY', expiry: '30-Oct-2026', strikes: [] }; // October fed, November not
+  feedChain(app, '30-Oct-2026', 23500); // October really fed; November never was
   renderPositions(app);
 
   assert.match(dom.$('#pnl-summary').textContent, /· 1 not live/, 'one position is unfed');
@@ -446,4 +494,46 @@ test('the headline note and the square-off guard count the same positions', () =
   assert.match(msg, /1 of these positions has no live price/, 'the guard agrees on the count');
   assert.match(msg, /NIFTY 24000 CE 27-Nov-2026/, 'and it is the November one');
   assert.ok(!/30-Oct-2026/.test(msg), 'the October contract is fed, so it is not listed');
+});
+
+// --- the case the whole rewrite exists for: fed, then LEFT ALONE -------------
+// This is the scenario a review found the first rule got backwards. `app.state.chain` is assigned
+// once and never cleared, while the chain's 6-second refresh is gated on the Chain TAB being
+// active — and the Positions table lives in a different, mutually exclusive panel. So the contract
+// you were last looking at stops being fed the instant you navigate away, and the original rule
+// called precisely that contract "live" forever.
+//
+// A fixture that only ever tests "fed" vs "never fed" cannot see this: both rules agree there.
+// The distinguishing case is a contract that WAS fed and then went quiet, which is why the stamp
+// is aged here rather than the chain being taken away.
+test('a contract that WAS fed goes stale once the feed stops', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  buyOpt(app.engine, OPT('30-Oct-2026'), 120);
+  feedChain(app, '30-Oct-2026', 23500);
+  renderPositions(app);
+  assert.ok(!dom.$('#positions-table').querySelector('.stale-mark'), 'fed right now: not marked');
+
+  // Leave the Chain tab: nothing refreshes it any more. The chain object itself stays put — that
+  // is the whole trap — so only the age of the last feed can tell the difference.
+  app.engine.lastPriceAt['OPT:NIFTY:30-Oct-2026:23500:CE'] -= 60000; // one minute of sitting on the dashboard
+  renderPositions(app);
+  assert.ok(dom.$('#positions-table').querySelector('.stale-mark'),
+    'a minute later, with app.state.chain STILL matching, it must be marked');
+  assert.match(dom.$('#pnl-summary').textContent, /· 1 not live/, 'and the headline agrees');
+});
+
+test('Close asks about a contract that was fed and then went quiet', () => {
+  // The same drift, at the point where it costs money rather than just reading wrong.
+  const dom = setupDom();
+  const app = mount(dom);
+  buyOpt(app.engine, OPT('30-Oct-2026'), 120);
+  feedChain(app, '30-Oct-2026', 23500);
+  app.engine.lastPriceAt['OPT:NIFTY:30-Oct-2026:23500:CE'] -= 2 * 60 * 60 * 1000; // two hours later
+  renderPositions(app);
+
+  dom.setConfirm(false);
+  dom.fire(dom.$$('#positions-table tbody tr button').find((b) => b.textContent === 'Close'), 'click');
+  assert.equal(dom.confirms.length, 1, 'it asks, even though the chain still matches');
+  assert.ok(app.engine.state.positions['OPT:NIFTY:30-Oct-2026:23500:CE'], 'and cancelling holds');
 });

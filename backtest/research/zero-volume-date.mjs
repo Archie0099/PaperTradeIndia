@@ -85,7 +85,10 @@ function probe(candles, date) {
     zeroVol: c.v === 0,
     unknownVol: c.v == null,
     carried: prev != null && c.c === prev.c,
-    flat: c.o === c.c && c.h === c.l && c.o === c.c, // an untouched row: no range at all
+    // An untouched row: open, high, low and close all equal, i.e. no range at all. The third
+    // clause must tie the BODY to the RANGE — repeating `c.o === c.c` (as this first did) leaves
+    // o===c===100 with h===l===105 passing as "no range".
+    flat: c.o === c.c && c.h === c.l && c.o === c.h,
     close: c.c,
     prevClose: prev ? prev.c : null,
     stampUtc: new Date(c.t).toISOString().slice(11, 19),
@@ -162,17 +165,30 @@ if (args.includes('--sweep')) {
     const m = marketBy.get(d);
     const p = marketPrev.get(d);
     const moved = m && p ? ((100 * (m.c - p.c)) / p.c).toFixed(2) : null;
+    // ★ A BAR IS NOT A TRADE — INCLUDING THE INDEX'S. The first version of this line read a bar's
+    // mere existence as "index TRADED ... exchange OPEN", which is exactly the mistake this whole
+    // tool exists to expose, made about the one series it uses as its control. The feed emits
+    // carried-forward index rows too (volume 0, close identical to the previous day), so a
+    // phantom index bar would have been reported as evidence the exchange was open.
+    // It does not currently mis-fire — the one index-present date here has real volume and a
+    // 1.45% move — but a latent wrong verdict in a tool whose counts get quoted is worth closing.
+    const indexTraded = m && m.v > 0 && p && m.c !== p.c;
     const verdict = !m
       ? 'index has NO bar -> exchange probably shut, stock rows invented'
-      : `index TRADED (v=${m.v}, moved ${moved}%) -> exchange OPEN, stock rows STALE`;
-    if (m) openMarket += 1;
+      : indexTraded
+        ? `index TRADED (v=${m.v}, moved ${moved}%) -> exchange OPEN, stock rows STALE`
+        : `index bar is PHANTOM too (v=${m.v == null ? 'null' : m.v}${p && m.c === p.c ? ', close carried' : ''}) -> nothing traded anywhere`;
+    if (indexTraded) openMarket += 1;
     else shutMarket += 1;
     console.log(
       `  ${d} ${dow(d)}  bars ${String(e.bars).padStart(3)}  zero ${String(e.zero).padStart(3)}` +
         ` (${((100 * e.zero) / e.bars).toFixed(1)}%)  traded ${String(e.traded).padStart(3)}  |  ${verdict}`
     );
   }
-  console.log(`\n${flagged.length} dates flagged: ${shutMarket} with the index absent, ${openMarket} with the index trading.`);
+  console.log(
+    `\n${flagged.length} dates flagged: ${shutMarket} where the index did not trade either ` +
+      `(absent, or a phantom bar of its own), ${openMarket} where the index genuinely traded.`
+  );
   console.log(
     'The second group is the one that matters: on those days a basket marks — and may rebalance —\n' +
       'at prices that are a day old while the index moved.'
@@ -203,13 +219,38 @@ for (const [stamp, n] of [...target.stamps].sort((a, b) => b[1] - a[1])) {
 const mkt = probe(market, TARGET);
 console.log(`  NIFTY: ${mkt.bar ? `${mkt.stampUtc}Z  close ${mkt.close} (prev ${mkt.prevClose})` : 'no bar'}`);
 
-// Did the zero-volume names simply not exist yet / already delist? A name outside its own span
-// cannot be expected to trade, and counting it is the documented way to manufacture a fake answer.
+// Did the zero-volume names simply not exist yet, or had they stopped trading? A name outside its
+// own life cannot be expected to trade, and counting it is the documented way to manufacture a
+// fake answer.
+//
+// ★ THE OBVIOUS VERSION OF THIS CHECK CANNOT FAIL, WHICH MAKES IT WORSE THAN NO CHECK. Comparing
+// TARGET against the first and last BAR is vacuous here: every name in `target.zero` has a bar ON
+// the target date by construction, so the date always lies inside that range and the count is
+// always 0. Printed beside real findings, an always-zero number reads as evidence that the
+// zero-volume rows are not a listing artifact, while proving nothing whatsoever.
+// The question has to be asked of TRADING, not of rows: bracket each name by its first and last
+// bar with POSITIVE VOLUME. That can genuinely be non-zero — a name whose feed carries padding
+// rows before it listed, or after it stopped trading, falls outside it.
+const tradedSpan = (name) => {
+  const c = data[name];
+  let first = null;
+  let last = null;
+  for (const bar of c) {
+    if (!(bar.v > 0)) continue;
+    if (first == null) first = iso(bar.t);
+    last = iso(bar.t);
+  }
+  return { first, last };
+};
 const outOfSpan = target.zero.filter((r) => {
-  const c = data[r.name];
-  return iso(c[0].t) > TARGET || iso(c[c.length - 1].t) < TARGET;
+  const { first, last } = tradedSpan(r.name);
+  return first == null || first > TARGET || last < TARGET;
 });
-console.log(`\nzero-volume names that are outside their own span: ${outOfSpan.length} of ${target.zero.length}`);
+console.log(
+  `\nzero-volume names outside their own TRADED span (first..last bar with real volume): ` +
+    `${outOfSpan.length} of ${target.zero.length}`
+);
+if (outOfSpan.length) console.log(`  ${outOfSpan.slice(0, 10).map((r) => r.name).join(', ')}`);
 
 if (SHOW_NAMES) {
   console.log(`\n--- every name, ${TARGET} ---`);

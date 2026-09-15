@@ -413,3 +413,72 @@ test('CONTROL: a FILLED F&O order is not marked — the caveat is about resting 
   assert.ok(!dom.document.querySelector('#orders-table .stale-mark'),
     'nothing is waiting, so there is nothing to warn about');
 });
+
+// --- the ticket fills a MARKET order at the same frozen price ----------------
+// A MARKET order with no typed price fills at whatever the engine last saw. For a contract
+// nothing is feeding, that is the frozen mark — so an offsetting sell typed into the ticket
+// booked realised P&L against a stale price in silence, one tab away from the Close button that
+// now asks. Same act, same consequence, so the same warning.
+const optTicket = (dom, side) => {
+  dom.setValue(dom.$('#t-kind'), 'OPT');
+  dom.setValue(dom.$('#t-symbol'), 'NIFTY');
+  dom.setValue(dom.$('#t-expiry'), '30-Oct-2026');
+  dom.setValue(dom.$('#t-strike'), '23500');
+  dom.setValue(dom.$('#t-opttype'), 'CE');
+  dom.setValue(dom.$('#t-lotsize'), '75');
+  dom.setValue(dom.$('#t-lots'), '1');
+  dom.setValue(dom.$('#t-side'), side);
+  dom.setValue(dom.$('#t-ordertype'), 'MARKET');
+  dom.setValue(dom.$('#t-price'), ''); // no price typed -> the engine's last mark is used
+  dom.submit('#order-ticket');
+};
+
+test('a MARKET ticket order on an unfed contract asks before filling at the frozen price', () => {
+  const dom = setupDom();
+  const app = mountOrders(dom);
+  // A last-seen mark exists (as it would after a fill) but nothing is feeding the contract.
+  app.engine.state.lastPrices['OPT:NIFTY:30-Oct-2026:23500:CE'] = 120;
+
+  dom.setConfirm(false);
+  optTicket(dom, 'BUY');
+  assert.equal(dom.confirms.length, 1, 'it asked');
+  const msg = dom.confirms[0];
+  assert.match(msg, /NOT a live price/, 'and said why');
+  assert.match(msg, /120\.00/, 'naming the price it would fill at');
+  assert.match(msg, /NIFTY 30-Oct-2026/, 'and the contract nothing is feeding');
+  assert.equal(app.engine.state.orders.length, 0, 'cancelling places NO order at all');
+});
+
+test('CONTROL: a MARKET ticket order on an EQUITY never asks', () => {
+  const dom = setupDom();
+  const app = mountOrders(dom);
+  app.engine.state.lastPrices['EQ:RELIANCE'] = 1200;
+  dom.setConfirm(false);
+  dom.setValue(dom.$('#t-kind'), 'EQ');
+  dom.setValue(dom.$('#t-symbol'), 'RELIANCE');
+  dom.setValue(dom.$('#t-lots'), '10');
+  dom.setValue(dom.$('#t-ordertype'), 'MARKET');
+  dom.setValue(dom.$('#t-price'), '');
+  dom.submit('#order-ticket');
+  assert.equal(dom.confirms.length, 0, 'equities are polled wherever you are — no question to ask');
+  assert.equal(app.engine.state.orders.length, 1, 'and the order went through in one step');
+});
+
+test('CONTROL: a TYPED price is your own number, so the ticket does not ask', () => {
+  const dom = setupDom();
+  const app = mountOrders(dom);
+  app.engine.state.lastPrices['OPT:NIFTY:30-Oct-2026:23500:CE'] = 120;
+  dom.setConfirm(false);
+  dom.setValue(dom.$('#t-kind'), 'OPT');
+  dom.setValue(dom.$('#t-symbol'), 'NIFTY');
+  dom.setValue(dom.$('#t-expiry'), '30-Oct-2026');
+  dom.setValue(dom.$('#t-strike'), '23500');
+  dom.setValue(dom.$('#t-opttype'), 'CE');
+  dom.setValue(dom.$('#t-lotsize'), '75');
+  dom.setValue(dom.$('#t-lots'), '1');
+  dom.setValue(dom.$('#t-ordertype'), 'MARKET');
+  dom.setValue(dom.$('#t-price'), '135'); // typed by hand
+  dom.submit('#order-ticket');
+  assert.equal(dom.confirms.length, 0, 'the stale mark is not being used, so there is nothing to warn about');
+  assert.equal(app.engine.state.orders.length, 1);
+});

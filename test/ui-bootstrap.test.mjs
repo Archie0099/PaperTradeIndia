@@ -97,7 +97,33 @@ test('app.js boots, renders the initial UI, and places an order end-to-end', asy
   assert.match(dom.$('#positions-table').textContent, /RELIANCE/, 'a position now exists');
   assert.ok(dom.$('#tab-orders').classList.contains('active'), 'submitting jumps to Orders');
 
-  // --- square off all (richer order types) -----------------------------------
+  // --- square off all: the WIRING of the stale-price guard --------------------
+  // ★ This is the only test that clicks the real #btn-square-off, so it is the only place the
+  // guard's WIRING in app.js is reachable. Its per-module tests call confirmStaleSquareOff()
+  // directly, which cannot see whether app.js actually consults it — deleting the call left the
+  // whole suite green until this was added. Order matters: the refusing case must come FIRST,
+  // while a position that nothing is feeding still exists.
+  // Buy an option through the REAL ticket, so nothing here reaches around the app's own wiring.
+  dom.setValue(dom.$('#t-kind'), 'OPT');
+  dom.setValue(dom.$('#t-symbol'), 'NIFTY');
+  dom.setValue(dom.$('#t-expiry'), '30-Oct-2026');
+  dom.setValue(dom.$('#t-strike'), '23500');
+  dom.setValue(dom.$('#t-opttype'), 'CE');
+  dom.setValue(dom.$('#t-lots'), '1');
+  dom.setValue(dom.$('#t-price'), '120');
+  dom.submit('#order-ticket');
+  dom.fire(dom.$('.nav-btn[data-tab="dashboard"]'), 'click');
+  assert.match(dom.$('#positions-table').textContent, /23500/, 'the option position exists');
+
+  dom.setConfirm(false); // read the warning, back out
+  dom.fire(dom.$('#btn-square-off'), 'click');
+  assert.match(dom.$('#positions-table').textContent, /23500/,
+    'cancelling the stale-price warning must leave every position untouched');
+  assert.match(dom.$('#positions-table').textContent, /RELIANCE/, 'including the equity beside it');
+  assert.ok(dom.confirms.some((m) => /no live price/.test(m)), 'and the warning named the problem');
+
+  // Now accept it: everything squares off, including the unfed contract.
+  dom.setConfirm(true);
   dom.fire(dom.$('#btn-square-off'), 'click');
   assert.match(dom.$('#positions-table').textContent, /No open positions/, 'square-off closed everything');
 
