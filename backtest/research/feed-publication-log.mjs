@@ -31,6 +31,10 @@
 // non-null close was first seen and every time the value changed after that.
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+// The NSE holiday list, from the app's own source rather than a second copy — a session's
+// close that never appears is only evidence of a feed lag if there WAS a session that day.
+import mh from '../../src/marketHours.js';
+const { HOLIDAYS } = mh;
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
 const SYMBOLS = ['%5ENSEI', 'RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS', 'NIFTYBEES.NS'];
@@ -94,8 +98,32 @@ function report() {
     if (!byDate.has(date)) byDate.set(date, []);
     byDate.get(date).push({ sym, arr });
   }
+  // ★ A DAILY ROW IS NOT A SESSION. The feed emits a row for days the exchange was shut — on
+  // 2026-09-14 (Ganesh Chaturthi) it served a 09-14 row with a null close, and this report
+  // dutifully filed it as "session 2026-09-14 … NEVER appeared (still null at +14.01h)". Read
+  // later that is direct evidence of a 14-hour publication lag, when in truth there was nothing
+  // to publish. The whole point of this log is to measure the lag, so a non-session left in the
+  // sample would corrupt the one measurement it exists for.
+  //
+  // Weekends and the listed NSE holidays are therefore labelled and EXCLUDED from the reading at
+  // the bottom. The samples themselves are kept — they are a true record of what the feed served,
+  // and deleting a measurement because it is inconvenient is the opposite of the point.
+  // ★ The holiday list is maintained one year at a time, so a date outside its coverage cannot be
+  // judged; those are reported plainly rather than silently assumed to be sessions.
+  const holYears = new Set(HOLIDAYS.map((d) => d.slice(0, 4)));
+  const DOWN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const classify = (date) => {
+    const dow = new Date(`${date}T00:00:00Z`).getUTCDay();
+    if (dow === 0 || dow === 6) return { session: false, why: `${DOWN[dow]} — not a trading day` };
+    if (HOLIDAYS.includes(date)) return { session: false, why: 'listed NSE holiday — no session' };
+    if (!holYears.has(date.slice(0, 4))) return { session: true, why: 'holiday list does not cover this year — assumed a session, unverified' };
+    return { session: true, why: null };
+  };
+  let sessionDates = 0, skipped = 0;
   for (const [date, rows] of [...byDate].sort()) {
-    console.log(`=== session ${date} ===`);
+    const cls = classify(date);
+    if (cls.session) sessionDates++; else skipped++;
+    console.log(`=== ${cls.session ? 'session' : 'NOT A SESSION:'} ${date} ===${cls.why ? `  (${cls.why})` : ''}`);
     for (const { sym, arr } of rows) {
       const firstNonNull = arr.find((e) => e.close != null);
       const lastNull = [...arr].reverse().find((e) => e.close == null);
@@ -117,6 +145,20 @@ function report() {
   }
   console.log('Reading this: a first value that never changes across a +24h sample is evidence the');
   console.log('feed SETTLES on publication; any REVISED line is direct evidence it does not.');
+  console.log(`\n★ Count only the ${sessionDates} SESSION date${sessionDates === 1 ? '' : 's'} above toward that.`);
+  if (skipped) {
+    console.log(`  ${skipped} date${skipped === 1 ? ' is' : 's are'} marked NOT A SESSION — the feed emits a daily row for days the`);
+    console.log('  exchange was shut, and a close that never appears for one of those is not a lag,');
+    console.log('  it is nothing to publish. Those rows are kept as a record of what was served.');
+  }
 }
+
+// ★ RUN ONLY WHEN INVOKED DIRECTLY, like every other tool in this folder. Without this guard a
+// bare `import` of the module fires six live network requests and appends to the log — I did
+// exactly that by accident while checking the file parsed, in the public mirror, where the log is
+// deliberately never carried. The other research tools already guard this way; this one did not.
+import { pathToFileURL } from 'node:url';
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (!isMain) throw new Error('feed-publication-log.mjs is a CLI tool; run it directly.');
 
 if (args.includes('--report')) report(); else await sample();
