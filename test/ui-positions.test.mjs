@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { setupDom } from '../test-helpers/dom-harness.mjs';
-import { renderPositions, portfolioGreeks } from '../public/js/ui/positions.js';
+import { renderPositions, portfolioGreeks, confirmStaleSquareOff } from '../public/js/ui/positions.js';
 
 // Build the dashboard wired to re-render on engine changes (as app.js does).
 function mount(dom) {
@@ -161,6 +161,13 @@ test('Close fully flattens an odd (non-lot-multiple) imported position (bug #4)'
   app.engine.importJson(JSON.stringify(portfolio));
   assert.equal(app.engine.state.positions['FUT:NIFTY:26-Jun-2026'].qty, 100);
 
+  // ★ This future has no live price — nothing is feeding it, because no option chain is loaded —
+  // so closing it now asks for confirmation first. That guard did not exist when this test was
+  // written, and the harness's confirm defaults to CANCEL, so without this line the click does
+  // nothing and the test fails for a reason that has nothing to do with what it locks. Answering
+  // OK restores the exact flow it was written to check: that Close leaves no 25-unit residual on
+  // an odd, non-lot-multiple quantity. The confirmation itself is locked by its own tests below.
+  dom.setConfirm(true);
   dom.fire(dom.$$('#positions-table tbody tr button').find((b) => b.textContent === 'Close'), 'click');
 
   assert.equal(app.engine.state.positions['FUT:NIFTY:26-Jun-2026'], undefined, 'no 25-unit residual left');
@@ -301,4 +308,82 @@ test('with no chain ever loaded, a manual option is marked (nothing is feeding F
   app.state.chain = null; // the Option Chain tab has never been opened this session
   renderPositions(app);
   assert.ok(dom.document.querySelector('.stale-mark'), 'no chain means no F&O feed, so the price is not live');
+});
+
+// --- closing at a price that is not live must SAY so first -------------------
+// The display marker above is only half of it: Close (and Square off all) fill at the SAME
+// frozen price, booking a realised P&L against a number that may be days old — previously in one
+// silent click. There is no better price available, so the answer is not to refuse (trapping
+// someone in a position is worse) but to state what is about to happen. These lock that it asks
+// in the wrong case, does NOT ask in the ordinary ones, and that cancelling really cancels.
+test('closing an option with no live price asks first, and cancelling places no order', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  buyOpt(app.engine, OPT('30-Oct-2026'), 120);
+  app.state.chain = { symbol: 'NIFTY', expiry: '24-Sep-2026', strikes: [] };
+  renderPositions(app);
+  const before = app.engine.state.positions['OPT:NIFTY:30-Oct-2026:23500:CE'].qty;
+
+  dom.setConfirm(false); // read it, then back out
+  dom.fire(dom.$$('#positions-table tbody tr button').find((b) => b.textContent === 'Close'), 'click');
+
+  assert.equal(dom.confirms.length, 1, 'exactly one confirmation was shown');
+  const msg = dom.confirms[0];
+  assert.match(msg, /NOT a live price/, 'it states the fact plainly');
+  assert.match(msg, /120\.00/, 'it names the price it would close at');
+  assert.match(msg, /NIFTY 30-Oct-2026/, 'it names the contract that is not being fed');
+  assert.match(msg, /realised P&L this books will be calculated from it/, 'it says what the price is used for');
+  assert.match(msg, /open that expiry in the Option Chain first/i, 'it names the remedy');
+  assert.equal(app.engine.state.positions['OPT:NIFTY:30-Oct-2026:23500:CE'].qty, before,
+    'cancelling must leave the position exactly as it was');
+});
+
+test('CONTROL: closing an equity never asks — its price is always being polled', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  buy(app.engine, 'RELIANCE', 10, 1200);
+  renderPositions(app);
+  dom.setConfirm(false); // would block the close if it were asked
+  dom.fire(dom.$$('#positions-table tbody tr button').find((b) => b.textContent === 'Close'), 'click');
+  assert.equal(dom.confirms.length, 0, 'no dialog for an equity');
+  assert.equal(app.engine.state.positions['EQ:RELIANCE'], undefined, 'and it closed in one click');
+});
+
+test('CONTROL: closing an option whose own expiry is on screen never asks', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  buyOpt(app.engine, OPT('30-Oct-2026'), 120);
+  app.state.chain = { symbol: 'NIFTY', expiry: '30-Oct-2026', strikes: [] };
+  renderPositions(app);
+  dom.setConfirm(false);
+  dom.fire(dom.$$('#positions-table tbody tr button').find((b) => b.textContent === 'Close'), 'click');
+  assert.equal(dom.confirms.length, 0, 'a contract being fed closes in one click, as before');
+  assert.equal(app.engine.state.positions['OPT:NIFTY:30-Oct-2026:23500:CE'], undefined, 'it closed');
+});
+
+test('square off all names the positions that have no live price, and cancelling closes nothing', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  buy(app.engine, 'RELIANCE', 10, 1200);           // live
+  buyOpt(app.engine, OPT('30-Oct-2026'), 120);     // not live
+  app.state.chain = { symbol: 'NIFTY', expiry: '24-Sep-2026', strikes: [] };
+
+  dom.setConfirm(false);
+  assert.equal(confirmStaleSquareOff(app), false, 'cancelling is reported to the caller');
+  const msg = dom.confirms[0];
+  assert.match(msg, /1 of these positions has no live price/, 'it counts only the unfed ones');
+  assert.match(msg, /NIFTY 23500 CE 30-Oct-2026/, 'and names them');
+  assert.ok(!/RELIANCE/.test(msg), 'the live equity is NOT listed as a problem');
+  assert.equal(app.engine.state.positions['EQ:RELIANCE'].qty, 10, 'nothing was closed');
+});
+
+test('CONTROL: square off all asks nothing when every position is being fed', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  buy(app.engine, 'RELIANCE', 10, 1200);
+  buyOpt(app.engine, OPT('30-Oct-2026'), 120);
+  app.state.chain = { symbol: 'NIFTY', expiry: '30-Oct-2026', strikes: [] }; // the option IS fed
+  dom.setConfirm(false);
+  assert.equal(confirmStaleSquareOff(app), true, 'it proceeds without asking');
+  assert.equal(dom.confirms.length, 0, 'no dialog when there is nothing to warn about');
 });

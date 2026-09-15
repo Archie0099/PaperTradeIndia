@@ -13,7 +13,7 @@ import { $, rupee, fmt, signed, rangeChange } from './ui/dom.js';
 import { initTabs } from './ui/tabs.js';
 import { startClock, renderStatusBar } from './ui/statusbar.js';
 import { initWatchlist, renderWatchlist } from './ui/watchlist.js';
-import { renderPositions } from './ui/positions.js';
+import { renderPositions, confirmStaleSquareOff } from './ui/positions.js';
 import { initOrders, renderOrders, loadTicket } from './ui/orders.js';
 import { initOptionChain, loadChain } from './ui/optionChain.js';
 import { initStrategy, setStrategyContext } from './ui/strategy.js';
@@ -264,8 +264,14 @@ async function pollStatus() {
 
 // --- Account actions (export / import / reset / edit cash) ------------------
 function initAccountActions() {
-  // Square off every open position with one click.
-  $('#btn-square-off').addEventListener('click', () => app.engine.closeAll());
+  // Square off every open position with one click — but say so first if any of them has no live
+  // price, because closeAll() marks each leg at its LAST price and an unfed F&O contract's last
+  // price is usually the one it was filled at. Silent when everything is being fed, so the
+  // ordinary case stays a single click.
+  $('#btn-square-off').addEventListener('click', () => {
+    if (!confirmStaleSquareOff(app)) return;
+    app.engine.closeAll();
+  });
 
   $('#btn-export').addEventListener('click', () => {
     const blob = new Blob([app.engine.exportJson()], { type: 'application/json' });

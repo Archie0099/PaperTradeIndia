@@ -121,11 +121,32 @@ function staleReason(inst) {
   );
 }
 
+// ★ THE DISPLAY PROBLEM, ESCALATED INTO AN ACTION. Closing fills at `lastPrices[key]`, which for
+// an unfed F&O contract is the price it was last marked at — usually the fill. So one click books
+// a REALISED P&L against a price that may be hours or days old, and nothing said so. There is no
+// better price available (that is the whole point: nothing is feeding this contract), so the
+// answer is not to refuse — trapping someone in a position is worse — it is to say what is about
+// to happen and let them decide. Equities and contracts on the displayed chain are untouched and
+// stay one click, so this asks ONLY in the case that is actually wrong.
+function confirmStalePriceClose(app, pos, last) {
+  if (priceIsLive(app, pos.instrument)) return true;
+  if (typeof window === 'undefined' || typeof window.confirm !== 'function') return true;
+  return window.confirm(
+    `Close ${contractLabel(pos.instrument)} at ${last.toFixed(2)}?\n\n` +
+      `That is NOT a live price. This contract is only marked while the Option Chain tab is ` +
+      `showing ${pos.instrument.symbol} ${pos.instrument.expiry}, so ${last.toFixed(2)} is the ` +
+      `last price seen — usually the price you filled at — and the realised P&L this books will ` +
+      `be calculated from it.\n\n` +
+      `To close at a current price, cancel and open that expiry in the Option Chain first.`
+  );
+}
+
 function closeButton(app, pos) {
   const btn = el('button', { class: 'btn btn-mini' }, 'Close');
   btn.addEventListener('click', () => {
     const key = instrumentKey(pos.instrument);
     const last = app.engine.state.lastPrices[key] || pos.avgPrice;
+    if (!confirmStalePriceClose(app, pos, last)) return;
     // Offsetting market order for the EXACT remaining quantity. We pass lotSize 1
     // and lots = |qty| (placeOrder floors lots, so a non-lot-multiple qty — e.g.
     // an imported odd position of 100 at lotSize 75 — would otherwise leave a 25
@@ -145,6 +166,17 @@ function closeButton(app, pos) {
 function labelFor(inst) {
   if (inst.kind === 'FUT') return `${inst.symbol} FUT`;
   return `${inst.symbol} ${inst.strike}${inst.optType}`;
+}
+
+// The same instrument, named in FULL for a dialog. labelFor() drops the expiry on purpose — the
+// table column is narrow and the expiry is usually obvious from context — but in a "this price is
+// not live" message the expiry is the entire point: it is the one thing the reader needs in order
+// to find the contract and do something about it. A dialog that said "NIFTY 23500CE has no live
+// price" would name every expiry of that strike at once and help with none of them.
+function contractLabel(inst) {
+  if (inst.kind === 'EQ') return inst.symbol;
+  if (inst.kind === 'FUT') return `${inst.symbol} FUT ${inst.expiry}`;
+  return `${inst.symbol} ${inst.strike} ${inst.optType} ${inst.expiry}`;
 }
 
 // "stop-loss / target" text for the SL/TP column ('–' for an unset side).
@@ -327,4 +359,31 @@ function th(t) {
   return el('th', {}, t);
 }
 
-export { renderPositions, portfolioGreeks };
+// ★ THE SAME QUESTION FOR "SQUARE OFF ALL", which closes everything in one click through the
+// engine's closeAll() — and closeAll() marks each leg at `lastPrices` exactly as the per-row
+// Close does, so an unfed contract is squared off at a stale price along with everything else.
+// The guard lives HERE, in the UI, and not in closeAll(): the engine is also the backtester's
+// engine, and a money-model method must never reach for a browser dialog.
+// Returns true to proceed. Silent unless something really is unfed.
+function confirmStaleSquareOff(app) {
+  const stale = [];
+  for (const key in app.engine.state.positions) {
+    const p = app.engine.state.positions[key];
+    if (!p || p.qty === 0) continue;
+    if (!priceIsLive(app, p.instrument)) stale.push(contractLabel(p.instrument));
+  }
+  if (stale.length === 0) return true; // everything is being fed — no question to ask
+  if (typeof window === 'undefined' || typeof window.confirm !== 'function') return true;
+  return window.confirm(
+    `Square off everything?\n\n` +
+      // "1 of these positionS HAS" — the noun stays plural (it refers to the whole set being
+      // squared off) while only the verb agrees with the count.
+      `${stale.length} of these positions ${stale.length === 1 ? 'has' : 'have'} no live ` +
+      `price right now:\n  ${stale.join('\n  ')}\n\n` +
+      `${stale.length === 1 ? 'It' : 'They'} will be closed at the last price seen — usually the ` +
+      `price you filled at — so the realised P&L booked for ${stale.length === 1 ? 'it' : 'them'} ` +
+      `will be calculated from that, not from a current market price.`
+  );
+}
+
+export { renderPositions, portfolioGreeks, priceIsLive, confirmStaleSquareOff };

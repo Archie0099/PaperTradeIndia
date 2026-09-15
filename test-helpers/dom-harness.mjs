@@ -120,6 +120,19 @@ function setupDom() {
   // flows are testable and deterministic.
   const alerts = [];
   let promptAnswer = null; // tests set this via the returned `setPrompt`
+  // ★ confirm() is captured the same way, and its DEFAULT ANSWER IS DELIBERATELY `undefined`.
+  // jsdom ships a window.confirm that logs "Not implemented" and returns undefined, so before this
+  // stub existed, UI code guarded by `!window.confirm(...)` already took the CANCEL branch. Keeping
+  // the same falsy default means installing the stub changes no existing behaviour — it only makes
+  // the message readable and the answer settable. Tests that want the OK branch opt in with
+  // `setConfirm(true)`.
+  // ★ MEASURED, because the tempting stronger claim is not true: flipping this default to `true`
+  // leaves the ENTIRE suite green, so no test's outcome depends on it today. This is a choice to
+  // stay faithful to the pre-stub behaviour, NOT a fix for a live breakage — do not write it up as
+  // one. It matters the day someone adds a test for a confirm-guarded flow and forgets to set an
+  // answer: with this default that test cancels (visibly wrong), with `true` it silently proceeds.
+  const confirms = [];
+  let confirmAnswer = undefined;
 
   // Install everything the ui modules read off the global scope.
   globalThis.window = window;
@@ -127,6 +140,11 @@ function setupDom() {
   globalThis.localStorage = localStorage;
   globalThis.alert = (msg) => alerts.push(String(msg));
   globalThis.prompt = () => promptAnswer;
+  // UI code calls `window.confirm` (not the bare global), so stub it on the window object.
+  window.confirm = (msg) => {
+    confirms.push(String(msg));
+    return confirmAnswer;
+  };
   // Export download uses these; stub so a click doesn't blow up.
   globalThis.URL.createObjectURL = () => 'blob:stub';
   globalThis.URL.revokeObjectURL = () => {};
@@ -220,8 +238,12 @@ function setupDom() {
     makeApiStub,
     syntheticChain,
     alerts,
+    confirms, // every confirm() message shown, in order
     setPrompt: (v) => {
       promptAnswer = v;
+    },
+    setConfirm: (v) => {
+      confirmAnswer = v;
     },
     store,
   };
