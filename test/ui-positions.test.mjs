@@ -598,7 +598,7 @@ test('CONTROL: a genuine feed update after an import marks it live again', () =>
 });
 
 // --- the dialogs must branch on the CAUSE exactly as the hover does --------------
-// A fresh-context review found the row hover correctly telling a copied Auto-Pilot leg that its
+// A later review found the row hover correctly telling a copied Auto-Pilot leg that its
 // underlying quote had stopped, while the Close and Square-off dialogs told the same contract to
 // "open that expiry in the Option Chain" — an expiry (`cyc293`) no chain can ever show. Same
 // shape as an earlier fix: identical wording in two places, only one of them branched. These lock
