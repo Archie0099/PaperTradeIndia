@@ -135,8 +135,13 @@ body {
   font-size: 0.85em;
   font-weight: 500;
   letter-spacing: 0;
-  cursor: help;
+  cursor: pointer; /* it is a button (tap/Enter shows the reason), so the pointer says so */
   white-space: nowrap;
+}
+.stale-mark:focus-visible {
+  outline: 1px solid var(--faint);
+  outline-offset: 2px;
+  border-radius: 3px;
 }
 
 /* Every number renders in aligned tabular monospace — the signature touch. */

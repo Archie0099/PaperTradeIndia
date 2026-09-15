@@ -7,6 +7,7 @@
 // ---------------------------------------------------------------------------
 
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 
 import { setupDom, syntheticChain } from '../test-helpers/dom-harness.mjs';
@@ -712,8 +713,68 @@ test('tapping a "not live" marker shows its reason (hovers do not exist on touch
 });
 
 // --- the liveness window is DERIVED from the chain cadence, never restated -------------------
-test('LIVE_PRICE_MS covers at least three chain refreshes, from the one exported cadence', () => {
-  assert.equal(CHAIN_REFRESH_MS, 6000, 'the chain cadence app.js actually uses');
-  assert.ok(LIVE_PRICE_MS >= 3 * CHAIN_REFRESH_MS, 'three missed refreshes before a price is called stale');
-  assert.ok(LIVE_PRICE_MS < 60000, 'but not so long that a price left alone for a minute still reads live');
+test('LIVE_PRICE_MS is DERIVED from the exported chain cadence, and app.js really uses that cadence', () => {
+  // Relational, not a range: the first version asserted 18000 <= x < 60000, which the old literal
+  // 20000 also satisfied — a test that could not tell derivation from restatement. And the app.js
+  // half is checked against its SOURCE, because nothing imports app.js under test: restoring the
+  // 6000 literal in setInterval and dropping the import would otherwise be invisible.
+  assert.equal(LIVE_PRICE_MS, 3 * CHAIN_REFRESH_MS + 2000, 'three refreshes plus a margin, from the one constant');
+  // A literal 20000 is observationally identical to the derivation (it IS 3*6000+2000), so the
+  // relational check alone cannot see it — a mutation restoring the literal left it green. The
+  // derivation is a claim about the SOURCE, so it is checked there, exactly as app.js's half is.
+  const posSrc = readFileSync(new URL('../public/js/ui/positions.js', import.meta.url), 'utf8');
+  assert.ok(posSrc.includes('export const LIVE_PRICE_MS = 3 * CHAIN_REFRESH_MS + 2000;'), 'the window is written as a derivation, not a number');
+  const appSrc = readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+  assert.match(appSrc, /import \{[^}]*\bCHAIN_REFRESH_MS\b[^}]*\} from '\.\/ui\/positions\.js'/, 'app.js imports the cadence');
+  assert.match(appSrc, /\}, CHAIN_REFRESH_MS\);/, 'and its chain timer is set from it, not from a literal');
+  assert.ok(!/\}, 6000\);/.test(appSrc), 'no 6000 literal timer remains in app.js');
+});
+
+// --- the copied FUTURE, keyboard activation, and a square-off list of only copied legs -----------
+test('a copied FUTURE (modelled cyc expiry, no re-mark) is marked with its own cause and never sent to a chain', () => {
+  // instrumentFromMirror() gives a copied future the same cyc… expiry as a copied option but no
+  // expiryMs/iv, and remarkOptionPositions() skips non-options — so nothing ever re-prices it.
+  // The first copied-leg predicate was OPT-only, so such a future fell into the chain branch and
+  // was told to open "NIFTY cyc293" in the Option Chain, the exact defect fixed for options.
+  const dom = setupDom();
+  const app = mount(dom);
+  app.engine.placeOrder({ instrument: { kind: 'FUT', symbol: 'NIFTY', expiry: 'cyc293', lotSize: 75 }, side: 'BUY', orderType: 'MARKET', lots: 1, price: 23500 });
+  app.state.chain = null;
+  renderPositions(app);
+  const mark = dom.$('#positions-table').querySelector('.stale-mark');
+  assert.ok(mark, 'never re-priced, so marked');
+  const title = mark.getAttribute('title');
+  assert.match(title, /copied future carries a modelled expiry \(cyc293\)/, 'its own cause');
+  assert.ok(!/Option Chain/.test(title), 'and no chain remedy — no chain can show cyc293');
+
+  dom.setConfirm(false);
+  dom.fire(dom.$$('#positions-table tbody tr button').find((b) => b.textContent === 'Close'), 'click');
+  const msg = dom.confirms[0];
+  assert.match(msg, /Close NIFTY FUT cyc293 at 23500\.00\?/);
+  assert.match(msg, /nothing can feed a modelled expiry/, 'the remedy is honest: there is none');
+  assert.ok(!/Option Chain/.test(msg));
+
+  // Square off all, with ONLY copied legs unfed: the price sentence must not mention a chain.
+  confirmStaleSquareOff(app);
+  const sq = dom.confirms[1];
+  assert.match(sq, /NIFTY FUT cyc293 — copied future, never re-priced/);
+  assert.match(sq, /the price it was copied at for a copied future/);
+  assert.ok(!/chain/i.test(sq), 'no chain contract is involved, so no chain story');
+});
+
+test('Enter and Space on a focused marker show its reason, like a tap', () => {
+  // role="button" + tabindex announce an activatable control; without a key handler that is a
+  // dead tab stop, which is worse than no role at all.
+  const dom = setupDom();
+  const app = mount(dom);
+  buyOpt(app.engine, OPT('30-Oct-2026'), 120);
+  app.state.chain = null;
+  renderPositions(app);
+  const mark = dom.$('#positions-table').querySelector('.stale-mark');
+  const KeyboardEvent = dom.window.KeyboardEvent;
+  mark.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  mark.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+  mark.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+  assert.equal(dom.alerts.length, 2, 'Enter and Space activate; an ordinary key does not');
+  assert.equal(dom.alerts[0], mark.getAttribute('title'));
 });

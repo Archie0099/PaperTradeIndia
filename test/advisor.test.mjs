@@ -591,3 +591,27 @@ test('the mark falls back to the engine price when the series cannot be read', (
   });
   assert.equal(entry.targets[0].price, 77.5, 'recording the engine mark beats recording nothing');
 });
+
+test('an index bot that is FLAT is still excluded — the exclusion is about the row, not today\'s book', () => {
+  // The first version of the index exclusion tested positions only. `bearish-trend` is
+  // `kind: 'EQ', symbol: 'NIFTY'` and sits in CASH through every bull market, so on a flat day it
+  // passed every test and recorded `eligible: true, targets: []` — which the scorer reads as
+  // "sell everything" and charges the previous book's exit for. Identity, checked as identity.
+  const mk = (positions) => buildAdvisorEntry({
+    autopilot: { currentBot: { id: 'bearish-trend' } },
+    getBotDetail: () => ({ ok: true, id: 'bearish-trend', name: 'Bearish trend', kind: 'EQ', symbol: 'NIFTY', mirror: { followable: true, equity: 1_000_000, positions } }),
+    seriesFor: (s) => (s === 'NIFTY' ? [{ t: START, c: 23000 }] : []),
+  });
+  const flat = mk([]);
+  assert.ok(flat, 'the day still logs');
+  assert.equal(flat.eligible, false, 'a flat index bot is NOT an eligible empty book');
+  assert.match(flat.reason, /trades the index itself \(NIFTY\)/);
+  // CONTROL: a flat ETF bot IS an eligible empty book — that is the genuine in-cash state.
+  const etf = buildAdvisorEntry({
+    autopilot: { currentBot: { id: 'x' } },
+    getBotDetail: () => ({ ok: true, id: 'x', name: 'X', kind: 'EQ', symbol: 'NIFTYBEES', mirror: { followable: true, equity: 1_000_000, positions: [] } }),
+    seriesFor: (s) => (s === 'NIFTY' ? [{ t: START, c: 23000 }] : []),
+  });
+  assert.equal(etf.eligible, true, 'an ETF bot in cash is real "sell everything" guidance');
+  assert.deepEqual(etf.targets, []);
+});

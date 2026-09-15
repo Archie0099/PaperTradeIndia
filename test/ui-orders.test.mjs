@@ -446,6 +446,11 @@ test('a MARKET ticket order on an unfed contract asks before filling at the froz
   assert.match(msg, /NOT a live price/, 'and said why');
   assert.match(msg, /120\.00/, 'naming the price it would fill at');
   assert.match(msg, /NIFTY 30-Oct-2026/, 'and the contract nothing is feeding');
+  // A ticket order may be OPENING the position: the mark came from the chain, not a fill, and
+  // nothing realised is booked. The shared Close text once said both — false here, on both counts.
+  assert.match(msg, /this order will fill against it/, 'the consequence is a fill, not a booked P&L');
+  assert.ok(!/realised P&L/.test(msg), 'an opening order books no realised P&L');
+  assert.ok(!/filled at/.test(msg), 'and there was no fill to have been "filled at"');
   assert.equal(app.engine.state.orders.length, 0, 'cancelling places NO order at all');
 });
 

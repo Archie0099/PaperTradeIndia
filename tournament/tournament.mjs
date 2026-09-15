@@ -135,11 +135,22 @@ const intervalMs = (interval) => { const m = /^(\d+)(m|h)$/.exec(interval || '')
 // the raw endpoint to rule out a stale cache; before 2013 every index bar is zero-volume). Because
 // NIFTY's series is what stamps an advisor day, a volume-only rule would have dropped that day's
 // entry PERMANENTLY — missed days are never back-filled — which is the one artifact here that only
-// time can produce. So the rule now requires the carried-forward close as well: a bar whose close
-// MOVED is a session whatever the feed says about volume, and a bar that copies the previous close
-// at zero volume is the phantom shape and nothing else. `prevClose` is the feed's own previous row
-// where the fetch has one, else the last close already in the series; with no previous close to
-// compare against the bar is admitted — "cannot tell" must not stall a series.
+// time can produce. So the rule now requires the carried-forward close as well. `prevClose` is the
+// feed's own previous row where the fetch has one, else the last close already in the series;
+// with no previous close to compare against the bar is admitted — "cannot tell" must not stall a
+// series.
+// ★ THIS IS A HEURISTIC ABOUT THE CURRENT FEED, NOT A FACT ABOUT IT. Measured across the cached
+// history (132 files, 551k bars): NIFTY carries 1,332 zero-volume bars with a MOVED close and
+// zero carried-forward ones, so the old rule really would have dropped 1,332 index sessions and
+// this one never false-fires on them; and all four declared 2026 holidays are 100% carry-forward,
+// so it holds for 2026-10-02. But two older phantom dates (2009-04-30, 2009-10-13 — nothing traded,
+// no index bar) show ~half the names with a zero-volume row whose close MOVED slightly, which this
+// rule would ADMIT. There is no rule on these two fields that refuses every phantom and no real
+// session; this one is right for the shapes the feed emits today and is preferred because a false
+// REFUSAL is as permanent as a missed day. ★ A refused phantom is kept out of the persisted
+// forward record (`state.live`) — but the boot backfill has no volume filter, so the same row
+// re-enters the board's TIMELINE from the cache at the next redeploy; that half is the open §8
+// decision, and this guard does not claim to settle it.
 // ★ An ABSENT volume is still NOT treated as zero: "no claim" and "nothing traded" differ.
 function isPhantomBar(bar, prevClose) {
   return bar.v === 0 && Number.isFinite(prevClose) && bar.c === prevClose;

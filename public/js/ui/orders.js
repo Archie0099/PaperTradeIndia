@@ -216,7 +216,9 @@ function confirmStaleTicketFill(app, inst, last) {
   // a copied Auto-Pilot leg and a chain contract need different remedies, and this used to assert
   // the chain story at both), plus the one extra way out a ticket has: type the price yourself.
   return window.confirm(
-    staleFillWarning(inst, last, 'Place this MARKET order') +
+    // `held: false` — a ticket order may be OPENING the position, so the mark is a chain price,
+    // not a fill, and there is no realised P&L to book; the text must not claim either.
+    staleFillWarning(inst, last, 'Place this MARKET order', { consequence: 'this order will fill against it', held: false }) +
       ` Or type a price into the ticket yourself — then it is your number, not a stale one.`
   );
 }

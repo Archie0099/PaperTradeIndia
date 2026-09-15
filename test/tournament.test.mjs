@@ -815,6 +815,17 @@ test('tick() REFUSES a carried-forward zero-volume bar, and still admits one who
     await indexDay.init();
     assert.equal(await indexDay.tick({ now: after }), true, 'zero volume with a MOVED close is a real session and is admitted');
     assert.equal(indexDay.getStandings().liveBars, before + 1, 'and the live record grows by exactly that bar');
+
+    // (e) ★ THE BRANCH PRODUCTION ACTUALLY RUNS. The fetch is a 5-day window, so the phantom is
+    // normally the NEWEST of several rows and is compared with the FEED'S OWN previous row, not the
+    // series' last close. Every fixture above sends one candle, so that branch never executed —
+    // a mutation replacing it with the series fallback left all 800 tests green. Host slept a day:
+    // a real session lands, then the holiday row copies ITS close at zero volume.
+    freeProvider.getHistory = async () => ({ symbol: 'NIFTY', candles: [{ t: barT, c: 30000, v: 9999 }, { t: barT + 864e5, c: 30000, v: 0 }] });
+    const slept = await createTournament({ seed: SEED, backfillData: { NIFTY: series }, persist: false });
+    await slept.init();
+    assert.equal(await slept.tick({ now: after + 864e5 }), true, 'the real session is admitted');
+    assert.equal(slept.getStandings().liveBars, before + 1, 'and ONLY it — the phantom that copied its close is refused');
   } finally {
     freeProvider.getHistory = orig;
   }

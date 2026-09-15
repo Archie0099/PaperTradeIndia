@@ -169,6 +169,16 @@ function buildAdvisorEntry({ autopilot, getBotDetail, seriesFor }) {
   //     stays usable. Checked FIRST — it is a statement about what the row IS, and it would
   //     otherwise pass every instrument test below (a long-only equity basket passes all four).
   if (detail.benchmark) reason = 'the champion is the fair-bar control (the whole universe at equal weight, no signal) — it is the yardstick this board is measured against, not a strategy, and mirroring it by hand would mean ~105 delivery orders rebalanced monthly';
+  //   * an EQ bot whose INSTRUMENT is an index (`buy-hold` and `bearish-trend` are both
+  //     `kind: 'EQ', symbol: 'NIFTY'`). This is a fact about the ROW, so it is checked here with
+  //     the other identity test and NOT only against today's book: the first version of this
+  //     exclusion looked at positions alone, which meant an index bot that is FLAT
+  //     (bearish-trend sits in cash through every bull market) then passed every test and
+  //     recorded `eligible: true, targets: []` — which the scorer reads as "sell everything" and
+  //     charges the previous book's exit costs for, on the strength of a bot that can never be
+  //     mirrored. The positional check further down stays as belt-and-braces for a basket that
+  //     somehow holds an index name.
+  else if (detail.kind === 'EQ' && isIndexSymbol(detail.symbol)) reason = `the champion trades the index itself (${detail.symbol}) as if it were a share — an index cannot be bought in the cash market, and substituting an ETF would be advice the champion never gave`;
   else if (detail.kind === 'FNO') reason = 'the champion is an options (F&O) bot — its option prices are modelled/indicative, so honest rupee suggestions for hand-placed real orders are not possible';
   else if (detail.kind === 'PAIRS') reason = 'the champion is a market-neutral pairs bot — half its book is short positions, which cash-market delivery orders cannot hold';
   else if (positions.some((p) => (p.kind || 'EQ') !== 'EQ')) reason = 'the champion currently holds derivative (F&O) legs, which cannot be mirrored with cash-market delivery orders';
