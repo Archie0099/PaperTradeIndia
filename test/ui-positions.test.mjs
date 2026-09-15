@@ -537,3 +537,62 @@ test('Close asks about a contract that was fed and then went quiet', () => {
   assert.equal(dom.confirms.length, 1, 'it asks, even though the chain still matches');
   assert.ok(app.engine.state.positions['OPT:NIFTY:30-Oct-2026:23500:CE'], 'and cancelling holds');
 });
+
+// --- a replaced portfolio must not inherit the old one's freshness -----------
+// `lastPriceAt` is keyed by instrument, which makes it LOOK portfolio-independent. It is not: it
+// is a claim about the prices currently in `state.lastPrices`, and import/reset swap those out.
+// Without forgetting the stamps, importing a portfolio holding a contract the previous one was
+// being fed leaves the new, FILE-sourced price wearing the old price's freshness — shown as live,
+// and closed at without a warning. That is the exact harm the marker exists to prevent, so it
+// gets its own lock on both wholesale-replacement paths.
+const OPT_KEY = 'OPT:NIFTY:30-Oct-2026:23500:CE';
+const portfolioHolding = (price) => JSON.stringify({
+  cash: 900000, initialCash: 1000000, realised: 0,
+  positions: { [OPT_KEY]: { instrument: OPT('30-Oct-2026'), qty: 75, avgPrice: 55 } },
+  orders: [], lastPrices: { [OPT_KEY]: price },
+});
+
+test('an IMPORTED portfolio does not inherit the previous one’s price freshness', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  buyOpt(app.engine, OPT('30-Oct-2026'), 120);
+  app.engine.onPriceUpdate(OPT_KEY, 200); // the live feed marks it, right now
+  renderPositions(app);
+  assert.ok(!dom.$('#positions-table').querySelector('.stale-mark'), 'fed this instant: not marked');
+
+  // Same contract, a price that came out of a FILE rather than the feed.
+  app.engine.importJson(portfolioHolding(55));
+  renderPositions(app);
+  assert.match(dom.$('#positions-table tbody tr td:nth-child(4)').textContent, /55\.00/,
+    'the imported price is what is displayed');
+  assert.ok(dom.$('#positions-table').querySelector('.stale-mark'),
+    'and it must be marked: nothing in a just-imported portfolio has been priced by the feed');
+});
+
+test('RESET also forgets the stamps', () => {
+  // ★ This must NOT reach the same contract through importJson: import forgets the stamps too, so
+  // that version passed with reset's own call deleted — a test that locked the wrong thing. To
+  // isolate reset, re-enter the position with a plain FILL, which writes `lastPrices` directly
+  // and never stamps. Then the only thing that can make the row look live is a leftover stamp.
+  const dom = setupDom();
+  const app = mount(dom);
+  buyOpt(app.engine, OPT('30-Oct-2026'), 120);
+  app.engine.onPriceUpdate(OPT_KEY, 200); // the live feed stamps it
+  app.engine.reset(1_000_000);
+  buyOpt(app.engine, OPT('30-Oct-2026'), 61); // a fill: sets the price, stamps nothing
+  renderPositions(app);
+  assert.ok(dom.$('#positions-table').querySelector('.stale-mark'),
+    'a stamp from before the reset must not make a post-reset price look live');
+});
+
+test('CONTROL: a genuine feed update after an import marks it live again', () => {
+  // Forgetting must not be sticky — the next real poll re-stamps whatever is actually being fed.
+  const dom = setupDom();
+  const app = mount(dom);
+  app.engine.importJson(portfolioHolding(55));
+  renderPositions(app);
+  assert.ok(dom.$('#positions-table').querySelector('.stale-mark'), 'imported: marked');
+  app.engine.onPriceUpdate(OPT_KEY, 61); // the chain feeds it for real
+  renderPositions(app);
+  assert.ok(!dom.$('#positions-table').querySelector('.stale-mark'), 'fed for real: no longer marked');
+});

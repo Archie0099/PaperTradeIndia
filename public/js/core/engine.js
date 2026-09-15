@@ -302,6 +302,7 @@ class Engine {
     // current portfolio untouched.
     this.state = merged;
     this._rebuildPending(); // the imported order book may carry resting PENDING limits
+    this.forgetPriceTimes(); // these prices came from a FILE, not the live feed — see below
     this.emit();
   }
 
@@ -310,7 +311,21 @@ class Engine {
     this.state.initialCash = cash;
     this.state.cash = cash;
     this._rebuildPending(); // fresh state -> no resting orders
+    this.forgetPriceTimes(); // nothing in a fresh portfolio has been priced by the feed
     this.emit();
+  }
+
+  // ★ WHENEVER `state.lastPrices` IS REPLACED WHOLESALE, THE STAMPS MUST GO WITH IT.
+  // `lastPriceAt` is keyed by instrument, so it looks portfolio-independent — but it is a claim
+  // about the PRICES CURRENTLY IN `state.lastPrices`, and an import or a reset swaps those out
+  // from under it. Without this, importing a portfolio that happens to hold a contract the old one
+  // was being fed leaves the new, file-sourced price wearing the old price's freshness: the UI
+  // shows the imported number, calls it live, and closes at it without warning — exactly the thing
+  // the staleness marker exists to prevent. Forgetting is the honest state: nothing in a portfolio
+  // that just arrived from a file has been priced by the live feed yet, and the next poll re-stamps
+  // whatever really is being fed.
+  forgetPriceTimes() {
+    this.lastPriceAt = Object.create(null);
   }
 
   setCash(amount) {
