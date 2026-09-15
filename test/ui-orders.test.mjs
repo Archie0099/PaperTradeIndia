@@ -362,3 +362,54 @@ test('Modify shows an alert when the new limit price cannot be funded', () => {
   assert.equal(app.engine.state.orders[0].limitPrice, 9000, 'price unchanged on rejection');
   assert.ok(dom.alerts.some((m) => /Could not modify/.test(m)), 'user is told it was rejected');
 });
+
+// --- a resting F&O order cannot fill unless its chain is on screen -----------
+// A limit order fills inside onPriceUpdate, when a price crosses it. Equity prices arrive on a
+// background poll wherever you are in the app; option and future prices arrive ONLY from
+// feedEngineFromChain, whose 6-second refresh is gated on the Chain tab being active. So a
+// resting F&O order is dormant on every other tab — including the Orders tab, where you would sit
+// and watch it wait — while its funds stay reserved. The pill said only "PENDING".
+test('a PENDING F&O order says it can only fill with its chain open, and names the contract', () => {
+  const dom = setupDom();
+  const app = mountOrders(dom);
+  app.engine.placeOrder({
+    instrument: { kind: 'OPT', symbol: 'NIFTY', expiry: '30-Oct-2026', strike: 23500, optType: 'CE', lotSize: 75, underlyingPrice: 23500 },
+    side: 'BUY', orderType: 'LIMIT', lots: 1, price: 50, limitPrice: 50,
+  });
+  renderOrders(app);
+
+  const txt = dom.$('#orders-table').textContent;
+  assert.match(txt, /PENDING/, 'it is still shown as pending');
+  assert.match(txt, /·chain only/, 'and marked as fillable only from the chain');
+  const mark = dom.document.querySelector('#orders-table .stale-mark');
+  const title = mark.getAttribute('title');
+  assert.match(title, /only fill while the Option Chain tab is OPEN/, 'the hover states the condition');
+  assert.match(title, /NIFTY 23500 CE 30-Oct-2026/, 'it names the exact contract');
+  assert.match(title, /funds stay reserved/, 'and that the money is tied up meanwhile');
+});
+
+test('CONTROL: a PENDING EQUITY order is not marked — it fills on the background poll', () => {
+  const dom = setupDom();
+  const app = mountOrders(dom);
+  app.engine.placeOrder({
+    instrument: { kind: 'EQ', symbol: 'RELIANCE', lotSize: 1 },
+    side: 'BUY', orderType: 'LIMIT', lots: 10, price: 1000, limitPrice: 1000,
+  });
+  renderOrders(app);
+  assert.match(dom.$('#orders-table').textContent, /PENDING/, 'still pending');
+  assert.ok(!dom.document.querySelector('#orders-table .stale-mark'),
+    'an equity order fills wherever you are, so it must NOT carry the marker');
+});
+
+test('CONTROL: a FILLED F&O order is not marked — the caveat is about resting orders only', () => {
+  const dom = setupDom();
+  const app = mountOrders(dom);
+  app.engine.placeOrder({
+    instrument: { kind: 'OPT', symbol: 'NIFTY', expiry: '30-Oct-2026', strike: 23500, optType: 'CE', lotSize: 75, underlyingPrice: 23500 },
+    side: 'BUY', orderType: 'MARKET', lots: 1, price: 120,
+  });
+  renderOrders(app);
+  assert.match(dom.$('#orders-table').textContent, /FILLED/, 'it filled immediately');
+  assert.ok(!dom.document.querySelector('#orders-table .stale-mark'),
+    'nothing is waiting, so there is nothing to warn about');
+});

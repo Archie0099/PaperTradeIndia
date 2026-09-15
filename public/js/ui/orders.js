@@ -178,6 +178,39 @@ function loadTicket(app, inst, side, price, lots = 1) {
   app.tabs.show('orders');
 }
 
+// ★ A RESTING F&O ORDER CANNOT FILL UNLESS YOU ARE LOOKING AT ITS CHAIN, AND THE PILL SAID ONLY
+// "PENDING". A limit order fills inside `onPriceUpdate`, when a price crosses it. For an equity
+// that happens in the background: app.js polls every symbol carrying a resting order, on a timer,
+// whatever tab you are on. For an option or a future the ONLY price source is
+// `feedEngineFromChain`, which runs when the chain loads — and the chain's 6-second refresh is
+// itself gated on the Chain tab being ACTIVE.
+//
+// So an F&O limit order is dormant whenever you are anywhere else in the app — including the
+// Orders tab, where you would naturally sit and watch it wait. The market can trade clean through
+// your limit price and nothing happens, while the order's funds stay reserved the whole time.
+//
+// This is a deliberate simplification (polling every held expiry in the background would hammer a
+// free, unofficial, rate-limited endpoint), so it is disclosed rather than papered over — but it
+// was only ever disclosed in a source comment, which is no use to the person watching the pill.
+function dormantFno(o) {
+  return o && o.status === 'PENDING' && o.instrument && o.instrument.kind !== 'EQ';
+}
+
+function dormantFnoReason(o) {
+  const inst = o.instrument;
+  const what = inst.kind === 'FUT' ? 'future' : 'option';
+  const contract = inst.kind === 'FUT'
+    ? `${inst.symbol} FUT ${inst.expiry}`
+    : `${inst.symbol} ${inst.strike} ${inst.optType} ${inst.expiry}`;
+  return (
+    `This ${what} order can only fill while the Option Chain tab is OPEN and showing ` +
+    `${contract}. Equity orders fill in the background wherever you are in the app, but ` +
+    `${what} prices reach the simulator only from the chain on screen — so while you are on any ` +
+    `other tab, this order will not fill even if the market trades through your limit price. Its ` +
+    `funds stay reserved in the meantime.`
+  );
+}
+
 function renderOrders(app) {
   const root = clear($('#orders-table'));
   const orders = app.engine.state.orders;
@@ -210,7 +243,9 @@ function renderOrders(app) {
       el('td', { class: 'num' }, String(o.qty)),
       el('td', { class: 'num' }, typeof price === 'number' ? price.toFixed(2) : price),
       el('td', { class: 'num ' + (realised != null ? moveClass(realised) : '') }, realised != null ? signed(realised, 0) : '–'),
-      el('td', {}, el('span', { class: 'pill ' + o.status }, o.status)),
+      el('td', {}, dormantFno(o)
+        ? [el('span', { class: 'pill ' + o.status }, o.status), el('span', { class: 'stale-mark', title: dormantFnoReason(o) }, ' ·chain only')]
+        : el('span', { class: 'pill ' + o.status }, o.status)),
       el('td', {}, o.status === 'PENDING' ? el('span', { class: 'row-actions' }, [modifyBtn(app, o), cancelBtn(app, o.id)]) : ''),
     ]);
     tbody.append(row);
