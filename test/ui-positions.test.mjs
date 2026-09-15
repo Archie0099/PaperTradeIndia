@@ -262,7 +262,10 @@ test('an option outside the chain on screen is marked as not live, and the hover
 
   const txt = dom.$('#positions-table') ? dom.$('#positions-table').textContent : dom.document.body.textContent;
   assert.match(txt, /·not live/, 'the LTP carries the marker');
-  const mark = dom.document.querySelector('.stale-mark');
+  // Scoped to the TABLE on purpose: the P&L summary above it now carries its own `.stale-mark`
+  // for the same underlying fact, so an unscoped query returns that one instead and this test
+  // would silently be asserting about the wrong element.
+  const mark = dom.$('#positions-table').querySelector('.stale-mark');
   assert.ok(mark, 'the marker element is rendered');
   const title = mark.getAttribute('title');
   assert.match(title, /Not a live price/, 'the hover states the fact');
@@ -307,7 +310,10 @@ test('with no chain ever loaded, a manual option is marked (nothing is feeding F
   buyOpt(app.engine, OPT('30-Oct-2026'), 120);
   app.state.chain = null; // the Option Chain tab has never been opened this session
   renderPositions(app);
-  assert.ok(dom.document.querySelector('.stale-mark'), 'no chain means no F&O feed, so the price is not live');
+  // Scoped to the table: the summary above carries its own marker for the same fact, so an
+  // unscoped presence check would still pass if the ROW marker regressed.
+  assert.ok(dom.$('#positions-table').querySelector('.stale-mark'),
+    'no chain means no F&O feed, so the price is not live');
 });
 
 // --- closing at a price that is not live must SAY so first -------------------
@@ -386,4 +392,58 @@ test('CONTROL: square off all asks nothing when every position is being fed', ()
   dom.setConfirm(false);
   assert.equal(confirmStaleSquareOff(app), true, 'it proceeds without asking');
   assert.equal(dom.confirms.length, 0, 'no dialog when there is nothing to warn about');
+});
+
+// --- the HEADLINE inherits the frozen mark ----------------------------------
+// Unrealised P&L sums every position, and an unfed contract contributes its frozen mark — usually
+// zero, because the mark is still the fill price. So the biggest number on the screen can read
+// "no movement" when the truth is simply unknown. The row marker says WHICH position; this says
+// the TOTAL is affected, which is what someone reading only the hero cards would otherwise miss.
+test('the Unrealised P&L card says when part of the total is not being priced', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  buy(app.engine, 'RELIANCE', 10, 1200);
+  buyOpt(app.engine, OPT('30-Oct-2026'), 120);
+  app.state.chain = { symbol: 'NIFTY', expiry: '24-Sep-2026', strikes: [] };
+  renderPositions(app);
+
+  const summary = dom.$('#pnl-summary');
+  assert.match(summary.textContent, /· 1 not live/, 'the card says how many are unpriced');
+  const mark = summary.querySelector('.stale-mark');
+  const title = mark.getAttribute('title');
+  assert.match(title, /1 open position is marked at a last-seen price/, 'singular reads correctly');
+  assert.match(title, /frozen — usually at zero/, 'it says why the contribution is misleading');
+  assert.match(title, /Positions table below marks which one/, 'it points at where to look');
+});
+
+test('CONTROL: the card says nothing when every position is being priced', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  buy(app.engine, 'RELIANCE', 10, 1200);
+  buyOpt(app.engine, OPT('30-Oct-2026'), 120);
+  app.state.chain = { symbol: 'NIFTY', expiry: '30-Oct-2026', strikes: [] }; // the option IS fed
+  renderPositions(app);
+  assert.ok(!dom.$('#pnl-summary').querySelector('.stale-mark'),
+    'no note when there is nothing to note — it must never be permanent furniture');
+  assert.ok(!/not live/.test(dom.$('#pnl-summary').textContent));
+});
+
+test('the headline note and the square-off guard count the same positions', () => {
+  // They render in different places and read differently (a count vs a list of names), so they
+  // are the pair most likely to drift apart. Both must come from one definition.
+  const dom = setupDom();
+  const app = mount(dom);
+  buy(app.engine, 'RELIANCE', 10, 1200);
+  buyOpt(app.engine, OPT('30-Oct-2026'), 120);
+  buyOpt(app.engine, OPT('27-Nov-2026', 24000), 90);
+  app.state.chain = { symbol: 'NIFTY', expiry: '30-Oct-2026', strikes: [] }; // October fed, November not
+  renderPositions(app);
+
+  assert.match(dom.$('#pnl-summary').textContent, /· 1 not live/, 'one position is unfed');
+  dom.setConfirm(false);
+  confirmStaleSquareOff(app);
+  const msg = dom.confirms[dom.confirms.length - 1];
+  assert.match(msg, /1 of these positions has no live price/, 'the guard agrees on the count');
+  assert.match(msg, /NIFTY 24000 CE 27-Nov-2026/, 'and it is the November one');
+  assert.ok(!/30-Oct-2026/.test(msg), 'the October contract is fed, so it is not listed');
 });

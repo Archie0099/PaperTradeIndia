@@ -109,6 +109,22 @@ function priceIsLive(app, inst) {
   return chain.symbol === inst.symbol && chain.expiry === inst.expiry;
 }
 
+// Every OPEN position being marked at a price nobody is feeding. ONE definition, used by the
+// headline note and by the square-off guard — they need different things from it (a count, and a
+// list of names), and letting each walk the positions itself is exactly how two surfaces end up
+// disagreeing about what counts as "not live".
+function notLivePositions(app) {
+  const out = [];
+  for (const key in app.engine.state.positions) {
+    const p = app.engine.state.positions[key];
+    if (!p || p.qty === 0) continue;
+    if (!priceIsLive(app, p.instrument)) out.push(p.instrument);
+  }
+  return out;
+}
+
+const countNotLive = (app) => notLivePositions(app).length;
+
 // The hover text. It names the ONE thing the reader can do about it, because "this is stale" with
 // no remedy just makes the screen feel broken.
 function staleReason(inst) {
@@ -264,9 +280,33 @@ function renderPnlSummary(app) {
     splitPct: investedPct,
     sub: [el('span', { class: 'muted' }, `Invested ${rupee(investedVal, 0)}`), el('span', { class: 'muted' }, `· Cash ${rupee(cash, 0)}`)],
   }));
+  // ★ THE HEADLINE INHERITS THE ROW-LEVEL PROBLEM. Unrealised P&L sums every position, and a
+  // contract with no live feed contributes its FROZEN mark — usually zero, because the mark is
+  // still the fill price. So the biggest number on the screen can read "no movement" while the
+  // real answer is simply unknown. The per-row marker says which position; this says that the
+  // total is affected at all, which is what someone reading only the hero cards would miss.
+  // Shown ONLY when something really is unfed, so it is never permanent furniture.
+  const unfed = countNotLive(app);
+  const unrealSub = [
+    el('span', { class: 'muted' }, 'Realised'),
+    el('span', { class: moveClass(real) }, signed(real, 0)),
+    el('span', { class: 'muted' }, `· Margin ${rupee(margin, 0)}`),
+  ];
+  if (unfed > 0) {
+    unrealSub.push(
+      el('span', {
+        class: 'stale-mark',
+        title:
+          `${unfed} open ${unfed === 1 ? 'position is' : 'positions are'} marked at a last-seen ` +
+          `price rather than a live one, so ${unfed === 1 ? 'its' : 'their'} share of this total ` +
+          `is frozen — usually at zero, because the mark is still the price it was filled at. ` +
+          `The Positions table below marks which ${unfed === 1 ? 'one' : 'ones'}.`,
+      }, `· ${unfed} not live`)
+    );
+  }
   root.append(heroCard('Unrealised P&L', signed(unreal, 0), {
     cls: moveClass(unreal),
-    sub: [el('span', { class: 'muted' }, 'Realised'), el('span', { class: moveClass(real) }, signed(real, 0)), el('span', { class: 'muted' }, `· Margin ${rupee(margin, 0)}`)],
+    sub: unrealSub,
   }));
 }
 
@@ -366,12 +406,7 @@ function th(t) {
 // engine, and a money-model method must never reach for a browser dialog.
 // Returns true to proceed. Silent unless something really is unfed.
 function confirmStaleSquareOff(app) {
-  const stale = [];
-  for (const key in app.engine.state.positions) {
-    const p = app.engine.state.positions[key];
-    if (!p || p.qty === 0) continue;
-    if (!priceIsLive(app, p.instrument)) stale.push(contractLabel(p.instrument));
-  }
+  const stale = notLivePositions(app).map(contractLabel);
   if (stale.length === 0) return true; // everything is being fed — no question to ask
   if (typeof window === 'undefined' || typeof window.confirm !== 'function') return true;
   return window.confirm(
