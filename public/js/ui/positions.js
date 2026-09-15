@@ -61,8 +61,12 @@ function renderPositions(app) {
         el('td', {}, p.instrument.kind === 'EQ' ? p.instrument.symbol : labelFor(p.instrument)),
         el('td', { class: 'num' }, String(p.qty)),
         el('td', { class: 'num' }, p.avgPrice.toFixed(2)),
-        el('td', { class: 'num' }, last == null ? '…' : live ? last.toFixed(2) : [
-          last.toFixed(2),
+        // A position with NO price at all (an imported file with an empty `lastPrices`) is just
+        // as unfed as one with a frozen price, and notLivePositions() counts it in the headline —
+        // so the row must carry the same marker, or the headline says "the table marks which one"
+        // and the table marks nothing.
+        el('td', { class: 'num' }, live ? (last == null ? '…' : last.toFixed(2)) : [
+          last == null ? '…' : last.toFixed(2),
           // A marker, not a warning: the number is real, it is simply the LAST one seen rather
           // than a current one. The hover carries the why, because the row has no space for it
           // and an unexplained symbol on a trading screen is its own kind of noise.
@@ -136,23 +140,55 @@ const countNotLive = (app) => notLivePositions(app).length;
 // The hover text. It names the ONE thing the reader can do about it, because "this is stale" with
 // no remedy just makes the screen feel broken — and the remedy differs by how the contract is
 // priced, so the sentence has to branch rather than assert the common case at everything.
-function staleReason(inst) {
+// An Auto-Pilot copied leg lives under a modelled expiry no chain serves (`cyc293`, stamped by
+// instrumentFromMirror); it is re-priced off the live underlying on every poll. So if one has gone
+// quiet the Option Chain is NOT the remedy — no chain can ever show that expiry — the underlying
+// quote is what is missing. ONE predicate for that, shared by the hover and all three dialogs: a
+// review found the hover branching on this while the dialogs asserted the chain story at every
+// contract, sending the reader to open an expiry that does not exist.
+function isCopiedLeg(inst) {
+  return inst.kind === 'OPT' && inst.expiryMs != null && inst.iv > 0;
+}
+
+// WHY the price is frozen, as a sentence naming `priceText` as the number in question. The
+// dialogs and the hover each wrap this in their own framing; the cause is written once.
+function staleCause(inst, priceText) {
   const what = inst.kind === 'FUT' ? 'future' : 'option';
-  // An Auto-Pilot copied leg lives under a modelled expiry no chain serves; it is re-priced off
-  // the live underlying on every poll, so if it has gone quiet the chain is not the remedy — the
-  // underlying quote is missing.
-  if (inst.kind === 'OPT' && inst.expiryMs != null && inst.iv > 0) {
+  if (isCopiedLeg(inst)) {
     return (
-      `Not a live price. This copied leg is re-priced from the live ${inst.symbol} quote on every ` +
-      `poll, and that has not happened recently — most likely the ${inst.symbol} quote is not ` +
-      `arriving. This is the last price seen, and the unrealised P&L beside it is frozen with it.`
+      `This copied leg is re-priced from the live ${inst.symbol} quote on every poll, and that ` +
+      `has not happened recently — most likely the ${inst.symbol} quote is not arriving — so ` +
+      `${priceText} is the last modelled price`
     );
   }
   return (
-    `Not a live price. This ${what} is only marked while the Option Chain tab is OPEN on ` +
-    `${inst.symbol} ${inst.expiry} — the chain stops refreshing the moment you leave that tab, so ` +
-    `this is the last price seen (usually the price it was filled at) and the unrealised P&L ` +
-    `beside it is frozen with it. Open that expiry in the Option Chain to mark it again.`
+    `This ${what} is only marked while the Option Chain tab is OPEN on ${inst.symbol} ` +
+    `${inst.expiry} — the chain stops refreshing the moment you leave that tab — so ${priceText} ` +
+    `is the last price seen, usually the price it was filled at`
+  );
+}
+
+// The ONE thing the reader can do about it. Branches with the cause, never asserted alone.
+function staleRemedy(inst) {
+  return isCopiedLeg(inst)
+    ? `wait for the ${inst.symbol} quote to resume (the status bar shows the feed's state)`
+    : `open that expiry in the Option Chain first`;
+}
+
+// A short tag for a list line, so "Square off all" can say per contract why it is unfed.
+function staleTag(inst) {
+  return isCopiedLeg(inst)
+    ? `copied leg, ${inst.symbol} quote not arriving`
+    : `chain not open on ${inst.symbol} ${inst.expiry}`;
+}
+
+function staleReason(inst) {
+  const remedy = isCopiedLeg(inst)
+    ? `Wait for the ${inst.symbol} quote to resume (the status bar shows the feed's state); it is re-marked on the next poll.`
+    : `Open that expiry in the Option Chain to mark it again.`;
+  return (
+    `Not a live price. ${staleCause(inst, 'this')}, and the unrealised P&L beside it is frozen ` +
+    `with it. ${remedy}`
   );
 }
 
@@ -166,13 +202,19 @@ function staleReason(inst) {
 function confirmStalePriceClose(app, pos, last) {
   if (priceIsLive(app, pos.instrument)) return true;
   if (typeof window === 'undefined' || typeof window.confirm !== 'function') return true;
-  return window.confirm(
-    `Close ${contractLabel(pos.instrument)} at ${last.toFixed(2)}?\n\n` +
-      `That is NOT a live price. This contract is only marked while the Option Chain tab is OPEN ` +
-      `on ${pos.instrument.symbol} ${pos.instrument.expiry} — the chain stops refreshing the ` +
-      `moment you leave that tab — so ${last.toFixed(2)} is the last price seen, usually the ` +
-      `price you filled at, and the realised P&L this books will be calculated from it.\n\n` +
-      `To close at a current price, cancel and open that expiry in the Option Chain first.`
+  return window.confirm(staleFillWarning(pos.instrument, last, `Close ${contractLabel(pos.instrument)}`));
+}
+
+// The body of every "fill at a frozen price?" dialog — the per-row Close and the order ticket's
+// MARKET order ask the same question with the same consequence, so they share one text and one
+// branch. `act` is the first line ("Close NIFTY 23500 CE 30-Oct-2026", "Place this MARKET order").
+function staleFillWarning(inst, last, act) {
+  const price = last.toFixed(2);
+  return (
+    `${act} at ${price}?\n\n` +
+    `That is NOT a live price. ${staleCause(inst, price)}, and the realised P&L this books will ` +
+    `be calculated from it.\n\n` +
+    `To trade at a current price, cancel and ${staleRemedy(inst)}.`
   );
 }
 
@@ -425,19 +467,24 @@ function th(t) {
 // engine, and a money-model method must never reach for a browser dialog.
 // Returns true to proceed. Silent unless something really is unfed.
 function confirmStaleSquareOff(app) {
-  const stale = notLivePositions(app).map(contractLabel);
-  if (stale.length === 0) return true; // everything is being fed — no question to ask
+  const unfed = notLivePositions(app);
+  if (unfed.length === 0) return true; // everything is being fed — no question to ask
   if (typeof window === 'undefined' || typeof window.confirm !== 'function') return true;
+  // Each line names the contract AND why it is unfed, because the two causes have different
+  // remedies and a copied leg listed beside a chain contract would otherwise inherit its story.
+  const stale = unfed.map((inst) => `${contractLabel(inst)} — ${staleTag(inst)}`);
+  const n = stale.length;
   return window.confirm(
     `Square off everything?\n\n` +
       // "1 of these positionS HAS" — the noun stays plural (it refers to the whole set being
       // squared off) while only the verb agrees with the count.
-      `${stale.length} of these positions ${stale.length === 1 ? 'has' : 'have'} no live ` +
-      `price right now:\n  ${stale.join('\n  ')}\n\n` +
-      `${stale.length === 1 ? 'It' : 'They'} will be closed at the last price seen — usually the ` +
-      `price you filled at — so the realised P&L booked for ${stale.length === 1 ? 'it' : 'them'} ` +
-      `will be calculated from that, not from a current market price.`
+      `${n} of these positions ${n === 1 ? 'has' : 'have'} no live price right now:\n  ` +
+      `${stale.join('\n  ')}\n\n` +
+      `${n === 1 ? 'It' : 'They'} will be closed at the last price seen — ` +
+      `${unfed.some(isCopiedLeg) ? 'the last modelled price for a copied leg, usually the fill price for a contract whose chain is not open' : 'usually the price you filled at'}` +
+      ` — so the realised P&L booked for ${n === 1 ? 'it' : 'them'} will be calculated from that, ` +
+      `not from a current market price.`
   );
 }
 
-export { renderPositions, portfolioGreeks, priceIsLive, confirmStaleSquareOff };
+export { renderPositions, portfolioGreeks, priceIsLive, confirmStaleSquareOff, staleFillWarning };

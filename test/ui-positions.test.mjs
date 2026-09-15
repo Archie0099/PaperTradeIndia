@@ -596,3 +596,66 @@ test('CONTROL: a genuine feed update after an import marks it live again', () =>
   renderPositions(app);
   assert.ok(!dom.$('#positions-table').querySelector('.stale-mark'), 'fed for real: no longer marked');
 });
+
+// --- the dialogs must branch on the CAUSE exactly as the hover does --------------
+// A fresh-context review found the row hover correctly telling a copied Auto-Pilot leg that its
+// underlying quote had stopped, while the Close and Square-off dialogs told the same contract to
+// "open that expiry in the Option Chain" — an expiry (`cyc293`) no chain can ever show. Same
+// shape as an earlier fix: identical wording in two places, only one of them branched. These lock
+// that every surface gives the copied-leg cause and remedy, and never the chain one.
+test('closing an unfed COPIED leg names the missing quote as the cause, never the Option Chain', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  const leg = { ...OPT('cyc293'), expiryMs: Date.now() + 30 * 864e5, iv: 0.14 };
+  buyOpt(app.engine, leg, 400);
+  delete app.state.quotes.NIFTY; // the re-mark cannot run -> the leg is genuinely unfed
+  remarkOptionPositions(app);
+  renderPositions(app);
+
+  dom.setConfirm(false);
+  dom.fire(dom.$$('#positions-table tbody tr button').find((b) => b.textContent === 'Close'), 'click');
+  assert.equal(dom.confirms.length, 1, 'it asks — the price really is not live');
+  const msg = dom.confirms[0];
+  assert.match(msg, /NIFTY 23500 CE cyc293/, 'it names the contract in full');
+  assert.match(msg, /re-priced from the live NIFTY quote/, 'the CAUSE is the missing underlying quote');
+  assert.match(msg, /wait for the NIFTY quote to resume/, 'and the REMEDY is to wait for it');
+  assert.ok(!/Option Chain/.test(msg), 'it must NOT send the reader to a chain that cannot show cyc293');
+});
+
+test('square off all tags a copied leg with its own cause, beside a chain contract with its own', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  const leg = { ...OPT('cyc293'), expiryMs: Date.now() + 30 * 864e5, iv: 0.14 };
+  buyOpt(app.engine, leg, 400);                     // copied leg, about to go quiet
+  buyOpt(app.engine, OPT('30-Oct-2026'), 120);     // manual contract, chain never opened
+  delete app.state.quotes.NIFTY;
+  remarkOptionPositions(app);
+  app.state.chain = null;
+
+  dom.setConfirm(false);
+  assert.equal(confirmStaleSquareOff(app), false);
+  const msg = dom.confirms[0];
+  assert.match(msg, /2 of these positions have no live price/, 'both are unfed');
+  assert.match(msg, /NIFTY 23500 CE cyc293 — copied leg, NIFTY quote not arriving/, 'the copied leg gets its cause');
+  assert.match(msg, /NIFTY 23500 CE 30-Oct-2026 — chain not open on NIFTY 30-Oct-2026/, 'the chain contract gets its cause');
+  assert.match(msg, /last modelled price for a copied leg/, 'and the price description covers both kinds');
+});
+
+test('a position with NO price at all carries the row marker the headline says it has', () => {
+  // An imported file can hold a position with an empty `lastPrices`. notLivePositions() counts it
+  // (nothing is feeding it), so the headline said "· 1 not live — the table marks which one" while
+  // the LTP cell short-circuited on the missing price and rendered a bare "…" with no marker.
+  const dom = setupDom();
+  const app = mount(dom);
+  app.engine.importJson(JSON.stringify({
+    ...JSON.parse(app.engine.exportJson()),
+    positions: { 'OPT:NIFTY:30-Oct-2026:23500:CE': { qty: 75, avgPrice: 120, instrument: OPT('30-Oct-2026') } },
+    lastPrices: {},
+  }));
+  app.state.chain = null;
+  renderPositions(app);
+  assert.match(dom.$('#pnl-summary').textContent, /· 1 not live/, 'the headline counts it');
+  const cell = dom.$('#positions-table tbody tr td:nth-child(4)');
+  assert.match(cell.textContent, /…/, 'no price is shown as "…" as before');
+  assert.ok(cell.querySelector('.stale-mark'), 'and the row carries the marker the headline promises');
+});

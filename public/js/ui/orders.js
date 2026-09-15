@@ -7,7 +7,7 @@
 // ---------------------------------------------------------------------------
 
 import { $, el, clear, rupee, signed, moveClass } from './dom.js';
-import { priceIsLive } from './positions.js';
+import { priceIsLive, staleFillWarning } from './positions.js';
 
 // Read the current ticket form into a plain object.
 function readTicket() {
@@ -212,14 +212,12 @@ function confirmStaleTicketFill(app, inst, last) {
   // wrong direction. One definition of liveness, asked once.
   if (priceIsLive(app, inst)) return true;
   if (typeof window === 'undefined' || typeof window.confirm !== 'function') return true;
-  const what = inst.kind === 'FUT' ? 'future' : 'option';
+  // Same text as the Close button's dialog (ONE definition of cause and remedy, in positions.js —
+  // a copied Auto-Pilot leg and a chain contract need different remedies, and this used to assert
+  // the chain story at both), plus the one extra way out a ticket has: type the price yourself.
   return window.confirm(
-    `Place this MARKET order at ${last.toFixed(2)}?\n\n` +
-      `That is NOT a live price. Nothing is currently feeding this ${what} — it is only priced ` +
-      `while the Option Chain tab is OPEN on ${inst.symbol} ${inst.expiry} — so ${last.toFixed(2)} ` +
-      `is simply the last price seen, and this order will fill against it.\n\n` +
-      `To trade at a current price, cancel and open that expiry in the Option Chain, or type a ` +
-      `price into the ticket yourself.`
+    staleFillWarning(inst, last, 'Place this MARKET order') +
+      ` Or type a price into the ticket yourself — then it is your number, not a stale one.`
   );
 }
 

@@ -774,7 +774,7 @@ test('getStandings stamps a fresh `now` on every response, distinct from the rec
 // edited — and only for the stocks carrying it, so the board's timeline gains a day the index
 // does not have. `now` is injected, never the wall clock (§5).
 // ---------------------------------------------------------------------------
-test('tick() REFUSES a zero-volume bar, and still admits one whose volume is simply unknown', async () => {
+test('tick() REFUSES a carried-forward zero-volume bar, and still admits one whose volume is unknown or whose close moved', async () => {
   const series = niftySeries();
   const lastT = series[series.length - 1].t;
   const barT = lastT + 864e5;
@@ -804,6 +804,17 @@ test('tick() REFUSES a zero-volume bar, and still admits one whose volume is sim
     const quiet = await createTournament({ seed: SEED, backfillData: { NIFTY: series }, persist: false });
     await quiet.init();
     assert.equal(await quiet.tick({ now: after }), true, 'an unknown volume is not treated as zero');
+
+    // (d) ★ THE DISTINGUISHING CASE — zero volume with a close that MOVED. The free feed reports
+    // `volume: 0` for the INDICES on real trading days (NIFTY: 14 such sessions since 2020, e.g.
+    // 1–3 July 2024, confirmed on the raw endpoint). A volume-only rule refused them, and because
+    // NIFTY's edge stamps every advisor day, that day's entry was lost PERMANENTLY. A bar whose
+    // close moved is a session whatever the feed says about volume.
+    freeProvider.getHistory = async () => ({ symbol: 'NIFTY', candles: [{ t: barT, c: 30000, v: 0 }] });
+    const indexDay = await createTournament({ seed: SEED, backfillData: { NIFTY: series }, persist: false });
+    await indexDay.init();
+    assert.equal(await indexDay.tick({ now: after }), true, 'zero volume with a MOVED close is a real session and is admitted');
+    assert.equal(indexDay.getStandings().liveBars, before + 1, 'and the live record grows by exactly that bar');
   } finally {
     freeProvider.getHistory = orig;
   }

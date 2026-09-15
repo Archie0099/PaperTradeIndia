@@ -124,6 +124,27 @@ const rangeFor = (interval) => (isIntradayInterval(interval) ? '2y' : '20y');
 // the intraday analogue of the daily tick's `istDate(c.t) < today` guard. '60m' -> 1h.
 const intervalMs = (interval) => { const m = /^(\d+)(m|h)$/.exec(interval || ''); return m ? +m[1] * (m[2] === 'h' ? 3600000 : 60000) : 3600000; };
 
+// ★ A PHANTOM BAR IS TWO FACTS TOGETHER, NOT ONE. On a day the exchange was shut the feed still
+// emits a daily row for most stocks: the previous close repeated VERBATIM with volume EXACTLY 0
+// (measured on four declared 2026 NSE holidays, ~110 names each). Admitting one writes a
+// fabricated session into the append-only forward record, so both live admission paths refuse it.
+//
+// The first version of this guard keyed on volume ALONE — and a later review found that
+// it refused REAL SESSIONS: the free feed reports `volume: 0` for the INDICES on ordinary trading
+// days (NIFTY: 14 such sessions since 2020 with a moving close, e.g. 1–3 July 2024, re-fetched from
+// the raw endpoint to rule out a stale cache; before 2013 every index bar is zero-volume). Because
+// NIFTY's series is what stamps an advisor day, a volume-only rule would have dropped that day's
+// entry PERMANENTLY — missed days are never back-filled — which is the one artifact here that only
+// time can produce. So the rule now requires the carried-forward close as well: a bar whose close
+// MOVED is a session whatever the feed says about volume, and a bar that copies the previous close
+// at zero volume is the phantom shape and nothing else. `prevClose` is the feed's own previous row
+// where the fetch has one, else the last close already in the series; with no previous close to
+// compare against the bar is admitted — "cannot tell" must not stall a series.
+// ★ An ABSENT volume is still NOT treated as zero: "no claim" and "nothing traded" differ.
+function isPhantomBar(bar, prevClose) {
+  return bar.v === 0 && Number.isFinite(prevClose) && bar.c === prevClose;
+}
+
 // --- Roster growth policy ---------------------------------------------------
 // SHOW ALL BOTS (old + new) so they can be visually compared,
 // instead of retiring the weakest each generation. So evolution GROWS the board
@@ -1351,13 +1372,15 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
         // ★ Scope is deliberately LIVE ADMISSION ONLY. It changes which bars enter the record from
         // here on and restates no published figure — unlike refusing to TRADE the historical ones,
         // which would move every number on the board and stays an open decision.
-        // ★ An ABSENT volume is NOT treated as zero: "no claim" and "nothing traded" are different
-        // facts, and rejecting on unknown data would silently stall a series the feed is simply
-        // terse about. Only an explicit 0 is refused.
-        const cs = (res.candles || [])
-          .filter((c) => Number.isFinite(c.c) && c.c > 0 && !(c.v === 0) && sessionClosed(c.t))
-          .sort((a, b) => a.t - b.t);
+        // ★ The refusal is `isPhantomBar` (zero volume AND the previous close carried forward),
+        // NOT zero volume alone — see its comment for the real index sessions that a volume-only
+        // rule dropped. Sorted first so each bar is compared with the feed's own previous row.
         const series = seriesFor(symbol, interval);
+        const fetched = (res.candles || [])
+          .filter((c) => Number.isFinite(c.c) && c.c > 0)
+          .sort((a, b) => a.t - b.t);
+        const lastClose = series.length ? series[series.length - 1].c : NaN;
+        const cs = fetched.filter((c, i) => !isPhantomBar(c, i > 0 ? fetched[i - 1].c : lastClose) && sessionClosed(c.t));
         // Append EVERY completed bar newer than our cursor, not just the single
         // newest one: if the host slept/froze across 2+ sessions (a free-tier dyno
         // does), taking only the last bar permanently DROPPED the intermediate
@@ -1409,15 +1432,17 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
         // window has elapsed (`c.t + period <= now`); the still-forming bar is picked up
         // once its hour closes — kept reproducible vs a clean offline backtest.
         const period = intervalMs(interval);
-        // Same zero-volume refusal as the daily path above, for the same reason and with the same
-        // "explicit 0 only, never absent" rule. This path is ALSO gated on getMarketState().isOpen,
-        // which does consult the holiday list — but that list is hand-maintained one year at a time
-        // and fails OPEN when it lapses, so the outer guard has a known expiry and this one does
-        // not. One rule for "a bar with no trading in it", applied on both admission paths.
-        const cs = (res.candles || [])
-          .filter((c) => Number.isFinite(c.c) && c.c > 0 && !(c.v === 0) && c.t + period <= now)
-          .sort((a, b) => a.t - b.t);
+        // Same phantom-bar refusal as the daily path above (`isPhantomBar`: zero volume AND the
+        // previous close carried forward — never volume alone, and never an absent volume). This
+        // path is ALSO gated on getMarketState().isOpen, which does consult the holiday list — but
+        // that list is hand-maintained one year at a time and fails OPEN when it lapses, so the
+        // outer guard has a known expiry and this one does not. One rule, both admission paths.
         const series = seriesFor(symbol, interval);
+        const fetched = (res.candles || [])
+          .filter((c) => Number.isFinite(c.c) && c.c > 0)
+          .sort((a, b) => a.t - b.t);
+        const lastClose = series.length ? series[series.length - 1].c : NaN;
+        const cs = fetched.filter((c, i) => !isPhantomBar(c, i > 0 ? fetched[i - 1].c : lastClose) && c.t + period <= now);
         let cursor = series.length ? series[series.length - 1].t : 0; // advance as we append
         for (const bar of cs) {
           if (bar.t > cursor) {

@@ -328,11 +328,20 @@ test('tickIntraday REFUSES a zero-volume 60m bar, and still admits one with unkn
     await t.init();
     return t;
   };
+  // The phantom shape is the previous close carried forward VERBATIM at zero volume — so the
+  // refused fixture copies the series' last close. (A zero-volume bar whose close MOVED is a real
+  // session the feed merely reports tersely — the index does this routinely — and is admitted;
+  // locked on the daily path, same predicate here.)
+  const prevClose = intradaySeries(7, 1)[intradaySeries(7, 1).length - 1].c;
   try {
-    freeProvider.getHistory = async (sym) => ({ symbol: sym, candles: [{ t: T, c: 9999, v: 0 }] });
+    freeProvider.getHistory = async (sym) => ({ symbol: sym, candles: [{ t: T, c: prevClose, v: 0 }] });
     const shut = await fresh();
-    assert.equal(await shut.tickIntraday({ now: OPEN }), false, 'a zero-volume 60m bar is refused');
+    assert.equal(await shut.tickIntraday({ now: OPEN }), false, 'a carried-forward zero-volume 60m bar is refused');
     assert.equal(shut.getStandings().liveBars, 0, 'and nothing is appended');
+
+    freeProvider.getHistory = async (sym) => ({ symbol: sym, candles: [{ t: T, c: 9999, v: 0 }] });
+    const moved = await fresh();
+    assert.equal(await moved.tickIntraday({ now: OPEN }), true, 'zero volume with a MOVED close is a session and is admitted');
 
     freeProvider.getHistory = async (sym) => ({ symbol: sym, candles: [{ t: T, c: 9999, v: 5000 }] });
     const traded = await fresh();
