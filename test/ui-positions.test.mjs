@@ -230,3 +230,75 @@ test('portfolioGreeks uses the stamped expiryMs for a COPIED F&O leg (synthetic 
   assert.ok(g.delta > 20 && g.delta < 60, `net delta ~ATM-30-day (0.5*75), not 0/skipped nor deep-ITM, got ${g.delta}`);
   assert.ok(g.gamma > 0 && g.theta < 0, 'positive gamma, negative theta (a long option) from the correct T');
 });
+
+// --- an F&O price that is NOT being fed must say so -------------------------
+// feedEngineFromChain() in ui/optionChain.js is the ONLY price source for a manually traded
+// option or future, and it walks the chain CURRENTLY ON SCREEN. So a contract in any other
+// expiry — or in any other underlying — stops being marked the moment you look away: its "LTP"
+// stays at the fill price and its unrealised P&L freezes at zero, rendered in exactly the same
+// style as a live row. The portfolio Greeks, meanwhile, keep moving, because they reprice off the
+// live underlying spot. These lock the disclosure, and three of the five are CONTROLS that must
+// NOT fire — a marker that appears on every row would be worse than none.
+const OPT = (expiry, strike = 23500) => ({
+  kind: 'OPT', symbol: 'NIFTY', expiry, strike, optType: 'CE', lotSize: 75, underlyingPrice: 23500,
+});
+const buyOpt = (engine, inst, price) =>
+  engine.placeOrder({ instrument: inst, side: 'BUY', orderType: 'MARKET', lots: 1, price });
+
+test('an option outside the chain on screen is marked as not live, and the hover says why', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  buyOpt(app.engine, OPT('30-Oct-2026'), 120);
+  // The chain tab is showing a DIFFERENT expiry, so nothing feeds the October contract.
+  app.state.chain = { symbol: 'NIFTY', expiry: '24-Sep-2026', strikes: [] };
+  renderPositions(app);
+
+  const txt = dom.$('#positions-table') ? dom.$('#positions-table').textContent : dom.document.body.textContent;
+  assert.match(txt, /·not live/, 'the LTP carries the marker');
+  const mark = dom.document.querySelector('.stale-mark');
+  assert.ok(mark, 'the marker element is rendered');
+  const title = mark.getAttribute('title');
+  assert.match(title, /Not a live price/, 'the hover states the fact');
+  assert.match(title, /NIFTY 30-Oct-2026/, 'it names the contract that is not being fed');
+  assert.match(title, /last price seen/, 'it says what the number actually is');
+  assert.match(title, /Open that expiry in the Option Chain/, 'it names the one remedy');
+});
+
+test('CONTROL: the same option IS live while its own expiry is the chain on screen', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  buyOpt(app.engine, OPT('30-Oct-2026'), 120);
+  app.state.chain = { symbol: 'NIFTY', expiry: '30-Oct-2026', strikes: [] };
+  renderPositions(app);
+  assert.ok(!dom.document.querySelector('.stale-mark'), 'a contract being fed must NOT be marked');
+});
+
+test('CONTROL: an equity is never marked — every held symbol is polled regardless of the screen', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  buy(app.engine, 'RELIANCE', 10, 1200);
+  app.state.chain = { symbol: 'NIFTY', expiry: '24-Sep-2026', strikes: [] };
+  renderPositions(app);
+  assert.ok(!dom.document.querySelector('.stale-mark'), 'equities are polled by symbolsToPoll(), never stale this way');
+});
+
+test('CONTROL: an Auto-Pilot copied leg is never marked — it is re-priced off the underlying each poll', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  // A copied leg carries expiryMs + iv and lives under a modelled expiry no chain serves;
+  // remarkOptionPositions() re-marks it every poll, so it is a MODEL price but not a stale one.
+  const leg = { ...OPT('cyc293'), expiryMs: Date.now() + 30 * 864e5, iv: 0.14 };
+  buyOpt(app.engine, leg, 400);
+  app.state.chain = { symbol: 'NIFTY', expiry: '24-Sep-2026', strikes: [] };
+  renderPositions(app);
+  assert.ok(!dom.document.querySelector('.stale-mark'), 'a re-marked copied leg must not be called stale');
+});
+
+test('with no chain ever loaded, a manual option is marked (nothing is feeding F&O at all)', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  buyOpt(app.engine, OPT('30-Oct-2026'), 120);
+  app.state.chain = null; // the Option Chain tab has never been opened this session
+  renderPositions(app);
+  assert.ok(dom.document.querySelector('.stale-mark'), 'no chain means no F&O feed, so the price is not live');
+});

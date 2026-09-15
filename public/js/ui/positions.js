@@ -44,6 +44,11 @@ function renderPositions(app) {
   );
   const tbody = el('tbody');
   for (const p of positions) {
+    // ★ IS THIS ROW'S PRICE ACTUALLY BEING FED? See priceIsLive() — an F&O contract outside the
+    // chain currently on screen has no feed at all, so its "LTP" is whatever it was last marked
+    // at (usually the fill) and its unrealised P&L is frozen with it. Both are rendered in the
+    // same style as a live row, which is the part that misleads.
+    const live = priceIsLive(app, p.instrument);
     // Derive the key from the instrument (the authoritative source the engine
     // itself keys lastPrices/positions by), NOT the redundant p.key field — a
     // position imported from JSON may lack p.key, which would break its LTP,
@@ -56,7 +61,13 @@ function renderPositions(app) {
         el('td', {}, p.instrument.kind === 'EQ' ? p.instrument.symbol : labelFor(p.instrument)),
         el('td', { class: 'num' }, String(p.qty)),
         el('td', { class: 'num' }, p.avgPrice.toFixed(2)),
-        el('td', { class: 'num' }, last != null ? last.toFixed(2) : '…'),
+        el('td', { class: 'num' }, last == null ? '…' : live ? last.toFixed(2) : [
+          last.toFixed(2),
+          // A marker, not a warning: the number is real, it is simply the LAST one seen rather
+          // than a current one. The hover carries the why, because the row has no space for it
+          // and an unexplained symbol on a trading screen is its own kind of noise.
+          el('span', { class: 'stale-mark', title: staleReason(p.instrument) }, ' ·not live'),
+        ]),
         el('td', { class: 'num ' + moveClass(unreal) }, signed(unreal, 0)),
         el('td', { class: 'num ' + moveClass(p.realised) }, signed(p.realised || 0, 0)),
         el('td', { class: 'num' }, exitsText(p)),
@@ -66,6 +77,48 @@ function renderPositions(app) {
   }
   table.append(tbody);
   root.append(table);
+}
+
+// ★ IS THIS INSTRUMENT'S PRICE CURRENTLY BEING FED INTO THE ENGINE?
+//
+// This is a STRUCTURAL question, not a timing one, which is why it needs no timestamps: it asks
+// whether any feed exists for this contract right now, and there are exactly three cases.
+//
+//   EQ  — always fed. app.js's symbolsToPoll() adds the symbol of EVERY open position, so a held
+//         equity is quoted on every poll whether or not it is on screen. (Whether that poll
+//         SUCCEEDED is a different question, and the status bar's own banner already answers it.)
+//   OPT carrying expiryMs + iv — always fed. These are Auto-Pilot copies living under a modelled
+//         expiry no real chain serves, and remarkOptionPositions() re-prices them off the live
+//         underlying on every poll. Their price is a model price, which the Auto-Pilot UI labels
+//         as indicative; it is not stale.
+//   OPT / FUT otherwise — fed ONLY while the option chain on screen is showing that exact symbol
+//         AND expiry, because feedEngineFromChain() is their only price source and it walks the
+//         displayed chain. Hold two expiries, or switch the chain to another underlying, and the
+//         contracts you are no longer looking at stop being marked entirely.
+//
+// The last case is the reachable one, and it is easy to hit by accident: the position keeps its
+// fill price as "LTP" and shows an unrealised P&L frozen at (usually) zero, while the portfolio
+// Greeks beside it DO keep moving, because those reprice off the live underlying spot. So the
+// screen can simultaneously say the position has not moved and that its delta has.
+function priceIsLive(app, inst) {
+  if (!inst) return true;
+  if (inst.kind === 'EQ') return true;
+  if (inst.kind === 'OPT' && inst.expiryMs != null && inst.iv > 0) return true; // re-marked each poll
+  const chain = app.state && app.state.chain;
+  if (!chain) return false; // the chain tab has never loaded — nothing is feeding F&O at all
+  return chain.symbol === inst.symbol && chain.expiry === inst.expiry;
+}
+
+// The hover text. It names the ONE thing the reader can do about it, because "this is stale" with
+// no remedy just makes the screen feel broken.
+function staleReason(inst) {
+  const what = inst.kind === 'FUT' ? 'future' : 'option';
+  return (
+    `Not a live price. This ${what} is only marked while the Option Chain tab is showing ` +
+    `${inst.symbol} ${inst.expiry}; right now it is not, so this is the last price seen ` +
+    `(usually the price it was filled at) and the unrealised P&L beside it is frozen with it. ` +
+    `Open that expiry in the Option Chain to mark it again.`
+  );
 }
 
 function closeButton(app, pos) {
