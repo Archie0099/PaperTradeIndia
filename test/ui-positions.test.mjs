@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { setupDom, syntheticChain } from '../test-helpers/dom-harness.mjs';
 import { renderChain } from '../public/js/ui/optionChain.js';
 import { remarkOptionPositions } from '../public/js/ui/autopilot.js';
-import { renderPositions, portfolioGreeks, confirmStaleSquareOff } from '../public/js/ui/positions.js';
+import { renderPositions, portfolioGreeks, confirmStaleSquareOff, CHAIN_REFRESH_MS, LIVE_PRICE_MS } from '../public/js/ui/positions.js';
 
 // Build the dashboard wired to re-render on engine changes (as app.js does).
 function mount(dom) {
@@ -658,4 +658,62 @@ test('a position with NO price at all carries the row marker the headline says i
   const cell = dom.$('#positions-table tbody tr td:nth-child(4)');
   assert.match(cell.textContent, /…/, 'no price is shown as "…" as before');
   assert.ok(cell.querySelector('.stale-mark'), 'and the row carries the marker the headline promises');
+});
+
+// --- a FUTURE through the same liveness rule ---------------------------------------------
+// Every fixture above is an option. A future is fed differently — the chain carries no futures
+// LTP, so feedEngineFromChain() marks a held future on the chain's symbol+expiry at the
+// UNDERLYING — and it takes the other branch of every wording ("future", "FUT" label). Left
+// untested, the rule could regress for futures with the whole suite green.
+test('a future on the chain on screen is live; a future on another expiry is marked with future wording', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  const fut = (expiry) => ({ kind: 'FUT', symbol: 'NIFTY', expiry, lotSize: 75 });
+  app.engine.placeOrder({ instrument: fut('26-Jun-2026'), side: 'BUY', orderType: 'MARKET', lots: 1, price: 23500 });
+  app.engine.placeOrder({ instrument: fut('30-Oct-2026'), side: 'BUY', orderType: 'MARKET', lots: 1, price: 23600 });
+  feedChain(app, '26-Jun-2026'); // June is the chain on screen; October is not
+  renderPositions(app);
+  // labelFor() drops the expiry in the narrow table column on purpose, so the rows are told apart
+  // by their average price (23500 June, 23600 October), not by an expiry the cell does not show.
+  const rows = dom.$$('#positions-table tbody tr');
+  const june = rows.find((r) => /23500\.00/.test(r.textContent));
+  const oct = rows.find((r) => /23600\.00/.test(r.textContent));
+  assert.ok(june && oct && june !== oct, 'both futures are listed');
+  assert.ok(!june.querySelector('.stale-mark'), 'the June future was just fed from the chain (at the underlying) — live');
+  const mark = oct.querySelector('.stale-mark');
+  assert.ok(mark, 'the October future is fed by nothing — marked');
+  assert.match(mark.getAttribute('title'), /This future is only marked while the Option Chain tab is OPEN on NIFTY 30-Oct-2026/,
+    'the future branch of the wording, naming the contract');
+
+  // And the Close dialog names it as a FUT contract in full.
+  dom.setConfirm(false);
+  dom.fire(oct.querySelector('button.btn-mini:last-child'), 'click');
+  assert.equal(dom.confirms.length, 1);
+  assert.match(dom.confirms[0], /Close NIFTY FUT 30-Oct-2026 at 23600\.00\?/, 'full contract label for a future');
+});
+
+// --- the reason must be reachable without a mouse -------------------------------------------
+test('tapping a "not live" marker shows its reason (hovers do not exist on touch)', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  buyOpt(app.engine, OPT('30-Oct-2026'), 120);
+  app.state.chain = null;
+  renderPositions(app);
+  const mark = dom.$('#positions-table').querySelector('.stale-mark');
+  assert.equal(mark.getAttribute('role'), 'button', 'it is announced as something you can activate');
+  dom.fire(mark, 'click');
+  assert.equal(dom.alerts.length, 1, 'a tap shows the reason');
+  assert.equal(dom.alerts[0], mark.getAttribute('title'), 'the same text the hover carries');
+  // The headline marker too.
+  const summary = dom.$('#pnl-summary').querySelector('.stale-mark');
+  dom.fire(summary, 'click');
+  assert.equal(dom.alerts.length, 2);
+  assert.match(dom.alerts[1], /marks which one/);
+});
+
+// --- the liveness window is DERIVED from the chain cadence, never restated -------------------
+test('LIVE_PRICE_MS covers at least three chain refreshes, from the one exported cadence', () => {
+  assert.equal(CHAIN_REFRESH_MS, 6000, 'the chain cadence app.js actually uses');
+  assert.ok(LIVE_PRICE_MS >= 3 * CHAIN_REFRESH_MS, 'three missed refreshes before a price is called stale');
+  assert.ok(LIVE_PRICE_MS < 60000, 'but not so long that a price left alone for a minute still reads live');
 });

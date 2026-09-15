@@ -70,7 +70,7 @@ function renderPositions(app) {
           // A marker, not a warning: the number is real, it is simply the LAST one seen rather
           // than a current one. The hover carries the why, because the row has no space for it
           // and an unexplained symbol on a trading screen is its own kind of noise.
-          el('span', { class: 'stale-mark', title: staleReason(p.instrument) }, ' ·not live'),
+          staleMark(staleReason(p.instrument), ' ·not live'),
         ]),
         el('td', { class: 'num ' + moveClass(unreal) }, signed(unreal, 0)),
         el('td', { class: 'num ' + moveClass(p.realised) }, signed(p.realised || 0, 0)),
@@ -83,11 +83,36 @@ function renderPositions(app) {
   root.append(table);
 }
 
-// How recently a price must have arrived to count as live. The option chain refreshes every 6s
-// while its tab is open, so three missed refreshes means the feed really has stopped — which
-// happens the moment you navigate away from the Chain tab, since that refresh is gated on the tab
-// being active. Generous enough that arriving from the chain does not instantly cry stale.
-const LIVE_PRICE_MS = 20000;
+// How often the Option Chain tab re-fetches its chain while it is on screen. app.js imports THIS
+// for its timer, so the liveness window below is derived from the real cadence rather than
+// restating "6s" in a comment that could drift from it. (The server caches the chain for a few
+// seconds, so 6s respects NSE's ~1-req/3s limit.)
+export const CHAIN_REFRESH_MS = 6000;
+
+// How recently a price must have arrived to count as live: three missed chain refreshes plus a
+// small margin. Three misses means the feed really has stopped — which happens the moment you
+// navigate away from the Chain tab, since that refresh is gated on the tab being active. Generous
+// enough that arriving from the chain does not instantly cry stale.
+// ★ HONEST CONSEQUENCE: because the chain refreshes ONLY while its tab is active and the Positions
+// table lives on another panel, an F&O contract is "live" here for at most this window after you
+// leave the Chain tab. So in ordinary use the Close dialog below DOES ask for a manually traded
+// F&O contract — the one-click exemption is real only inside this window. That is the truthful
+// state (nothing is feeding the contract by then), not a bug; keeping the chain refreshing in the
+// background for held contracts would hammer a free, rate-limited endpoint, so it is disclosed.
+export const LIVE_PRICE_MS = 3 * CHAIN_REFRESH_MS + 2000;
+
+// The "·not live" / "·chain only" marker. The reason lives in `title` (a hover), which does not
+// exist on touch — so a tap shows the same text. ONE builder for every marker, so a reader can
+// always get at the why on a phone, where §8's mobile-QA item already lives.
+function staleMark(title, text) {
+  return el('span', {
+    class: 'stale-mark',
+    title,
+    role: 'button',
+    tabindex: '0',
+    onclick: () => { if (typeof alert === 'function') alert(title); },
+  }, text);
+}
 
 // ★ IS THIS INSTRUMENT'S PRICE STILL BEING FED INTO THE ENGINE?
 //
@@ -197,8 +222,9 @@ function staleReason(inst) {
 // a REALISED P&L against a price that may be hours or days old, and nothing said so. There is no
 // better price available (that is the whole point: nothing is feeding this contract), so the
 // answer is not to refuse — trapping someone in a position is worse — it is to say what is about
-// to happen and let them decide. Equities and contracts on the displayed chain are untouched and
-// stay one click, so this asks ONLY in the case that is actually wrong.
+// to happen and let them decide. Equities are untouched and stay one click; a contract on the
+// displayed chain stays one click only inside LIVE_PRICE_MS of leaving that tab (see its note),
+// so in practice this asks for most manual F&O closes — and asks ONLY when nothing is feeding it.
 function confirmStalePriceClose(app, pos, last) {
   if (priceIsLive(app, pos.instrument)) return true;
   if (typeof window === 'undefined' || typeof window.confirm !== 'function') return true;
@@ -355,14 +381,13 @@ function renderPnlSummary(app) {
   ];
   if (unfed > 0) {
     unrealSub.push(
-      el('span', {
-        class: 'stale-mark',
-        title:
-          `${unfed} open ${unfed === 1 ? 'position is' : 'positions are'} marked at a last-seen ` +
+      staleMark(
+        `${unfed} open ${unfed === 1 ? 'position is' : 'positions are'} marked at a last-seen ` +
           `price rather than a live one, so ${unfed === 1 ? 'its' : 'their'} share of this total ` +
           `is frozen — usually at zero, because the mark is still the price it was filled at. ` +
           `The Positions table below marks which ${unfed === 1 ? 'one' : 'ones'}.`,
-      }, `· ${unfed} not live`)
+        `· ${unfed} not live`
+      )
     );
   }
   root.append(heroCard('Unrealised P&L', signed(unreal, 0), {
@@ -487,4 +512,4 @@ function confirmStaleSquareOff(app) {
   );
 }
 
-export { renderPositions, portfolioGreeks, priceIsLive, confirmStaleSquareOff, staleFillWarning };
+export { renderPositions, portfolioGreeks, priceIsLive, confirmStaleSquareOff, staleFillWarning, staleMark };

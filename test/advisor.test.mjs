@@ -21,9 +21,12 @@ function series(n = 400, start = START) {
   for (let i = 0; i < n; i++) { p *= 1 + (i % 7 === 0 ? 0.012 : -0.0018); out.push({ t: start + i * DAY, c: +p.toFixed(2) }); }
   return out;
 }
-const EQ_SEED = [{ id: 'bh', name: 'Buy & Hold', kind: 'EQ', symbol: 'NIFTY', spec: { kind: 'EQ', name: 'Buy & Hold', weight: 1 } }];
+// ★ The EQ fixture is an ETF, not the index: an EQ bot on 'NIFTY' (the seed's real buy-hold) is
+// now a stand-aside for the advisor — an index cannot be bought in the cash market — so the
+// happy-path book here must be something a person can actually buy.
+const EQ_SEED = [{ id: 'bh', name: 'Buy & Hold', kind: 'EQ', symbol: 'NIFTYBEES', spec: { kind: 'EQ', name: 'Buy & Hold', weight: 1 } }];
 const FNO_SEED = [{ id: 'str', name: 'Strangle', kind: 'FNO', symbol: 'NIFTY', spec: { kind: 'FNO', name: 'Strangle', legs: [{ type: 'CE', side: 'SELL', strikePct: 1.05 }, { type: 'PE', side: 'SELL', strikePct: 0.95 }] } }];
-const mkTournament = (opts = {}) => createTournament({ seed: EQ_SEED, backfillData: { NIFTY: series() }, persist: false, evolutionEnabled: false, ...opts });
+const mkTournament = (opts = {}) => createTournament({ seed: EQ_SEED, backfillData: { NIFTY: series(), NIFTYBEES: series() }, persist: false, evolutionEnabled: false, ...opts });
 
 // --- pure maths --------------------------------------------------------------
 
@@ -133,7 +136,7 @@ test('init records today\'s suggestion: the champion\'s book, weights, and the d
   assert.equal(e.botId, 'bh');
   assert.equal(e.eligible, true);
   assert.equal(e.date, new Date(series()[399].t + 5.5 * 3600000).toISOString().slice(0, 10), 'stamped with the IST data-edge date');
-  assert.ok(e.targets.length === 1 && e.targets[0].symbol === 'NIFTY');
+  assert.ok(e.targets.length === 1 && e.targets[0].symbol === 'NIFTYBEES');
   assert.ok(e.targets[0].weight > 0.9 && e.targets[0].weight <= 1.001, 'a weight-1 buy & hold is ~fully invested');
   assert.ok(adv.costRates.buyRate > 0 && adv.costRates.sellRate > 0, 'the real delivery cost rates ship to the client');
   assert.equal(adv.benchmarkFinding.verdict, ADVISOR_BENCHMARK_FINDING.verdict, 'the fair-benchmark finding rides along');
@@ -160,6 +163,7 @@ test('NO HINDSIGHT: corrupting the FUTURE leaves already-recorded entries byte-i
     let i = 0;
     for (const c of futureCloses) {
       t._appendLiveClose('NIFTY', { t: START + (400 + i) * DAY, c });
+      t._appendLiveClose('NIFTYBEES', { t: START + (400 + i) * DAY, c }); // the champion's own series must diverge too
       t._advisorTick();
       i++;
     }
@@ -192,7 +196,7 @@ test('an F&O champion is EXCLUDED with a stated reason and scored as cash — ne
 test('a redeploy restores the suggestion log from the remote store (the must-never-lose artifact)', async () => {
   let blob = null;
   const store = { enabled: true, load: async () => blob, save: (b) => { blob = JSON.parse(JSON.stringify(b)); }, flush: async () => {}, };
-  const data = { NIFTY: series() };
+  const data = { NIFTY: series(), NIFTYBEES: series() };
   const a = await createTournament({ seed: EQ_SEED, backfillData: data, persist: false, persistStore: store, evolutionEnabled: false });
   await a.init();
   a._appendLiveClose('NIFTY', { t: START + 400 * DAY, c: 130 });
@@ -485,8 +489,40 @@ test('an eligible entry whose positions are ALL unpriceable is refused, not reco
   assert.ok(inCash, 'but a genuinely EMPTY book still records — that is the in-cash state, not a failure');
   assert.equal(inCash.eligible, true);
   assert.deepEqual(inCash.targets, []);
+  // ★ CHANGED (and why): this used to assert `partial.targets.length === 1` — "record what can be
+  // priced". A review pointed out that is the SAME harm as the total case, only smaller: 9 of 10
+  // unpriceable would record a one-name book, which the panel diffs as "sell nine names". The
+  // honest guidance when today's prices are unusable is "do nothing", so a partially-priceable
+  // book now records as a STAND-ASIDE with the reason — scored by holding the previous book, so
+  // the advice and the score agree, and the trust clock still ticks.
   const partial = mk([{ symbol: 'AAA', qty: 10, price: 100 }, { symbol: 'BBB', qty: 5, price: NaN }]);
-  assert.equal(partial.targets.length, 1, 'a partially-priceable book still records what it can price');
+  assert.ok(partial, 'a partially-priceable day is still RECORDED (the clock counts it)');
+  assert.equal(partial.eligible, false, 'but as a stand-aside, never as a partial book');
+  assert.deepEqual(partial.targets, [], 'no partial target list reaches the real-money record');
+  assert.match(partial.reason, /1 of the champion's 2 holdings could not be priced today \(BBB\)/, 'the reason names the count and the names');
+  assert.match(partial.reason, /hold what you have/, 'and says what to do: nothing');
+});
+
+test('a champion holding the INDEX itself is excluded — an index cannot be bought in the cash market', () => {
+  // `buy-hold` is kind EQ, symbol NIFTY (the index, not an ETF) and is eligible to be crowned by
+  // the walk-forward. Before this, the five exclusions tested kind, instrument kind and sign only,
+  // so it would have passed straight through and the panel would have printed "buy N shares of
+  // NIFTY" at the index level. Never picked in ~70 live re-picks; this is what happens if it is.
+  const mk = (positions) => buildAdvisorEntry({
+    autopilot: { currentBot: { id: 'buy-hold' } },
+    getBotDetail: () => ({ ok: true, id: 'buy-hold', name: 'Buy & Hold', kind: 'EQ', mirror: { followable: true, equity: 1_000_000, positions } }),
+    seriesFor: (s) => (s === 'NIFTY' ? [{ t: START, c: 23000 }] : []),
+  });
+  const e = mk([{ symbol: 'NIFTY', qty: 40, price: 23000 }]);
+  assert.ok(e, 'the day still logs');
+  assert.equal(e.eligible, false, 'an index held as a share is not mirrorable');
+  assert.match(e.reason, /holds the index itself \(NIFTY\)/, 'the reason names the index');
+  assert.match(e.reason, /cannot be bought in the cash market/);
+  assert.deepEqual(e.targets, []);
+  // CONTROL: the same shape on an ETF is an ordinary tradeable book and must NOT trip it.
+  const etf = mk([{ symbol: 'NIFTYBEES', qty: 4000, price: 250 }]);
+  assert.equal(etf.eligible, true, 'an ETF is a share — no exclusion');
+  assert.equal(etf.targets.length, 1);
 });
 
 // --- NO-HINDSIGHT is enforced, not assumed ----------------------------------------------------

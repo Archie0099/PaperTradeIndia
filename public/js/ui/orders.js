@@ -7,7 +7,7 @@
 // ---------------------------------------------------------------------------
 
 import { $, el, clear, rupee, signed, moveClass } from './dom.js';
-import { priceIsLive, staleFillWarning } from './positions.js';
+import { priceIsLive, staleFillWarning, staleMark } from './positions.js';
 
 // Read the current ticket form into a plain object.
 function readTicket() {
@@ -273,7 +273,7 @@ function renderOrders(app) {
       el('td', { class: 'num' }, typeof price === 'number' ? price.toFixed(2) : price),
       el('td', { class: 'num ' + (realised != null ? moveClass(realised) : '') }, realised != null ? signed(realised, 0) : '–'),
       el('td', {}, dormantFno(o)
-        ? [el('span', { class: 'pill ' + o.status }, o.status), el('span', { class: 'stale-mark', title: dormantFnoReason(o) }, ' ·chain only')]
+        ? [el('span', { class: 'pill ' + o.status }, o.status), staleMark(dormantFnoReason(o), ' ·chain only')]
         : el('span', { class: 'pill ' + o.status }, o.status)),
       el('td', {}, o.status === 'PENDING' ? el('span', { class: 'row-actions' }, [modifyBtn(app, o), cancelBtn(app, o.id)]) : ''),
     ]);

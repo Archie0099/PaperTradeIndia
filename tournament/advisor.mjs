@@ -92,6 +92,13 @@ const ADVISOR_BENCHMARK_FINDING = {
 // a pure shift, safe on any host timezone).
 const istDate = (ms) => new Date(ms + 5.5 * 3600000).toISOString().slice(0, 10);
 
+// The symbols that are INDICES, not shares: nothing with one of these names can be bought in the
+// cash market. Kept as its own small set (rather than importing the F&O universe table) so this
+// module stays dependency-free and unit-testable on its own — the three names are the same ones
+// `FNO_INDICES` in universe.mjs and `INDEX_TO_YAHOO` in the provider list.
+const INDEX_SYMBOLS = new Set(['NIFTY', 'BANKNIFTY', 'FINNIFTY']);
+const isIndexSymbol = (symbol) => INDEX_SYMBOLS.has(String(symbol || '').toUpperCase());
+
 // The close at-or-before time t in a sorted [{t,c}] series (binary search), or
 // null when the series is empty / starts after t. Suggestion scoring marks every
 // portfolio at recorded bar times, so a missing close must degrade to "treat that
@@ -166,7 +173,14 @@ function buildAdvisorEntry({ autopilot, getBotDetail, seriesFor }) {
   else if (detail.kind === 'PAIRS') reason = 'the champion is a market-neutral pairs bot — half its book is short positions, which cash-market delivery orders cannot hold';
   else if (positions.some((p) => (p.kind || 'EQ') !== 'EQ')) reason = 'the champion currently holds derivative (F&O) legs, which cannot be mirrored with cash-market delivery orders';
   else if (positions.some((p) => p.qty < 0)) reason = 'the champion currently holds short positions, which cash-market delivery orders cannot hold';
-  const eligible = reason == null;
+  //   * an INDEX held as if it were a share. `buy-hold` is `kind: 'EQ', symbol: 'NIFTY'` — the
+  //     index itself, not an ETF — and nothing stops the walk-forward crowning it. An index cannot
+  //     be bought in the cash market, and quietly substituting NIFTYBEES would be advice the
+  //     champion never gave (different price, tracking error, its own costs). Never picked in the
+  //     board's ~70 re-picks so far; excluded so that if it ever is, the panel says so instead of
+  //     printing an order for something that does not trade.
+  else if (positions.some((p) => isIndexSymbol(p.symbol))) reason = `the champion holds the index itself (${positions.filter((p) => isIndexSymbol(p.symbol)).map((p) => p.symbol).join(', ')}) as if it were a share — an index cannot be bought in the cash market, and substituting an ETF would be advice the champion never gave`;
+  let eligible = reason == null;
 
   const equity = detail.mirror.equity;
   // A bogus mirror equity must never be RECORDED — the log is the never-lose artifact,
@@ -182,6 +196,20 @@ function buildAdvisorEntry({ autopilot, getBotDetail, seriesFor }) {
   // does: skipping a day costs one tick of a slow clock, writing junk into an append-only
   // real-money record costs the record.
   if (eligible && positions.length && !positions.some((p) => Number.isFinite(p.price) && p.price > 0)) return null;
+  // ★ And the PARTIAL case is not "record what can be priced". If 9 of 10 names are unpriceable,
+  // recording the one priceable name as the whole book lands "sell nine names, stay 10% invested"
+  // in an append-only real-money record — the identical harm to the total case, just smaller.
+  // The honest guidance when today's prices are unusable is "do nothing": record the day as a
+  // stand-aside with the reason, which the scorer already treats as HOLDING the previous book (so
+  // the advice and the score agree) and which keeps the trust clock ticking. Names that priced
+  // are named too, so a reader can see it was the data, not the strategy.
+  if (eligible && positions.length) {
+    const unpriced = positions.filter((p) => !(Number.isFinite(p.price) && p.price > 0));
+    if (unpriced.length) {
+      reason = `${unpriced.length} of the champion's ${positions.length} holdings could not be priced today (${unpriced.map((p) => p.symbol).join(', ')}) — no rebalance is suggested; hold what you have`;
+      eligible = false;
+    }
+  }
   const targets = !eligible
     ? []
     : positions

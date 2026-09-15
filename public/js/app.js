@@ -13,7 +13,7 @@ import { $, rupee, fmt, signed, rangeChange } from './ui/dom.js';
 import { initTabs } from './ui/tabs.js';
 import { startClock, renderStatusBar } from './ui/statusbar.js';
 import { initWatchlist, renderWatchlist } from './ui/watchlist.js';
-import { renderPositions, confirmStaleSquareOff } from './ui/positions.js';
+import { renderPositions, confirmStaleSquareOff, CHAIN_REFRESH_MS } from './ui/positions.js';
 import { initOrders, renderOrders, loadTicket } from './ui/orders.js';
 import { initOptionChain, loadChain } from './ui/optionChain.js';
 import { initStrategy, setStrategyContext } from './ui/strategy.js';
@@ -395,13 +395,14 @@ function main() {
 
   // Keep the visible option chain fresh while the Chain tab is open — this is
   // what feeds live prices into F&O position P&L and fills resting F&O limit
-  // orders. The server caches the chain for a few seconds, so 6s respects NSE's
-  // ~1-req/3s limit. Quiet mode avoids flicker / wiping the table on a blip.
+  // orders. The cadence is CHAIN_REFRESH_MS (positions.js), which the "is this price live"
+  // window is derived from — one number, not a timer here and a comment there. Quiet mode
+  // avoids flicker / wiping the table on a blip.
   setInterval(() => {
     if (app.state.chain && $('#tab-chain').classList.contains('active')) {
       loadChain(app, { quiet: true });
     }
-  }, 6000); // option chain (only when its tab is visible)
+  }, CHAIN_REFRESH_MS); // option chain (only when its tab is visible)
 
   // Redraw canvas charts on resize (canvas needs explicit re-render).
   window.addEventListener('resize', () => {

@@ -1003,9 +1003,11 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
         // a reader sorting by Sharpe has no way to know it is the yardstick the others are being
         // measured AGAINST. Its name does some of that work; a marker does it reliably.
         // NOTE the protected Buy & Hold is deliberately NOT flagged, even though it is also a
-        // reference line. It is an INVESTABLE baseline — one ETF — that the advisor may legitimately
-        // suggest, whereas this is a no-information control over ~105 names. Folding both under one
-        // flag would silently mute the advisor for Buy & Hold, which would be a real regression.
+        // reference line: `benchmark` means "the no-information control over ~105 names", and
+        // Buy & Hold is a different thing — one instrument, held. ★ It is NOT "one ETF": its
+        // symbol is NIFTY, the INDEX, which cannot be bought in the cash market. The advisor
+        // handles that on its own terms (an index held as a share is a stand-aside reason there),
+        // so folding it under this flag would conflate two different facts about two rows.
         benchmark: !!bot.benchmark,
         equity: Math.round(res.metrics.finalEquity),
         liveReturnPct: +liveReturnPct.toFixed(2), // 1D (today's move; intraday = today's session)
