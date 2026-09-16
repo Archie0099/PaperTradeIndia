@@ -121,9 +121,34 @@ function closeAtOrBefore(series, t) {
 // track record all describe one strategy. Returns null when nothing can honestly
 // be issued today (no champion yet, or its market data isn't loaded — the same
 // followable guard that stops the Auto-Pilot's cold-boot liquidation).
-function buildAdvisorEntry({ autopilot, getBotDetail, seriesFor }) {
+function buildAdvisorEntry({ autopilot, getBotDetail, seriesFor, isSynthetic = () => false }) {
   const nifty = seriesFor('NIFTY');
   if (!nifty.length) return null;
+  // ★ NEVER RECORD FROM FABRICATED DATA. When the free feed cannot be reached at boot, loadCandles
+  // falls back to an OFFLINE SYNTHETIC series — and the index/benchmark keys are deliberately
+  // EXEMPT from the drop-if-synthetic hygiene that protects the basket pool ("a synthetic fallback
+  // keeps the bot, and the offline app, working"). That exemption predates this log. Its
+  // consequence here is that NIFTY's edge bar — which stamps EVERY entry's date — can be invented,
+  // and the log is append-only, so the entry is permanent.
+  //
+  // MEASURED, not reasoned: the offline series is a naive calendar-day walk, so 85 of its 260 bars
+  // (32.7%) fall on a WEEKEND or a listed NSE holiday, and its level is fiction (NIFTY ~33,700
+  // against a real ~23,200). Worse than a bogus date: a single-symbol EQ bot's key is a required
+  // key too, so it KEEPS its synthetic series, stays followable, and passes all seven exclusions
+  // below — recording a fabricated rupee price as real-money guidance (reproduced: RELIANCE at
+  // 4,243.54 against a real 1,240).
+  //
+  // None of the existing guards can catch this, and it is worth knowing why: `dailySessionClosed`
+  // asks WHEN the bar closed, `isPhantomBar` asks whether volume is zero and the close carried
+  // forward. A synthetic bar has a plausible timestamp, a moving close and real-looking volume. No
+  // rule about the SHAPE of a bar can tell invented data from real data — only provenance can.
+  //
+  // REFUSE, in line with the look-ahead guard below: a skipped day costs one tick of an
+  // already-slow clock, while a fabricated day costs the only claim this log makes.
+  if (isSynthetic('NIFTY')) {
+    console.warn('advisor: skipping today — NIFTY\'s series is the OFFLINE SYNTHETIC fallback, so its edge bar is invented. Recording from it would put a fabricated date (and possibly a fabricated price) into an append-only real-money record.');
+    return null;
+  }
   const edge = nifty[nifty.length - 1]; // the data edge = the suggestion's "as of" bar
   const champ = autopilot && autopilot.currentBot;
   if (!champ) return null;
@@ -147,6 +172,17 @@ function buildAdvisorEntry({ autopilot, getBotDetail, seriesFor }) {
   }
 
   const positions = (detail.mirror.positions || []).filter((p) => p && p.qty !== 0);
+  // ★ AND THE CHAMPION'S OWN DATA MUST BE REAL TOO — checked separately from NIFTY, because they
+  // fail independently. A basket can never reach here on invented data (a pool name that loads
+  // synthetic is DROPPED rather than kept), but a SINGLE-SYMBOL bot's key is a required key, so
+  // its synthetic series survives and the bot stays followable. Refusing the whole entry rather
+  // than dropping the offending name is deliberate: a partial book reads downstream as "sell the
+  // rest", which is the same trap the all-unpriceable rule already refuses.
+  const fabricated = positions.find((p) => p.symbol && isSynthetic(p.symbol));
+  if (fabricated) {
+    console.warn(`advisor: skipping ${istDate(edge.t)} — the champion holds ${fabricated.symbol}, whose series is the OFFLINE SYNTHETIC fallback. Its price is invented, and this log is append-only.`);
+    return null;
+  }
   // GROUND RULE: real-capital guidance covers CASH-MARKET equity/ETF buys only.
   // Anything a hand-placed delivery order can't faithfully mirror is EXCLUDED —
   // with the reason stated, never silently scaled:

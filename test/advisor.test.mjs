@@ -615,3 +615,91 @@ test('an index bot that is FLAT is still excluded — the exclusion is about the
   assert.equal(etf.eligible, true, 'an ETF bot in cash is real "sell everything" guidance');
   assert.deepEqual(etf.targets, []);
 });
+
+// --- fabricated data must never reach the append-only record ------------------
+// WHY THIS EXISTS. When the free feed cannot be reached at boot, `loadCandles` falls back to an
+// OFFLINE SYNTHETIC series, and the index/benchmark keys — plus every single-symbol bot's key —
+// are deliberately EXEMPT from the drop-if-synthetic hygiene that protects the basket pool, so the
+// board still comes up. That exemption predates this log. Its consequence: NIFTY's edge bar stamps
+// EVERY entry's date and can be invented, and a single-symbol champion keeps its synthetic series,
+// stays followable, and passes all seven exclusions — so a FABRICATED rupee price could be recorded
+// as real-money guidance, permanently, in an append-only log.
+//
+// Reproduced against the real fallback before the guard existed: the offline series is a naive
+// calendar-day walk (85 of 260 bars fall on a weekend or a listed NSE holiday) at a fictional level,
+// and the advisor recorded an ELIGIBLE entry holding RELIANCE at 4,243.54 against a real ~1,240.
+//
+// No rule about a bar's SHAPE can catch this — `dailySessionClosed` asks when it closed,
+// `isPhantomBar` asks about zero volume and a carried-forward close, and a synthetic bar has a
+// plausible timestamp, a moving close and real-looking volume. Only PROVENANCE can.
+
+test('buildAdvisorEntry REFUSES when NIFTY itself is the synthetic fallback', () => {
+  const mk = (isSynthetic) => buildAdvisorEntry({
+    autopilot: { currentBot: { id: 'x' } },
+    getBotDetail: () => ({
+      ok: true, id: 'x', name: 'X', kind: 'EQ',
+      mirror: { followable: true, equity: 1_000_000, positions: [{ symbol: 'NIFTYBEES', kind: 'EQ', qty: 10, price: 100 }] },
+    }),
+    seriesFor: () => [{ t: START, c: 100 }],
+    isSynthetic,
+  });
+  assert.equal(mk((s) => s === 'NIFTY'), null, 'an invented edge bar must not stamp a real-money entry');
+  // CONTROL: the identical fixture with real data still records — so the refusal is about
+  // provenance, not about the fixture being unrecordable for some other reason.
+  assert.ok(mk(() => false), 'real data still records');
+});
+
+test('buildAdvisorEntry REFUSES when the CHAMPION holds a synthetic-priced name', () => {
+  const mk = (isSynthetic) => buildAdvisorEntry({
+    autopilot: { currentBot: { id: 'eq' } },
+    getBotDetail: () => ({
+      ok: true, id: 'eq', name: 'EQ', kind: 'EQ',
+      mirror: { followable: true, equity: 1_000_000, positions: [{ symbol: 'RELIANCE', kind: 'EQ', qty: 10, price: 4243.54 }] },
+    }),
+    seriesFor: () => [{ t: START, c: 100 }],
+    isSynthetic,
+  });
+  // NIFTY is fine here — the two fail independently, which is why they are checked separately.
+  assert.equal(mk((s) => s === 'RELIANCE'), null, 'a fabricated price must not become guidance');
+  assert.ok(mk(() => false), 'a real price still records');
+});
+
+test('the default is NO-OP: an entry records exactly as before when nothing says otherwise', () => {
+  // The guard is opt-in by construction (`isSynthetic` defaults to () => false), so every existing
+  // caller and fixture is byte-unchanged. Locking that keeps the fix from quietly gating anything.
+  const entry = buildAdvisorEntry({
+    autopilot: { currentBot: { id: 'x' } },
+    getBotDetail: () => ({
+      ok: true, id: 'x', name: 'X', kind: 'EQ',
+      mirror: { followable: true, equity: 1_000_000, positions: [{ symbol: 'NIFTYBEES', kind: 'EQ', qty: 10, price: 100 }] },
+    }),
+    seriesFor: () => [{ t: START, c: 100 }],
+  });
+  assert.ok(entry, 'no isSynthetic supplied -> records');
+  assert.equal(entry.eligible, true);
+});
+
+test('WIRING: a synthetic required key reaches the advisor and stops the day being recorded', async () => {
+  // Drives the REAL loadOne -> syntheticKeys -> advisorTick path. The injected value carries
+  // `{ candles, synthetic: true }`, which is the same fact `loadCandles` reports via its source
+  // string — the one thing a test cannot trigger without a real network failure.
+  const t = await createTournament({
+    seed: EQ_SEED,
+    backfillData: { NIFTY: { candles: series(), synthetic: true }, NIFTYBEES: series() },
+    persist: false, evolutionEnabled: false,
+  });
+  await t.init();
+  assert.deepEqual(t.getStandings().syntheticKeys, ['NIFTY'], 'the board says which series is invented');
+  assert.equal(t._state().advisorLog.length, 0, 'and nothing was recorded from it');
+});
+
+test('WIRING CONTROL: the same boot with REAL data does record, and reports no synthetic keys', async () => {
+  const t = await createTournament({
+    seed: EQ_SEED,
+    backfillData: { NIFTY: series(), NIFTYBEES: series() },
+    persist: false, evolutionEnabled: false,
+  });
+  await t.init();
+  assert.deepEqual(t.getStandings().syntheticKeys, [], 'nothing invented');
+  assert.equal(t._state().advisorLog.length, 1, 'the day IS recorded when the data is real');
+});

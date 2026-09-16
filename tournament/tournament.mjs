@@ -586,6 +586,19 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
   // Default true so the mechanism + its tests still exercise evolution unchanged.
   const fullData = {}; // symbol -> full cached candles (for evolution scoring)
   const backfill = {}; // symbol -> fixed recent window (the live track record)
+  // Data KEYS whose series is the OFFLINE SYNTHETIC fallback rather than real market data. A pool
+  // name that loads synthetic is DROPPED, so this only ever holds REQUIRED keys (the indices and
+  // each single-symbol bot's key), which are deliberately exempt from that drop so the board — and
+  // the offline app — still come up. The board may show invented data and say so; the APPEND-ONLY
+  // advisor log may not record from it (see buildAdvisorEntry). Re-derived on every boot, never
+  // persisted: it is a fact about THIS process's data, and a restart re-answers it from scratch.
+  const syntheticKeys = new Set();
+  const isSyntheticSymbol = (symbol, interval = null) =>
+    interval
+      ? syntheticKeys.has(dataKey(symbol, interval))
+      // No interval given (the advisor knows symbols, not keys): synthetic on ANY loaded interval
+      // for that name is enough to refuse — the question is "is this name's price invented".
+      : syntheticKeys.has(dataKey(symbol, '1d')) || syntheticKeys.has(dataKey(symbol, '60m'));
   let roster = seed.map((b) => asRosterEntry(b)); // mutable bot definitions
   let bots = []; // compiled view of the roster
   // advisorLog: the ADVISOR's append-only "Today's Suggestions" record (advisor.mjs) —
@@ -1110,7 +1123,7 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       // a store that reads fine but cannot be WRITTEN was previously invisible from
       // outside — the board looked healthy while the forward record silently stopped growing.
       if (typeof persistStore.writeFailed === 'function') persistState.writeFailed = persistStore.writeFailed();
-      standings = { deployedAt: state.deployedAt, generation: state.generation, liveBars, persist: { ...persistState }, asOf: Date.now(), startingCash: CASH, atCap, maxBots: maxRosterBots, botCount: rows.length, evolutionEnabled, autopilot, advisor, history: state.history.slice(-30), bots: rows };
+      standings = { deployedAt: state.deployedAt, generation: state.generation, liveBars, persist: { ...persistState }, syntheticKeys: [...syntheticKeys].sort(), asOf: Date.now(), startingCash: CASH, atCap, maxBots: maxRosterBots, botCount: rows.length, evolutionEnabled, autopilot, advisor, history: state.history.slice(-30), bots: rows };
       return standings;
     }
 
@@ -1124,7 +1137,7 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     // never a back-filled one.
     function advisorTick() {
       if (!standings || !standings.autopilot) return false;
-      const entry = buildAdvisorEntry({ autopilot: standings.autopilot, getBotDetail, seriesFor });
+      const entry = buildAdvisorEntry({ autopilot: standings.autopilot, getBotDetail, seriesFor, isSynthetic: isSyntheticSymbol });
       if (!appendAdvisorEntry(state, entry)) return false;
       // Refresh the already-published payload so the new entry is visible without waiting
       // for the next full recompute (standings itself is otherwise untouched).
@@ -1257,7 +1270,16 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       try {
         let candles, synthetic = false;
         if (backfillData && backfillData[key]) {
-          candles = backfillData[key];
+          // Injected data (tests) is a plain candle ARRAY and is never synthetic — unchanged.
+          // It may ALSO be `{ candles, synthetic }`, which exists so a test can drive the real
+          // loadOne -> syntheticKeys -> advisorTick path without a network failure to trigger it.
+          const inj = backfillData[key];
+          if (Array.isArray(inj)) {
+            candles = inj;
+          } else {
+            candles = inj.candles;
+            synthetic = inj.synthetic === true;
+          }
         } else {
           const loaded = await loadCandles(symbol, { interval, range: rangeFor(interval) });
           // DROP a still-forming trailing bar. Yahoo emits a candle for the in-progress
@@ -1276,6 +1298,11 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
         // CLEAR any stale persisted live bars for it, so a name that was real on a prior boot can't
         // resurrect (backfill-less) through state.live after it later goes synthetic.
         if (synthetic && !requiredKeys.has(key)) { dropped++; delete state.live[key]; return; }
+        // A required key KEEPS its synthetic series (the board still comes up) — but record that it
+        // is invented, so the append-only advisor log can refuse to stamp a real-money suggestion
+        // from a fabricated bar. Tracking it here, at the one place provenance is known, is the
+        // whole point: no downstream rule about a bar's SHAPE can tell invented data from real.
+        if (synthetic) syntheticKeys.add(key); else syntheticKeys.delete(key);
         fullData[key] = candles;
         // The backfill is the whole fetched series when the cap is Infinity (the default —
         // "trade from the oldest data"); a finite cap keeps only the last N bars.
