@@ -42,7 +42,7 @@ import marketHours from '../src/marketHours.js'; // CommonJS -> default import, 
 const { getMarketState } = marketHours;
 import { SEED_BOTS } from './seed.mjs';
 import { createPersistStore } from './persistStore.mjs';
-import { ADVISOR_MIN_DAYS, buildAdvisorEntry, appendAdvisorEntry, sanitizeAdvisorLog, buildAdvisorPayload } from './advisor.mjs';
+import { ADVISOR_MIN_DAYS, buildAdvisorEntry, appendAdvisorEntry, sanitizeAdvisorLog, buildAdvisorPayload, syntheticDataBlock } from './advisor.mjs';
 import { STOCKS, BASKET_UNIVERSE, FNO_INDICES, EQ_SYMBOLS, FNO_SYMBOLS } from './universe.mjs';
 import { evolve, scoreSpec, fitness } from './evolve.mjs';
 import { readFileSync as readFile, existsSync as fileExists } from 'node:fs';
@@ -602,13 +602,30 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
   // against NIFTY closes read back through `closeAtOrBefore`, and `possibleDays` counts NIFTY bars,
   // so invented HISTORY corrupts the comparison and the coverage metric even when today's bar is
   // real. A restart is what clears it, and on an ephemeral host that happens often.
+  //
+  // ★ IT CANNOT GO STALE WITHIN A PROCESS, and it is worth saying why rather than leaving it to be
+  // rediscovered. `loadOne` is the only caller of loadCandles and runs ONLY inside init(), so a key
+  // is classified once and the backfill behind it is never re-fetched.
+  // ★ BUT A LATER tick() DOES APPEND REAL BARS ON TOP OF A SYNTHETIC BACKFILL — so once the network
+  // recovers, the series becomes fabricated history with a REAL edge, and the flag deliberately
+  // keeps refusing. That is not staleness, it is the point: the champion was SELECTED, and its
+  // target book PRODUCED, by a backtest over invented history, so a real newest bar does not make
+  // the resulting suggestion real. A restart is what clears it, and on an ephemeral host that
+  // happens often.
+  // ★ Note what the refusal does NOT fix: the published `track` and `coverage` are recomputed from
+  // the live series on every payload, so a synthetic NIFTY makes those numbers fiction whether or
+  // not anything is recorded. That is handled by DISCLOSURE on the panel, not by this flag.
   const syntheticKeys = new Set();
-  const isSyntheticSymbol = (symbol, interval = null) =>
-    interval
-      ? syntheticKeys.has(dataKey(symbol, interval))
-      // No interval given (the advisor knows symbols, not keys): synthetic on ANY loaded interval
-      // for that name is enough to refuse — the question is "is this name's price invented".
-      : syntheticKeys.has(dataKey(symbol, '1d')) || syntheticKeys.has(dataKey(symbol, '60m'));
+  // The advisor knows SYMBOLS, not keys, and "is this name's price invented" is answered by ANY
+  // interval being a stand-in. ★ Asked by parsing the keys rather than by enumerating intervals:
+  // an enumeration of '1d' and '60m' silently stops covering a roster entry on any other interval
+  // (`isIntradayInterval` is simply `interval !== '1d'`, so '30m' is legal), and it would drift
+  // without failing. This cannot.
+  const isSyntheticSymbol = (symbol) => {
+    if (!symbol) return false;
+    for (const key of syntheticKeys) if (parseKey(key).symbol === symbol) return true;
+    return false;
+  };
   let roster = seed.map((b) => asRosterEntry(b)); // mutable bot definitions
   let bots = []; // compiled view of the roster
   // advisorLog: the ADVISOR's append-only "Today's Suggestions" record (advisor.mjs) —
@@ -1128,7 +1145,7 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       // suggestion log + the cost rates + the fair-benchmark finding. Appending to the log
       // itself happens ONLY in advisorTick() (once per new data date), never here: assembly
       // must stay read-only so the sync/yielding recomputes and control ops can share it.
-      const advisor = buildAdvisorPayload({ log: state.advisorLog, seriesFor, universe: BASKET_UNIVERSE, minDays: advisorMinDays, costRates: EQ_COSTS });
+      const advisor = buildAdvisorPayload({ log: state.advisorLog, seriesFor, universe: BASKET_UNIVERSE, minDays: advisorMinDays, costRates: EQ_COSTS, standIn: standInFor(autopilot) });
       if (typeof persistStore.readFailed === 'function') persistState.readFailed = persistStore.readFailed();
       // a store that reads fine but cannot be WRITTEN was previously invisible from
       // outside — the board looked healthy while the forward record silently stopped growing.
@@ -1145,13 +1162,21 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     // through the remote store). Skipped while nothing can honestly be issued (no champion
     // yet / champion's data still loading) — a missing day means "no suggestion was made",
     // never a back-filled one.
+    // The stand-in verdict for the CURRENT champion, from the SAME function that refuses to
+    // record — so the panel can never claim a day was refused when it was not, or stay silent
+    // when it was. Cheap: it only reads a Set and the already-built detail.
+    const standInFor = (autopilot) => {
+      const champ = autopilot && autopilot.currentBot;
+      const detail = champ ? getBotDetail(champ.id) : null;
+      return syntheticDataBlock({ detail: detail && detail.ok !== false ? detail : null, isSynthetic: isSyntheticSymbol });
+    };
     function advisorTick() {
       if (!standings || !standings.autopilot) return false;
       const entry = buildAdvisorEntry({ autopilot: standings.autopilot, getBotDetail, seriesFor, isSynthetic: isSyntheticSymbol });
       if (!appendAdvisorEntry(state, entry)) return false;
       // Refresh the already-published payload so the new entry is visible without waiting
       // for the next full recompute (standings itself is otherwise untouched).
-      standings.advisor = buildAdvisorPayload({ log: state.advisorLog, seriesFor, universe: BASKET_UNIVERSE, minDays: advisorMinDays, costRates: EQ_COSTS });
+      standings.advisor = buildAdvisorPayload({ log: state.advisorLog, seriesFor, universe: BASKET_UNIVERSE, minDays: advisorMinDays, costRates: EQ_COSTS, standIn: standInFor(standings.autopilot) });
       return true;
     }
 

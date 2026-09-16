@@ -703,3 +703,42 @@ test('WIRING CONTROL: the same boot with REAL data does record, and reports no s
   assert.deepEqual(t.getStandings().syntheticKeys, [], 'nothing invented');
   assert.equal(t._state().advisorLog.length, 1, 'the day IS recorded when the data is real');
 });
+
+test('buildAdvisorEntry REFUSES a FLAT champion whose own series is synthetic (identity, not positions)', () => {
+  // ★ THE DISTINGUISHING CASE, and the one the first version of this guard got wrong. Scanning
+  // `mirror.positions` alone catches a champion that HOLDS the fabricated name — the case anyone
+  // would think to test — and misses one that is FLAT. `etf-trend-nifty` is exactly that bot: a
+  // single-symbol EQ trend follower on NIFTYBEES that sells whenever price drops below its 50-day
+  // average. On a fabricated series it can hold nothing, sail past a positions scan, and record an
+  // ELIGIBLE EMPTY book — which downstream reads as "sell everything" and charges the previous
+  // book's exit costs, permanently, off a series that does not exist. Reproduced before fixing.
+  // Same positional-vs-identity trap as the index exclusion: whether a bot's DATA is real is a fact
+  // about the ROW, never about today's book.
+  const mk = (positions) => buildAdvisorEntry({
+    autopilot: { currentBot: { id: 'etf' } },
+    getBotDetail: () => ({
+      ok: true, id: 'etf', name: 'ETF trend', kind: 'EQ', symbol: 'NIFTYBEES',
+      mirror: { followable: true, equity: 1_000_000, positions },
+    }),
+    seriesFor: () => [{ t: START, c: 100 }],
+    isSynthetic: (s) => s === 'NIFTYBEES', // NIFTY is real; only the champion's own series is not
+  });
+  assert.equal(mk([]), null, 'FLAT on a fabricated series must be refused — an eligible empty book is "sell everything"');
+  assert.equal(mk([{ symbol: 'NIFTYBEES', kind: 'EQ', qty: 10, price: 265 }]), null, 'and so is holding it');
+});
+
+test('CONTROL: a FLAT champion on REAL data still records its (empty) book', () => {
+  // The refusal must be about provenance, not about being flat — going to cash IS guidance.
+  const entry = buildAdvisorEntry({
+    autopilot: { currentBot: { id: 'etf' } },
+    getBotDetail: () => ({
+      ok: true, id: 'etf', name: 'ETF trend', kind: 'EQ', symbol: 'NIFTYBEES',
+      mirror: { followable: true, equity: 1_000_000, positions: [] },
+    }),
+    seriesFor: () => [{ t: START, c: 100 }],
+    isSynthetic: () => false,
+  });
+  assert.ok(entry, 'a flat champion on real data is still recorded');
+  assert.equal(entry.eligible, true, 'and it is eligible — "sell everything" is real guidance');
+  assert.deepEqual(entry.targets, []);
+});

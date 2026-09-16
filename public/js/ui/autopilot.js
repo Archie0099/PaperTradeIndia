@@ -1120,6 +1120,48 @@ function renderSuggestions(app) {
     ]));
   }
 
+  // A SIBLING of the banner above, and a different failure with the same visible symptom: the log
+  // stops growing. When the market feed cannot be reached at boot, the app falls back to a
+  // generated stand-in series so the screens still work — and the server then REFUSES to record a
+  // suggestion built on it, because a made-up price must never enter a record that is never edited.
+  // Refusing SILENTLY would be the same harm the refusal exists to prevent: a reader told nothing
+  // concludes nothing happened today, on the panel used to size real orders.
+  //
+  // ★ DRIVEN BY THE SERVER'S OWN VERDICT (`advisor.standIn`), never re-derived here. An earlier
+  // version fired on the raw list of affected series, which OVER-FIRED: BANKNIFTY, FINNIFTY and
+  // each single-symbol bot's key are stand-in-eligible too, so a partial feed failure on any of
+  // them would have printed "today's suggestion was not recorded" directly above a dated entry
+  // that WAS recorded. The server already decides this; a client that re-derives a server rule
+  // drifts from it.
+  const standIn = advisor && advisor.standIn;
+  if (standIn && standIn.symbols && standIn.symbols.length) {
+    // Plain names, not data keys: '60m:RELIANCE' is an internal key and this panel is the one
+    // place that must read as English.
+    const names = standIn.symbols.map((k) => String(k).replace(/^[^:]+:/, ''));
+    box.append(el('div', { style: 'border-left: 3px solid var(--down); padding: 6px 10px; margin: 6px 0; font-size: 12px' }, [
+      el('strong', {}, 'Today’s suggestion was not recorded — the market data is a stand-in. '),
+      `The live feed could not be reached for ${names.join(', ')}, so the app is using generated ` +
+      'prices there to keep the screens working. Those prices are not real, and their dates are not ' +
+      'real trading sessions either, so nothing is written to the record rather than risk a made-up ' +
+      'price becoming advice. Nothing already saved is affected. It clears once the feed returns ' +
+      'and the server restarts.',
+      // ★ The benchmark case is WORSE than a skipped day and has to say so. `track` and `coverage`
+      // are recomputed from the LIVE series on every payload, so refusing to record does not clean
+      // them up — when the index itself is a stand-in, the score and the day-count below are
+      // computed from invented closes and an invented calendar. Disclosed rather than withheld:
+      // blanking the panel would look broken, and a reader told the numbers are fiction will not
+      // act on them.
+      standIn.scope === 'benchmark'
+        ? el('div', { style: 'margin-top: 6px' }, [
+          el('strong', {}, 'The index itself is the stand-in, '),
+          'so the track record and the day count below are calculated from generated prices and ' +
+          'a calendar that includes non-trading days. Ignore those numbers until this clears — ' +
+          'they are recalculated live, so nothing stored is wrong.',
+        ])
+        : '',
+    ]));
+  }
+
   if (!advisor) {
     box.append(el('div', { class: 'empty-state' }, 'The tournament is still warming up — no suggestions yet.'));
     return;

@@ -41,10 +41,11 @@ const advisorPayload = (over = {}) => ({
 // browser — so a fixture must state it, or every advisor test would drift day by day and start
 // failing on its own schedule. 2026-08-05 is the day after the fixture's entry (2026-08-04),
 // i.e. nothing missed, which is what the pre-existing tests assume.
-function standings(advisor, persist, asOf = Date.parse('2026-08-05T06:00:00Z'), now = asOf) {
+function standings(advisor, persist, asOf = Date.parse('2026-08-05T06:00:00Z'), now = asOf, syntheticKeys = []) {
   return {
     asOf,
     now,
+    syntheticKeys,
     startingCash: 1e7,
     advisor,
     persist,
@@ -62,10 +63,10 @@ function standings(advisor, persist, asOf = Date.parse('2026-08-05T06:00:00Z'), 
   };
 }
 
-const appWith = (dom, advisor, persist, asOf, now) => {
+const appWith = (dom, advisor, persist, asOf, now, syntheticKeys) => {
   const app = dom.makeApp({
     api: Object.assign(dom.makeApiStub(), {
-      tournament: async () => standings(advisor, persist, asOf, now),
+      tournament: async () => standings(advisor, persist, asOf, now, syntheticKeys),
       tournamentBot: async (id) => ({ ok: true, id, name: 'Sharpe King', mirror: { followable: true, equity: 1.08e7, positions: [] } }),
     }),
   });
@@ -655,4 +656,111 @@ test('a name too small to buy at this capital is NAMED on screen, not silently d
   assert.match(txt, /Too small to act on/i, 'the panel must say that something was not actionable');
   assert.match(txt, /BOSCHLTD/, 'and name it');
   assert.match(txt, /stays in cash rather than being placed/i, 'and say where that share of the book went');
+});
+
+// --- the panel says WHY it went quiet when the data is a stand-in ------------
+// The server refuses to record a suggestion built on the offline fallback series, because a
+// made-up price must never enter a record that is never edited. Refusing SILENTLY would have been
+// the same mistake the refusal exists to prevent: a reader who is told nothing concludes nothing
+// happened today, and this panel is the one used to size real orders.
+//
+// ★ The banner is driven by the SERVER'S verdict (`advisor.standIn`), never re-derived from the
+// raw key list. The first version fired on `syntheticKeys.length` alone and OVER-FIRED: BANKNIFTY,
+// FINNIFTY and every single-symbol bot's key are stand-in-eligible too, so a partial feed failure
+// on any of them would have printed "today's suggestion was not recorded" directly above a dated
+// entry that WAS recorded. The control for exactly that is below.
+// The banner is the div that OPENS with the headline — unambiguous, and it does not depend on
+// whether the benchmark sub-note (a nested div) happens to be present.
+const standInBanner = (dom) => [...dom.document.querySelectorAll('#ap-suggestions div')]
+  .find((d) => d.textContent.trimStart().startsWith('Today’s suggestion was not recorded'));
+
+test('a stand-in market series is named on the panel, with what it means for the record', async () => {
+  const dom = setupDom();
+  const app = appWith(dom, advisorPayload({ standIn: { scope: 'champion', symbols: ['60m:NIFTYBEES'] } }));
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  // ★ SCOPED TO THE BANNER, not the whole panel. Asserting a symbol name against the panel text is
+  // VACUOUS — the payload names symbols in several other places, so such an assertion passed even
+  // with the naming REMOVED from the banner. A removal matrix caught it; it is the only reason it
+  // did not ship.
+  const banner = standInBanner(dom);
+  assert.ok(banner, 'the stand-in banner renders');
+  const txt = banner.textContent;
+  assert.match(txt, /not recorded/i, 'it states that today is not in the record');
+  assert.match(txt, /NIFTYBEES/, 'and NAMES the affected series — which one it is decides what can be trusted');
+  // ★ The fixture deliberately supplies an INTRADAY key ('60m:NIFTYBEES'). A symbol with no prefix
+  // cannot tell a key from a name, so a test using one would pass even if the raw internal key were
+  // printed — which is what happened, and a removal matrix caught it. This panel is the one place
+  // that must read as English.
+  assert.ok(!/60m:/.test(txt), 'it prints the plain symbol, never the internal data key');
+  assert.match(txt, /not real trading sessions/i, 'including that the dates are fabricated too');
+  assert.match(txt, /nothing already saved is affected/i, 'while making clear the stored record is safe');
+});
+
+test('a stand-in INDEX also says the track record and day count below are fiction', async () => {
+  // `track` and `coverage` are recomputed from the LIVE series on every payload, so refusing to
+  // RECORD does not clean them up. When the benchmark itself is invented, the numbers on screen are
+  // invented with it — and the banner's own "nothing already saved is affected" would otherwise
+  // read as "everything here is fine".
+  const dom = setupDom();
+  const app = appWith(dom, advisorPayload({ standIn: { scope: 'benchmark', symbols: ['NIFTY'] } }));
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  const txt = dom.$('#ap-suggestions').textContent;
+  assert.match(txt, /index itself is the stand-in/i, 'it distinguishes the benchmark case');
+  assert.match(txt, /track record and the day count below are calculated from generated prices/i,
+    'and says the displayed score and coverage are fiction, not just the record');
+});
+
+test('CONTROL: the CHAMPION case must NOT claim the track record is fiction', async () => {
+  // Only the benchmark case corrupts the displayed numbers. Saying so for a champion-only stand-in
+  // would tell the reader to ignore a score that is perfectly good.
+  const dom = setupDom();
+  const app = appWith(dom, advisorPayload({ standIn: { scope: 'champion', symbols: ['NIFTYBEES'] } }));
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  assert.ok(!/index itself is the stand-in/i.test(dom.$('#ap-suggestions').textContent),
+    'the benchmark sentence must not appear for a champion-only stand-in');
+});
+
+test('CONTROL: a stand-in series that does NOT block recording shows no banner', async () => {
+  // The exact over-fire this banner had in its first version. BANKNIFTY is a required key, so it
+  // can be a stand-in — but the advisor does not read it, so the day IS recorded. Claiming
+  // otherwise would contradict the dated entry rendered a few lines below.
+  const dom = setupDom();
+  const app = appWith(dom, advisorPayload({ standIn: null }), undefined, undefined, undefined, ['BANKNIFTY']);
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  assert.ok(!/stand-in/i.test(dom.$('#ap-suggestions').textContent),
+    'a stand-in key the advisor never reads must not claim the day was refused');
+});
+
+test('CONTROL: real data everywhere shows no stand-in warning (not permanent furniture)', async () => {
+  const dom = setupDom();
+  const app = appWith(dom, advisorPayload(), undefined, undefined, undefined, []);
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  assert.ok(!/stand-in/i.test(dom.$('#ap-suggestions').textContent), 'nothing invented, no banner');
+});
+
+test('CONTROL: an older server that does not publish the field cannot fire the warning', async () => {
+  // `standIn` is undefined on any deploy predating it. Treating "absent" as "invented" would put a
+  // false alarm on the real-money panel for the whole rollout window.
+  const dom = setupDom();
+  const app = appWith(dom, advisorPayload());
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  assert.ok(!/stand-in/i.test(dom.$('#ap-suggestions').textContent), 'absent is not the same as invented');
+});
+
+test('the two record warnings are INDEPENDENT — a storage failure and a stand-in feed can coexist', async () => {
+  // They have the same visible symptom (the log stops growing) and different causes, so a reader
+  // seeing only one would fix the wrong thing.
+  const dom = setupDom();
+  const app = appWith(dom, advisorPayload({ standIn: { scope: 'benchmark', symbols: ['NIFTY'] } }), { enabled: true, attempted: true, restored: false, readFailed: true });
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  const txt = dom.$('#ap-suggestions').textContent;
+  assert.match(txt, /not being saved/i, 'the storage banner still shows');
+  assert.match(txt, /stand-in/i, 'and so does the stand-in banner');
 });
