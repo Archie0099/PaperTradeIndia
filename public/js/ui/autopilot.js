@@ -164,9 +164,25 @@ function instrumentFromMirror(p) {
 // bot with an INDICATIVE model price (no paid feed — exactly like the bot's own).
 // Only touches positions that carry expiryMs + iv (i.e. copied F&O legs); manual options and
 // equities are left alone. Silent (the poll loop emits/renders once afterwards).
-const OPT_R = 0.065; // risk-free rate, matching backtest/options-model.mjs
+// ★ THE RISK-FREE RATE COMES FROM THE ACCOUNT'S OWN SETTING, like every other option surface.
+// It used to be a hardcoded `const OPT_R = 0.065` here, while `optionChain.js`, `strategy.js` and
+// `portfolioGreeks` all read `engine.state.settings.riskFreeRate` — and that setting is IMPORTABLE
+// (engine.js validates it among the fields `importJson` accepts). So importing a portfolio carrying
+// any other rate made ONE ROW disagree with itself.
+//
+// MEASURED on a 30-day ATM NIFTY leg whose own IV is 14.00%, with the setting at 15%: the mark
+// stays 441.18 (modelled at 6.5% regardless), `portfolioGreeks` then back-solves the IV from that
+// mark at 15% and recovers **10.24%** — a 3.76-point drift from the leg's real IV — so theta reads
+// **-783 instead of -635, about 23% out**, and every other Greek on the row is off with it. The
+// mark itself looks fine, which is what makes it hard to spot: the error surfaces only in the
+// Greeks, computed from an implied vol that has silently absorbed the rate mismatch.
+//
+// The default stays 6.5 (`engine.js` sets it, and it matches `backtest/options-model.mjs`), so
+// nothing moves for an account that never imported a different one.
+const DEFAULT_OPT_R_PCT = 6.5; // only the fallback for a state missing the setting entirely
 function remarkOptionPositions(app, nowMs = Date.now()) {
   const eng = app.engine;
+  const optR = ((eng.state.settings && eng.state.settings.riskFreeRate) || DEFAULT_OPT_R_PCT) / 100;
   let changed = false;
   for (const key in eng.state.positions) {
     const pos = eng.state.positions[key];
@@ -179,7 +195,7 @@ function remarkOptionPositions(app, nowMs = Date.now()) {
     const T = Math.max(0, (inst.expiryMs - nowMs) / 864e5) / 365; // years to expiry (wall-clock)
     const price = T <= 0
       ? Math.max(0, inst.optType === 'CE' ? spot - inst.strike : inst.strike - spot)
-      : bsPrice(inst.optType, spot, inst.strike, T, OPT_R, inst.iv);
+      : bsPrice(inst.optType, spot, inst.strike, T, optR, inst.iv);
     inst.underlyingPrice = spot; // keep the short-option margin notional current as spot moves
     eng.onPriceUpdate(key, Math.max(price, 0.05), true);
     changed = true;

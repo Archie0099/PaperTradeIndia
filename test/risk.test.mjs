@@ -389,3 +389,19 @@ test('a bar into negative equity is a 100% loss, not a 2600% one — VaR/ES stay
   assert.equal(L.length, R.length);
   for (let i = 0; i < L.length; i++) assert.ok(Math.abs(L[i] + R[i]) < 1e-15, `bar ${i}: clamped loss == −return when nothing wiped`);
 });
+
+test('the Kupiec threshold is SHIPPED, so the board never re-types it', () => {
+  // ★ The per-bot page renders a sentence naming the threshold the verdict was taken against. It
+  // used to hardcode "3.84" in two places against KUPIEC_CRITICAL, which the server did not
+  // publish. The VERDICT was always right (`kupiecReject` is decided server-side), so a change to
+  // the constant would not have produced a wrong answer — it would have produced a sentence that
+  // CONTRADICTED its own answer, which is harder to debug than a plain error.
+  //
+  // This compares the shipped value against the module's own constant rather than restating a
+  // number, so it fails if either side moves (the W17 rule: a test that re-types a literal proves
+  // only that the code equals itself).
+  const bt = backtestSummary({ exceptions: 4, days: 250, p: 0.01 });
+  assert.equal(bt.kupiecCritical, KUPIEC_CRITICAL, 'the threshold travels with the verdict');
+  assert.equal(bt.kupiecReject, bt.kupiec > bt.kupiecCritical,
+    'and the shipped verdict agrees with the shipped threshold — the sentence cannot contradict itself');
+});

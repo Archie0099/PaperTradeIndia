@@ -368,3 +368,56 @@ test('computeSuggestions carries skipped EXPLICITLY, because the book is JSON-pe
   assert.ok(res.skipped.some((s) => s.symbol === 'BOSCHLTD'), 'and must survive as data, not as an array property');
   assert.deepEqual(JSON.parse(JSON.stringify(res.skipped)), res.skipped, 'and must round-trip through JSON intact');
 });
+
+// --- one row, one risk-free rate --------------------------------------------
+// ★ `remarkOptionPositions` used to model a copied leg at a hardcoded 6.5% while `optionChain.js`,
+// `strategy.js` and `portfolioGreeks` all read `engine.state.settings.riskFreeRate` — which
+// `importJson` ACCEPTS from a file. So importing a portfolio carrying any other rate made one row
+// disagree with itself.
+//
+// MEASURED before the fix, on a 30-day ATM leg whose own IV is 14.00%, with the setting at 15%: the
+// mark stayed 441.18 (priced at 6.5% regardless), so `portfolioGreeks` back-solved the IV from it
+// at 15% and recovered 10.24% — a 3.76-point drift — putting theta at -783 instead of -635, ~23%
+// out. The mark looked right, which is exactly why it was hard to see: the error only surfaced in
+// the Greeks, through an implied vol that had quietly absorbed the rate mismatch.
+test('a copied leg is re-marked at the ACCOUNT\'s risk-free rate, not a hardcoded one', () => {
+  const EXP = Date.parse('2026-12-31T10:00:00Z');
+  const NOW = EXP - 30 * 864e5; // ★ pinned: a wall-clock `nowMs` would move T between the two arms
+  const KEY = 'OPT:NIFTY:cyc1:23500:CE';
+  const leg = () => ({ kind: 'OPT', symbol: 'NIFTY', expiry: 'cyc1', expiryMs: EXP, strike: 23500, optType: 'CE', lotSize: 75, iv: 0.14, underlyingPrice: 23500 });
+
+  const markAt = (ratePct) => {
+    const eng = freshUser(10_000_000);
+    eng.state.settings.riskFreeRate = ratePct;
+    eng.state.positions[KEY] = { instrument: leg(), qty: 75, avgPrice: 200 };
+    remarkOptionPositions({ engine: eng, state: { quotes: { NIFTY: { ltp: 23500 } } } }, NOW);
+    return eng.state.lastPrices[KEY];
+  };
+
+  const base = markAt(6.5);
+  const high = markAt(15);
+  assert.ok(base > 0 && high > 0, 'both arms produced a mark');
+  assert.notEqual(high, base, 'the mark must follow the account setting — it used to ignore it entirely');
+  assert.ok(high > base, 'a higher risk-free rate raises a call, which is the direction that says the rate is really reaching the model');
+});
+
+test('CONTROL: the default is unchanged, so nothing moves for an account that never imported a rate', () => {
+  // The whole point of the fix is that it is a no-op at 6.5 — the engine's own default, and the
+  // rate `backtest/options-model.mjs` prices the bot's own book at.
+  const EXP = Date.parse('2026-12-31T10:00:00Z');
+  const NOW = EXP - 30 * 864e5;
+  const KEY = 'OPT:NIFTY:cyc1:23500:CE';
+  const leg = () => ({ kind: 'OPT', symbol: 'NIFTY', expiry: 'cyc1', expiryMs: EXP, strike: 23500, optType: 'CE', lotSize: 75, iv: 0.14, underlyingPrice: 23500 });
+
+  const withSetting = freshUser(10_000_000);
+  withSetting.state.positions[KEY] = { instrument: leg(), qty: 75, avgPrice: 200 };
+  remarkOptionPositions({ engine: withSetting, state: { quotes: { NIFTY: { ltp: 23500 } } } }, NOW);
+
+  const missing = freshUser(10_000_000);
+  delete missing.state.settings.riskFreeRate; // a state file that never carried the field
+  missing.state.positions[KEY] = { instrument: leg(), qty: 75, avgPrice: 200 };
+  remarkOptionPositions({ engine: missing, state: { quotes: { NIFTY: { ltp: 23500 } } } }, NOW);
+
+  assert.equal(withSetting.state.lastPrices[KEY], missing.state.lastPrices[KEY],
+    'a missing setting falls back to the same 6.5% the default carries');
+});

@@ -463,7 +463,10 @@ test('clicking a column header sorts the leaderboard and toggles direction', asy
 // whole sentences (a fragment lock once shipped a percent-of-percent bug).
 // ---------------------------------------------------------------------------
 const riskYellow = { conf: 0.99, window: 500, var1dPct: 2.13, es1dPct: 3.41, var10dPct: 6.74,
-  backtest: { exceptions: 7, days: 250, expected: 2.5, kupiec: 5.21, kupiecReject: true, zone: "yellow", mc: 3.65 } };
+  // ★ `kupiecCritical` mirrors the real payload: the server ships the threshold its own verdict was
+  // taken against, so the page never re-types "3.84". A fixture omitting it would render `undefined`
+  // — which is the fixture being unfaithful, not the page being wrong.
+  backtest: { exceptions: 7, days: 250, expected: 2.5, kupiec: 5.21, kupiecReject: true, kupiecCritical: 3.84, zone: "yellow", mc: 3.65 } };
 
 test("the per-bot page shows one-day VaR/ES and the no-hindsight VaR back-test verdict", async () => {
   const dom = setupDom();
@@ -581,7 +584,7 @@ test("a bot whose window holds NO LOSING DAY says so in words, instead of printi
 
 test("a VaR the Kupiec test does NOT reject says so, with the statistic", async () => {
   const dom = setupDom();
-  const risk = { ...riskYellow, backtest: { exceptions: 2, days: 250, expected: 2.5, kupiec: 0.11, kupiecReject: false, zone: "green", mc: 3 } };
+  const risk = { ...riskYellow, backtest: { exceptions: 2, days: 250, expected: 2.5, kupiec: 0.11, kupiecReject: false, kupiecCritical: 3.84, zone: "green", mc: 3 } };
   const str = baseDetail("str", { kind: "FNO", symbol: "BANKNIFTY", metrics: { totalReturnPct: 8, sharpe: 1.1, maxDrawdownPct: 9, trades: 20, risk } });
   await renderTournament(appWith(dom, { str }));
   clickBot(dom, "str");
@@ -593,7 +596,7 @@ test("a VaR the Kupiec test does NOT reject says so, with the statistic", async 
 test("a bot WIPED OUT inside its window says so on the page — capped figures, downside called unbounded (review finding)", async () => {
   const dom = setupDom();
   const risk = { ...riskYellow, wiped: true, var1dPct: 100, es1dPct: 100, var10dPct: 100,
-    backtest: { exceptions: 1, days: 250, expected: 2.5, kupiec: 1.32, kupiecReject: false, zone: "green", mc: 3 } };
+    backtest: { exceptions: 1, days: 250, expected: 2.5, kupiec: 1.32, kupiecReject: false, kupiecCritical: 3.84, zone: "green", mc: 3 } };
   const str = baseDetail("str", { kind: "FNO", symbol: "BANKNIFTY", metrics: { totalReturnPct: -100, sharpe: -1, maxDrawdownPct: 100, trades: 20, risk } });
   await renderTournament(appWith(dom, { str }));
   clickBot(dom, "str");

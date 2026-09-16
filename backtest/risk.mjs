@@ -343,6 +343,13 @@ function backtestSummary(m, n, conf = 0.99) {
     tooManyP: binomialTailProb(m, n, p),         // P(≥ m) under the model — small = too many
     kupiec: +stat.toFixed(3),
     kupiecReject: stat > KUPIEC_CRITICAL,
+    // ★ SHIPPED, not left for the reader to re-type. The board renders a sentence naming the
+    // threshold this verdict was taken against, and it used to hardcode "3.84" in TWO places
+    // against KUPIEC_CRITICAL here — which the server never published. The VERDICT was always
+    // right (`kupiecReject` is decided here), so a change to the constant would not have given a
+    // wrong answer; it would have given a sentence that CONTRADICTED its own answer, which is
+    // harder to debug than a plain error.
+    kupiecCritical: KUPIEC_CRITICAL,
     // The Basel ladder is DEFINED on 250 days [RMFI p.364]. An earlier draft pro-rated the count
     // to 250 and produced a RED zone on a 25-day window whose own Kupiec line said "does not
     // reject" — two verdicts on one object contradicting each other On any
@@ -461,7 +468,7 @@ function riskProfile(equity, { conf = 0.99, window = 500, testDays = 250 } = {})
     var1dPct: usable ? +(hs.var * 100).toFixed(3) : null,
     es1dPct: usable ? +(hs.es * 100).toFixed(3) : null,
     var10dPct: usable ? +(Math.min(1, scaleHorizon(hs.var, 10)) * 100).toFixed(3) : null, // √10 rule (12.3), capped at a total loss
-    backtest: (bt && !noLoss) ? { exceptions: bt.exceptions, days: bt.days, expected: bt.expected, kupiec: bt.kupiec, kupiecReject: bt.kupiecReject, zone: bt.zone, mc: bt.mc } : null,
+    backtest: (bt && !noLoss) ? { exceptions: bt.exceptions, days: bt.days, expected: bt.expected, kupiec: bt.kupiec, kupiecReject: bt.kupiecReject, kupiecCritical: bt.kupiecCritical, zone: bt.zone, mc: bt.mc } : null,
   };
 }
 

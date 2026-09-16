@@ -521,8 +521,11 @@ function renderBotPage(body, d, row) {
       // The Basel zone exists only on a 250-day test; a shorter span shows the count without one.
       el('span', { class: zoneClass, style: 'font-weight: 600' }, `${bt.exceptions} exception${bt.exceptions === 1 ? '' : 's'} vs ${bt.expected} expected${bt.zone ? ` · ${bt.zone.toUpperCase()} zone` : ' · no Basel zone (the ladder is defined on 250 days)'}`),
       bt.kupiecReject
-        ? ` · Kupiec test REJECTS this VaR model (statistic ${bt.kupiec} > 3.84 — it ${bt.exceptions > bt.expected ? 'understates' : 'overstates'} the bot’s risk).`
-        : ` · Kupiec test does not reject (statistic ${bt.kupiec} ≤ 3.84).`,
+        // ★ The threshold comes from the payload (`kupiecCritical`), not a literal typed here twice.
+        // The VERDICT was always the server's, so a changed constant would not have given a wrong
+        // answer — it would have printed a sentence contradicting its own verdict.
+        ? ` · Kupiec test REJECTS this VaR model (statistic ${bt.kupiec} > ${bt.kupiecCritical} — it ${bt.exceptions > bt.expected ? 'understates' : 'overstates'} the bot’s risk).`
+        : ` · Kupiec test does not reject (statistic ${bt.kupiec} ≤ ${bt.kupiecCritical}).`,
       ` Ten-day VaR ≈ ${rk.var10dPct.toFixed(2)}% by the √10 rule (an approximation that ignores autocorrelation).`,
       // A total loss inside the window: the percentages above are capped at 100% (you cannot
       // lose more than everything, per rupee held), and the reader must know the cap is in
