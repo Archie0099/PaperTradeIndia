@@ -47,10 +47,21 @@ function feedChain(app, expiry, strike) {
   return chain;
 }
 
-const buy = (engine, symbol, lots, price) =>
-  engine.placeOrder({ instrument: { kind: 'EQ', symbol, lotSize: 1 }, side: 'BUY', orderType: 'MARKET', lots, price });
-const sell = (engine, symbol, lots, price) =>
-  engine.placeOrder({ instrument: { kind: 'EQ', symbol, lotSize: 1 }, side: 'SELL', orderType: 'MARKET', lots, price });
+// ★ FEED the price as the real app does, rather than only filling an order. `app.pollQuotes` pushes
+// every held symbol through `engine.updateEquityPrice` every 5 seconds, which is the one door that
+// stamps `lastPriceAt` — and a market order can only be placed at a price the poll has already
+// delivered. A fixture that fills without feeding builds a state the running app never sits in
+// (an equity nothing has ever quoted), and it used to pass only because `priceIsLive` exempted
+// equities by KIND. That exemption is gone, so the fixture has to be faithful instead.
+const feed = (engine, symbol, price) => engine.updateEquityPrice(symbol, price, true);
+const buy = (engine, symbol, lots, price) => {
+  feed(engine, symbol, price);
+  return engine.placeOrder({ instrument: { kind: 'EQ', symbol, lotSize: 1 }, side: 'BUY', orderType: 'MARKET', lots, price });
+};
+const sell = (engine, symbol, lots, price) => {
+  feed(engine, symbol, price);
+  return engine.placeOrder({ instrument: { kind: 'EQ', symbol, lotSize: 1 }, side: 'SELL', orderType: 'MARKET', lots, price });
+};
 
 test('empty portfolio shows the no-positions empty state', () => {
   const dom = setupDom();
@@ -158,7 +169,14 @@ test('an imported position lacking a stored `key` still shows LTP and P&L', () =
   app.engine.importJson(JSON.stringify(portfolio)); // emit -> renderPositions
 
   const ltp = dom.$('#positions-table tbody tr td:nth-child(4)');
-  assert.equal(ltp.textContent, '2600.00', 'LTP would be "…" if it relied on p.key');
+  // ★ The NUMBER is what this test is about (it would be "…" if the table relied on `p.key`), so it
+  // is asserted with `match`, not `equal`. The cell now also carries a "·not live" marker, and that
+  // is CORRECT rather than a regression: `importJson` calls `forgetPriceTimes()`, so a price read
+  // out of a FILE has never been quoted by anything. The same rule was already established for options —
+  // importing a portfolio at a file-sourced price must not make the row look live — and removing the
+  // by-KIND exemption simply extends the same honesty to equities.
+  assert.match(ltp.textContent, /^2600\.00/, 'LTP would be "…" if it relied on p.key');
+  assert.match(ltp.textContent, /·not live/, 'and a file-sourced price is not a live quote');
   const unreal = dom.$('#positions-table tbody tr td:nth-child(5)');
   assert.equal(unreal.textContent, '+1,000');
 });
@@ -839,4 +857,51 @@ test('CONTROL: a SELL limit gapped through is the same — the mark follows the 
   assert.equal(filled.status, 'FILLED');
   assert.equal(filled.fillPrice, 145, 'a SELL gapped up fills at the better market price');
   assert.equal(app.engine.state.lastPrices[OPT_KEY], 145, 'and the mark is that same price');
+});
+
+// --- an EQUITY whose own quote has stopped ----------------------------------
+// ★ THE DISTINGUISHING CASE for removing the by-KIND exemption, and the one nothing covered. Every
+// previous equity fixture tested "fed" or "never fed"; the harm lives in FED-THEN-STOPPED, which is
+// where the old rule and the new one disagree. It is reachable for a single symbol without anything
+// else noticing: `app.pollQuotes` try/catches each symbol separately and leaves the previous quote
+// in place on failure, and the status bar's banner reads GLOBAL feed health from /api/status — so
+// one throttled, delisted or mistyped symbol among many raises nothing anywhere.
+test('an equity whose quote has stopped is marked, and its Close asks first', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  buy(app.engine, 'RELIANCE', 10, 2500);
+  renderPositions(app);
+  assert.ok(!/·not live/.test(dom.$('#positions-table').textContent), 'while it is being polled, nothing is marked');
+
+  // The poll has been failing for this ONE symbol for longer than the liveness window.
+  app.engine.lastPriceAt['EQ:RELIANCE'] -= LIVE_PRICE_MS + 1000;
+  renderPositions(app);
+  const txt = dom.$('#positions-table').textContent;
+  assert.match(txt, /2500\.00/, 'the last price it saw is still shown — it is the only one there is');
+  assert.match(txt, /·not live/, 'but it is no longer presented as a live quote');
+
+  // And the action inherits it: closing books a realised P&L against that frozen number.
+  dom.setConfirm(false);
+  dom.fire(dom.$$('#positions-table tbody tr button').find((b) => b.textContent === 'Close'), 'click');
+  assert.equal(dom.confirms.length, 1, 'Close asks before booking a P&L off a stale equity price');
+  assert.match(dom.confirms[0], /RELIANCE/, 'and names the symbol');
+  assert.ok(app.engine.state.positions['EQ:RELIANCE'], 'cancelling leaves the position held');
+});
+
+test('CONTROL: a second equity that IS still being polled is not marked alongside it', () => {
+  // The marker must be PER SYMBOL. The whole point of the finding is that one dead symbol hides
+  // among healthy ones — a rule that marked every equity once any of them went quiet would be the
+  // same blunt instrument as the exemption it replaced, pointed the other way.
+  const dom = setupDom();
+  const app = mount(dom);
+  buy(app.engine, 'RELIANCE', 10, 2500);
+  buy(app.engine, 'TCS', 5, 3600);
+  app.engine.lastPriceAt['EQ:RELIANCE'] -= LIVE_PRICE_MS + 1000;
+  renderPositions(app);
+  const rows = dom.$$('#positions-table tbody tr');
+  const reliance = rows.find((r) => /RELIANCE/.test(r.textContent));
+  const tcs = rows.find((r) => /TCS/.test(r.textContent));
+  assert.match(reliance.textContent, /·not live/, 'the dead symbol is marked');
+  assert.ok(!/·not live/.test(tcs.textContent), 'the healthy one is not');
+  assert.match(dom.$('#pnl-summary').textContent, /1 not live/, 'and the headline counts exactly one');
 });

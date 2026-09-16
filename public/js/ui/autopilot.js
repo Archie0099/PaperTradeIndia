@@ -409,19 +409,44 @@ function computeSuggestions({ entry, prev = null, marks = null, book, costRates 
 
 // Plain-English weight-level changes between two recorded entries (shown when no
 // real capital is set — a portfolio-level description, not order generation).
+//
+// ★★ A NAME ONLY APPEARS HERE IF ITS SHARE COUNT MOVED, AND THAT IS THE WHOLE POINT.
+// A recorded `weight` is `qty * price / equity`, so it changes every single day purely because
+// PRICES moved — W16 records the server being fixed for exactly this, where charging that drift as
+// turnover billed a champion that never traded ~0.5%/yr of costs it never paid. This client copy of
+// the same comparison was never converted, and it is the worse of the two: the server's version
+// only mis-stated a cost, while this one prints "Increase A to 27.5% (+2.5 pts)" as an instruction
+// to go and place a real order BY HAND. REPRODUCED on two entries with identical share counts and
+// only prices moving: two bullet instructions on a day the champion traded nothing, and the panel's
+// own "No change since the previous suggestion — nothing to do today" line suppressed by pure drift.
+// Every such order would be pure cost.
+//
+// So the weights are still what is DESCRIBED (a portfolio-level reading is what this section is
+// for), but the share count is what DECIDES whether there is anything to say. Unchanged qty means
+// the champion did not trade that name, which is the honest answer regardless of what the price did.
+//
+// ★ A CHAMPION SWITCH is exempt: across two different bots the share counts are not comparable at
+// all (W16 — their equities can differ several-fold, which is why the server measures drifted
+// weights rather than shares), and a switch genuinely does replace the whole book, so describing
+// every name is correct there. `qty` missing on either side also falls back to the weight rule,
+// since nothing better can be said about an entry that never recorded one.
 function weightDiffLines(prev, today) {
-  const prevW = new Map(((prev && prev.targets) || []).map((t) => [t.symbol, t.weight]));
+  const prevT = new Map(((prev && prev.targets) || []).map((t) => [t.symbol, t]));
+  const sameChampion = prev && today && prev.botId && today.botId && prev.botId === today.botId;
   const lines = [];
   const seen = new Set();
   for (const t of (today && today.targets) || []) {
     seen.add(t.symbol);
-    const was = prevW.get(t.symbol) || 0;
-    const d = (t.weight - was) * 100;
-    if (!prevW.has(t.symbol)) lines.push(`New: ${t.symbol} at ${(t.weight * 100).toFixed(1)}% of the book`);
-    else if (d > 0.5) lines.push(`Increase ${t.symbol} to ${(t.weight * 100).toFixed(1)}% (+${d.toFixed(1)} pts)`);
+    const was = prevT.get(t.symbol);
+    if (!was) { lines.push(`New: ${t.symbol} at ${(t.weight * 100).toFixed(1)}% of the book`); continue; }
+    // Did the champion actually trade this name? Only ask when the comparison is meaningful.
+    const comparable = sameChampion && Number.isFinite(was.qty) && Number.isFinite(t.qty);
+    if (comparable && was.qty === t.qty) continue; // held, not traded — price drift only
+    const d = (t.weight - (was.weight || 0)) * 100;
+    if (d > 0.5) lines.push(`Increase ${t.symbol} to ${(t.weight * 100).toFixed(1)}% (+${d.toFixed(1)} pts)`);
     else if (d < -0.5) lines.push(`Trim ${t.symbol} to ${(t.weight * 100).toFixed(1)}% (${d.toFixed(1)} pts)`);
   }
-  for (const [sym, w] of prevW) if (!seen.has(sym)) lines.push(`Exit ${sym} (was ${(w * 100).toFixed(1)}%)`);
+  for (const [sym, t] of prevT) if (!seen.has(sym)) lines.push(`Exit ${sym} (was ${((t.weight || 0) * 100).toFixed(1)}%)`);
   return lines;
 }
 

@@ -488,7 +488,12 @@ test('a MARKET ticket order on an unfed contract asks before filling at the froz
 test('CONTROL: a MARKET ticket order on an EQUITY never asks', () => {
   const dom = setupDom();
   const app = mountOrders(dom);
-  app.engine.state.lastPrices['EQ:RELIANCE'] = 1200;
+  // ★ FED through the real door, not written into `lastPrices` by hand. `updateEquityPrice` is what
+  // `app.pollQuotes` calls every 5s, and it is the only path that stamps `lastPriceAt`. Assigning
+  // the price directly builds a state the app never sits in — a price nothing ever quoted — and the
+  // control passed only because `priceIsLive` used to exempt equities by KIND. With that exemption
+  // gone (a single dead symbol was being waved through), the fixture has to feed it for real.
+  app.engine.updateEquityPrice('RELIANCE', 1200, true);
   dom.setConfirm(false);
   dom.setValue(dom.$('#t-kind'), 'EQ');
   dom.setValue(dom.$('#t-symbol'), 'RELIANCE');

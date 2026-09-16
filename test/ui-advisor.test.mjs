@@ -764,3 +764,61 @@ test('the two record warnings are INDEPENDENT — a storage failure and a stand-
   assert.match(txt, /not being saved/i, 'the storage banner still shows');
   assert.match(txt, /stand-in/i, 'and so does the stand-in banner');
 });
+
+// --- the panel must not invent trades out of price drift ---------------------
+// ★ THE DISTINGUISHING CASE, and it was unreachable from the old fixtures because they carried only
+// `weight` — no `qty`. A recorded weight is qty*price/equity, so it moves every day purely because
+// prices moved. W16 records the SERVER being fixed for exactly this (charging that drift as
+// turnover billed a champion that never traded ~0.5%/yr of costs it never paid); the client copy of
+// the same comparison was never converted, and it is worse — it printed the drift as an instruction
+// to go and place a real order by hand.
+const tgt = (symbol, qty, price, equity) => ({ symbol, qty, price, weight: (qty * price) / equity });
+
+test('weightDiffLines says NOTHING when only prices moved — the champion placed no trades', () => {
+  const prevEq = 1_000_000;
+  const prev = {
+    date: '2026-08-03', botId: 'b', eligible: true, equity: prevEq,
+    targets: ['A', 'B', 'C', 'D'].map((s) => tgt(s, 100, 2500, prevEq)),
+  };
+  // A +12%, D -4%, B and C flat. IDENTICAL share counts on both days.
+  const px = { A: 2800, B: 2500, C: 2500, D: 2400 };
+  const eq = Object.values(px).reduce((s, p) => s + p * 100, 0);
+  const today = {
+    date: '2026-08-04', botId: 'b', eligible: true, equity: eq,
+    targets: Object.keys(px).map((s) => tgt(s, 100, px[s], eq)),
+  };
+  assert.deepEqual(weightDiffLines(prev, today), [],
+    'no share count changed, so there is nothing for the reader to go and do');
+});
+
+test('CONTROL: a real trade IS still described, with its weight', () => {
+  // The fix must not silence genuine rebalances — the drift rule decides WHETHER to speak, the
+  // weights are still WHAT is said.
+  const eq = 1_000_000;
+  const prev = { date: '2026-08-03', botId: 'b', eligible: true, equity: eq, targets: [tgt('A', 100, 2500, eq), tgt('B', 100, 2500, eq)] };
+  const today = { date: '2026-08-04', botId: 'b', eligible: true, equity: eq, targets: [tgt('A', 160, 2500, eq), tgt('B', 40, 2500, eq)] };
+  const lines = weightDiffLines(prev, today);
+  assert.equal(lines.length, 2, 'both names really traded');
+  assert.ok(lines.some((l) => /Increase A to 40\.0%/.test(l)), `expected an Increase line, got ${JSON.stringify(lines)}`);
+  assert.ok(lines.some((l) => /Trim B to 10\.0%/.test(l)), `expected a Trim line, got ${JSON.stringify(lines)}`);
+});
+
+test('CONTROL: New and Exit still fire — they are not qty comparisons at all', () => {
+  const eq = 1_000_000;
+  const prev = { date: '2026-08-03', botId: 'b', eligible: true, equity: eq, targets: [tgt('OLD', 100, 2500, eq)] };
+  const today = { date: '2026-08-04', botId: 'b', eligible: true, equity: eq, targets: [tgt('NEW', 100, 2500, eq)] };
+  const lines = weightDiffLines(prev, today);
+  assert.ok(lines.some((l) => /^New: NEW/.test(l)), `expected a New line, got ${JSON.stringify(lines)}`);
+  assert.ok(lines.some((l) => /^Exit OLD/.test(l)), `expected an Exit line, got ${JSON.stringify(lines)}`);
+});
+
+test('CONTROL: across a CHAMPION SWITCH every name is described, drift or not', () => {
+  // Two different bots' share counts are not comparable (their equities can differ several-fold),
+  // and a switch genuinely replaces the whole book — so the qty shortcut must NOT apply here.
+  const eq = 1_000_000;
+  const prev = { date: '2026-08-03', botId: 'b1', eligible: true, equity: eq, targets: [tgt('A', 100, 2500, eq), tgt('B', 100, 2500, eq)] };
+  const px = { A: 2800, B: 2400 };
+  const eq2 = 100 * px.A + 100 * px.B;
+  const today = { date: '2026-08-04', botId: 'b2', eligible: true, equity: eq2, targets: Object.keys(px).map((s) => tgt(s, 100, px[s], eq2)) };
+  assert.ok(weightDiffLines(prev, today).length > 0, 'a different champion is a real change, however the shares line up');
+});

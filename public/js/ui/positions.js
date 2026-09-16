@@ -140,12 +140,26 @@ function staleMark(title, text) {
 // through, so this cannot drift from the feed again and needs no knowledge of strike windows,
 // LTPs or which tab is open.
 //
-// Equities keep an explicit exemption: app.js polls every held symbol on a timer regardless of
-// tab, and a genuine feed OUTAGE is a different question that the status bar's own banner already
-// answers — marking every equity row during a blip would duplicate that alarm, badly.
+// ★★ EQUITIES USED TO BE EXEMPTED BY KIND (`if (inst.kind === 'EQ') return true`), AND THAT WAS THE
+// SAME MISTAKE THIS FUNCTION EXISTS TO UNDO — one layer up. "Is this price current?" is a question
+// about ONE SYMBOL RIGHT NOW; answering it from the instrument's KIND is modelling the feed again,
+// exactly what the note above says not to do. The exemption's stated rationale was that app.js
+// polls every held symbol anyway and that a real outage is the status bar's job. Both halves fail
+// for the case that actually happens — a SINGLE symbol going bad:
+//   * `app.pollQuotes` (app.js) wraps each symbol's fetch in its own try/catch and, on failure,
+//     leaves the previous quote in place. Nothing is flagged, and the other symbols poll fine.
+//   * `ui/statusbar.js` drives its banner from `/api/status`'s GLOBAL feed health, so one 404 or
+//     one throttled/delisted symbol among many raises nothing there either.
+// Result: a held equity whose quote had stopped rendered a frozen LTP identically to a live one,
+// was left out of the "· N not live" count, and Close / Square off all / a MARKET ticket fill all
+// proceeded silently against it — the precise harm this guard was built for, waved through by kind.
+//
+// There is no over-fire risk in removing it, and the arithmetic is the reason rather than a hope:
+// app.js polls quotes every 5s while LIVE_PRICE_MS is 20s, so a row is marked only after FOUR
+// consecutive failures for that symbol. A blip cannot reach it; a symbol that has genuinely stopped
+// will.
 function priceIsLive(app, inst) {
   if (!inst) return true;
-  if (inst.kind === 'EQ') return true;
   const at = app.engine.lastPriceAt && app.engine.lastPriceAt[instrumentKey(inst)];
   return Number.isFinite(at) && Date.now() - at < LIVE_PRICE_MS;
 }

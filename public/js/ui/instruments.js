@@ -5,11 +5,24 @@
 // these are sensible DEFAULTS — always editable in the order ticket.
 // ---------------------------------------------------------------------------
 
-// Approximate F&O lot sizes. Edit freely; the ticket lets you override too.
+// F&O lot sizes used to pre-fill the ticket. Editable in the ticket, but a wrong default is not
+// harmless: the Strategy Builder sizes every leg from it, so max profit, max loss, margin and
+// breakeven on that screen are all wrong by the same factor.
+//
+// ★ THE INDEX ROWS MUST MATCH `FNO_INDICES` in tournament/universe.mjs, AND FOR MONTHS THEY DID
+// NOT. This table carried BANKNIFTY 15 and FINNIFTY 40 — the pre-November-2024 contract sizes —
+// while universe.mjs and all three backtest CLIs carried 35 and 65. NIFTY had been updated here to
+// 75 and the other two had not, which is what a half-finished edit looks like rather than a
+// deliberate difference. A BANKNIFTY leg was being built at 43% of the real contract.
+// `test/ui-instruments.test.mjs` now cross-locks the overlap, the same way the NSE holiday list is
+// locked across its two copies, so the two tables cannot drift apart again in silence.
 const LOT_SIZES = {
   NIFTY: 75,
-  BANKNIFTY: 15,
-  FINNIFTY: 40,
+  BANKNIFTY: 35,
+  FINNIFTY: 65,
+  // ★ NOT cross-locked: MIDCPNIFTY is not in FNO_INDICES (no bot trades it), so nothing in this
+  // repo can confirm it. It is left as found rather than guessed at — treat it as unverified and
+  // check NSE's contract circular before relying on it.
   MIDCPNIFTY: 75,
   RELIANCE: 250,
   TCS: 175,
