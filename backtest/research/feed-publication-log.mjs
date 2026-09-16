@@ -51,6 +51,7 @@ async function sample() {
   const log = load();
   const at = Date.now();
   console.log(`sampling at ${istTime(at)} IST`);
+  let captured = 0, failed = 0;
   for (const sym of SYMBOLS) {
     try {
       const res = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=5d`, { headers: { 'User-Agent': UA } });
@@ -85,14 +86,36 @@ async function sample() {
         const age = entry.hoursSinceClose < 0 ? `FORMING (${entry.hoursSinceClose}h)` : `+${entry.hoursSinceClose}h`;
         lines.push(`${entry.date} ${shown.padStart(9)} ${age}`);
       }
+      captured += lines.length;
       console.log(`  ${sym.padEnd(14)} ${lines.join('  |  ')}  (quote ${r.meta.regularMarketPrice})`);
     } catch (err) {
+      failed++;
       console.error(`  ${sym.padEnd(14)} FAILED — ${err.message}`);
     }
     await new Promise((r) => setTimeout(r, 900)); // be polite to a free endpoint
   }
   writeFileSync(logPath, JSON.stringify(log, null, 1));
   console.log(`\nlog: ${logPath} (${log.length} samples)`);
+  // ★ A SAMPLE THAT CAPTURED NOTHING MUST NOT EXIT 0. This runs from Task Scheduler, where the only
+  // routine signal is the exit code, and a run that fetched nothing wrote the log unchanged and
+  // reported success — indistinguishable from a run that was never scheduled.
+  //
+  // It happened, and it cost the tightest reading of the experiment: the 2026-09-17 00:26 task
+  // fired on time, every fetch failed (the machine had just woken and had no network yet), the log
+  // was rewritten with no new rows, and `LastTaskResult` read 0. The withdrawal was only caught
+  // because a sample was taken by hand ~50 minutes later. Silence looked exactly like success.
+  //
+  // A PARTIAL capture is deliberately NOT a failure — one throttled symbol among six is ordinary
+  // and the rest of the sample is still worth having — but it says so, because a sample missing the
+  // one symbol you care about reads as evidence about that symbol otherwise.
+  if (captured === 0) {
+    console.error(`\n★ CAPTURED NOTHING — all ${SYMBOLS.length} fetches failed, so this sample recorded NO rows.`);
+    console.error('  Nothing was added to the log. If this ran from a scheduler, treat it as a MISSED sample,');
+    console.error('  not a quiet one: an empty run and a run that never happened look the same in the log.');
+    process.exitCode = 1;
+    return;
+  }
+  if (failed) console.error(`\n★ PARTIAL: ${failed} of ${SYMBOLS.length} symbol(s) failed — the others were recorded.`);
 }
 
 // ★ THE WINDOW IN WHICH A WITHDRAWAL HAS ACTUALLY BEEN OBSERVED, from the only session where one
