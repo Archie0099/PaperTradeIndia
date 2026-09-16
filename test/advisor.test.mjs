@@ -742,3 +742,83 @@ test('CONTROL: a FLAT champion on REAL data still records its (empty) book', () 
   assert.equal(entry.eligible, true, 'and it is eligible — "sell everything" is real guidance');
   assert.deepEqual(entry.targets, []);
 });
+
+// --- a short-selling champion is excluded by IDENTITY, not by today's book ---
+// ★ THE THIRD INSTANCE of the same trap (after the index exclusion and the synthetic-data
+// one above). A bot carrying `side: 'short'` can only ever go short, so "cash-market delivery
+// cannot follow this" is a fact about the ROW — true on the days it holds nothing just as much as
+// on the days it does. The positional test alone missed the FLAT case, and a flat champion records
+// an ELIGIBLE EMPTY book, which downstream reads as "sell everything" and charges the previous
+// book's exit costs, permanently.
+//
+// ★ Unreachable on today's board only BY ACCIDENT: the one `side:'short'` seed is `bearish-trend`,
+// which is `symbol: 'NIFTY'`, so the INDEX rule catches it first — masked, not satisfied. It goes
+// live the moment breeding is re-enabled, since `evolve.mjs` propagates `side` on crossover and
+// re-symbols an EQ child onto a real stock. Closed now because that flag-flip is exactly when
+// nobody would re-check it.
+const shortDetail = (positions, shortOnly) => ({
+  ok: true, id: 's', name: 'Short bot', kind: 'EQ', symbol: 'RELIANCE', shortOnly,
+  mirror: { followable: true, equity: 1_000_000, positions },
+});
+const entryFor = (detail) => buildAdvisorEntry({
+  autopilot: { currentBot: { id: 's' } },
+  getBotDetail: () => detail,
+  seriesFor: () => [{ t: START, c: 100 }],
+});
+
+test('a FLAT short-only champion stands aside — an eligible empty book is "sell everything"', () => {
+  const e = entryFor(shortDetail([], true));
+  assert.equal(e.eligible, false, 'holding nothing today does not make a short strategy followable');
+  assert.match(e.reason, /short-selling strategy/i, 'and the reason names what the bot IS');
+  assert.deepEqual(e.targets, [], 'a stand-aside records no targets');
+});
+
+test('a short-only champion HOLDING shorts stands aside too — the case that already worked', () => {
+  const e = entryFor(shortDetail([{ symbol: 'RELIANCE', kind: 'EQ', qty: -10, price: 1200 }], true));
+  assert.equal(e.eligible, false);
+  assert.match(e.reason, /short-selling strategy/i, 'the row fact is reported ahead of the positional one');
+});
+
+test('CONTROL: a LONG equity champion is untouched by the short rule', () => {
+  const e = entryFor(shortDetail([{ symbol: 'RELIANCE', kind: 'EQ', qty: 10, price: 1200 }], false));
+  assert.equal(e.eligible, true, 'an ordinary long book is still followable');
+  assert.equal(e.reason, null);
+  assert.equal(e.targets.length, 1);
+});
+
+test('CONTROL: a flat LONG champion still records — going to cash is real guidance', () => {
+  // The refusal must be about the strategy's direction, not about being flat. A long bot that has
+  // stepped aside IS telling the reader something ("sell everything"), and that is honest guidance.
+  const e = entryFor(shortDetail([], false));
+  assert.equal(e.eligible, true, 'a flat LONG champion is eligible');
+  assert.deepEqual(e.targets, []);
+});
+
+test('belt-and-braces: a short LEG in the book is still caught when the row does not say short', () => {
+  // An older persisted roster, or a bred spec that never expressed `side`, would arrive with
+  // `shortOnly` absent. The positional test must still catch what it can see.
+  const e = entryFor(shortDetail([{ symbol: 'RELIANCE', kind: 'EQ', qty: -10, price: 1200 }], undefined));
+  assert.equal(e.eligible, false);
+  assert.match(e.reason, /currently holds short positions/i, 'falls through to the positional reason');
+});
+
+test('WIRING: getBotDetail actually publishes shortOnly from the spec', async () => {
+  // ★ Without this the identity check above reads `undefined` forever and the whole fix is
+  // decorative — the "guard exists but nothing feeds it" trap. Driven through the REAL tournament.
+  const SHORT_SEED = [{
+    id: 'sh', name: 'Bearish', kind: 'EQ', symbol: 'NIFTYBEES',
+    spec: { kind: 'EQ', name: 'Bearish', side: 'short', entry: ['<', ['sma', 2], ['sma', 3]], exit: ['>', ['sma', 2], ['sma', 3]], weight: 1 },
+  }];
+  const t = await createTournament({ seed: SHORT_SEED, backfillData: { NIFTY: series(), NIFTYBEES: series() }, persist: false, evolutionEnabled: false });
+  await t.init();
+  const d = t.getBotDetail('sh');
+  assert.equal(d.shortOnly, true, 'a spec carrying side:short must say so on the detail');
+});
+
+test('WIRING CONTROL: a LONG spec publishes shortOnly false, not undefined', async () => {
+  // `undefined` would be falsy and "work", but it would also mean the field was never computed —
+  // which is indistinguishable from the bug until a short bot appears. Assert the real boolean.
+  const t = await createTournament({ seed: EQ_SEED, backfillData: { NIFTY: series(), NIFTYBEES: series() }, persist: false, evolutionEnabled: false });
+  await t.init();
+  assert.equal(t.getBotDetail('bh').shortOnly, false, 'the field is computed for every bot, not only short ones');
+});

@@ -237,7 +237,25 @@ function buildAdvisorEntry({ autopilot, getBotDetail, seriesFor, isSynthetic = (
   else if (detail.kind === 'EQ' && isIndexSymbol(detail.symbol)) reason = `the champion trades the index itself (${detail.symbol}) as if it were a share — an index cannot be bought in the cash market, and substituting an ETF would be advice the champion never gave`;
   else if (detail.kind === 'FNO') reason = 'the champion is an options (F&O) bot — its option prices are modelled/indicative, so honest rupee suggestions for hand-placed real orders are not possible';
   else if (detail.kind === 'PAIRS') reason = 'the champion is a market-neutral pairs bot — half its book is short positions, which cash-market delivery orders cannot hold';
+  // ★ SHORT-ONLY BY IDENTITY, CHECKED BEFORE THE POSITIONAL TEST BELOW. A bot carrying
+  // `side: 'short'` can only ever go short — that is the one direction it trades — so "this is not
+  // followable with delivery orders" is a fact about the ROW, true on the days it holds nothing
+  // just as much as on the days it does. The positional test alone missed exactly that: a FLAT
+  // short-only champion recorded an ELIGIBLE EMPTY book, which downstream reads as "sell
+  // everything" and charges the previous book's exit costs, permanently, in an append-only log.
+  // Same trap as the index exclusion and the synthetic one above — third time.
+  //
+  // ★ IT IS UNREACHABLE ON TODAY'S BOARD ONLY BY ACCIDENT, which is the reason to close it NOW
+  // rather than file it: the single `side: 'short'` seed is `bearish-trend`, and that is
+  // `symbol: 'NIFTY'`, so the INDEX rule two lines up catches it first. The short rule is being
+  // masked, not satisfied. It becomes live the moment breeding is re-enabled — `evolve.mjs`
+  // propagates `side` to a child on a coin flip whenever either parent expresses one, and
+  // re-symbols an EQ child onto a real stock ~40% of the time, where nothing masks it. Flipping
+  // `evolutionEnabled` is precisely the moment nobody would think to re-check this.
+  else if (detail.shortOnly) reason = 'the champion is a short-selling strategy — it only ever sells short, and cash-market delivery orders cannot hold a short';
   else if (positions.some((p) => (p.kind || 'EQ') !== 'EQ')) reason = 'the champion currently holds derivative (F&O) legs, which cannot be mirrored with cash-market delivery orders';
+  // Belt-and-braces for a book that holds a short leg without the row saying so (a bred spec whose
+  // side was not expressed, an imported roster from before `shortOnly` existed).
   else if (positions.some((p) => p.qty < 0)) reason = 'the champion currently holds short positions, which cash-market delivery orders cannot hold';
   //   * an INDEX held as if it were a share. `buy-hold` is `kind: 'EQ', symbol: 'NIFTY'` — the
   //     index itself, not an ETF — and nothing stops the walk-forward crowning it. An index cannot

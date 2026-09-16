@@ -912,6 +912,15 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       // Is this row the fair-bar CONTROL rather than a strategy? The advisor reads this to stand
       // aside rather than turn a yardstick into real-money guidance (see advisor.mjs).
       benchmark: !!bot.benchmark,
+      // ★ A ROW FACT, published for the same reason `benchmark` is: the advisor must
+      // be able to ask what a bot IS, not only what it happens to hold today. An EQ bot carrying
+      // `side: 'short'` can ONLY ever go short — that is the one direction it trades — and
+      // cash-market delivery cannot hold a short, so it is never followable. Checking today's
+      // positions alone misses it whenever the bot sits FLAT, which for a trend bot is most of
+      // the time. `detail` carries no `spec`, so the fact has to travel separately.
+      // ★ Deliberately NOT inside `metrics`: that object is about how the bot PERFORMED, and a
+      // never-traded bot is given a neutral one that would carry no such field at all.
+      shortOnly: !!(bot.spec && bot.spec.side === 'short'),
       symbol: bot.symbol,
       interval: bot.interval || '1d',
       gen: bot.gen || 0,
