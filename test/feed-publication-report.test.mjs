@@ -57,9 +57,14 @@ const row = (sym, hoursSinceClose, close, date = SESSION) => ({
 
 // The four outcomes, one symbol each, plus a symbol seen ONLY before the bell.
 const FIXTURE = [
-  // (a) served once and unchanged
+  // (a) served, unchanged, and WATCHED across the window a withdrawal has been seen in (+8..+21h)
   row('SETTLED.NS', 1.3, 101.5),
+  row('SETTLED.NS', 12.0, 101.5),
   row('SETTLED.NS', 24.5, 101.5),
+  // (a2) served and unchanged, but only ever sampled OUTSIDE that window — the report must not let
+  // this read as "the close stayed put", because nobody looked while it might have been withdrawn.
+  row('UNWATCHED.NS', 1.3, 606.5),
+  row('UNWATCHED.NS', 24.5, 606.5),
   // (b) served, then the value changed
   row('REVISED.NS', 1.3, 202.5),
   row('REVISED.NS', 8.7, 203.75),
@@ -122,11 +127,27 @@ test('the report labels the session, and reads a forming-bar-only symbol as noth
   assert.equal(count(block, 'first value'), 0, 'a forming bar must never be read as a published close');
 });
 
-test('(a) a close that never moves reports its first value and no revision', () => {
+test('(a) a close that never moves, WATCHED across the window, reports no revision plainly', () => {
   const block = blockFor(runReport(), 'SETTLED.NS');
-  assert.equal(count(block, 'samples  2  first value +1.3h = 101.50'), 1);
+  assert.equal(count(block, 'samples  3  first value +1.3h = 101.50'), 1);
   assert.equal(count(block, 'no revision observed across the samples taken'), 1);
+  assert.equal(count(block, 'NO SAMPLE fell in'), 0, 'it WAS watched, so no caveat');
   assert.equal(count(block, '★ WITHDRAWN'), 0, 'nothing was ever withdrawn here');
+});
+
+test('(a2) an UNWATCHED session says so — "no revision" is not evidence when nobody looked', () => {
+  // ★ The report already refuses to read a late null as "never published". This is the SAME caution
+  // in reverse, and it was missing: a session sampled only just after the bell and again the next
+  // day prints "no revision observed", which reads as "the close stayed put" — when in truth no
+  // sample fell in the +8h..+21h window where the one observed withdrawal happened. A missed
+  // scheduled sample is the normal case on a laptop, so a sampling gap must never become evidence.
+  // Plain substrings, not regex: `+` and `.` are regex metacharacters and the window text is full of
+  // them, so a hand-written pattern here is easy to get silently wrong (it was, once).
+  const block = blockFor(runReport(), 'UNWATCHED.NS');
+  assert.equal(count(block, 'NO SAMPLE fell in the +8h..+21h window'), 1, 'it names the window it missed');
+  assert.equal(count(block, 'NOT evidence the close stayed put'), 1, 'and says plainly what cannot be concluded');
+  assert.equal(count(block, 'no revision observed across the samples taken'), 0,
+    'and it must NOT also print the unqualified line, which reads as "nothing happened"');
 });
 
 test('(b) a changed close reports a REVISION with both values', () => {
@@ -165,7 +186,7 @@ test('a listed NSE holiday is labelled NOT A SESSION and excluded from the readi
 
 test('each of the four outcomes is reported exactly once — no label bleeds onto another symbol', () => {
   const out = runReport();
-  assert.equal(count(out, 'first value +'), 4, 'a,b,c,d each served a close; the forming-only symbol did not');
+  assert.equal(count(out, 'first value +'), 5, 'a, a2, b, c, d each served a close; the forming-only symbol did not');
   assert.equal(count(out, '      REVISED at +'), 1);
   assert.equal(count(out, '★ WITHDRAWN at +'), 1);
   assert.equal(count(out, '★ WITHDRAWN: served a close'), 1);

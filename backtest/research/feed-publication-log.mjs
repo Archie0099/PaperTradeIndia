@@ -95,6 +95,19 @@ async function sample() {
   console.log(`\nlog: ${logPath} (${log.length} samples)`);
 }
 
+// ★ THE WINDOW IN WHICH A WITHDRAWAL HAS ACTUALLY BEEN OBSERVED, from the only session where one
+// was caught end to end (2026-09-15: served by +1.27h, gone at +8.69h, back by +20.84h). It is an
+// OBSERVED range, not a law — one session is one session — and it exists here for one purpose: to
+// stop the report implying a session was watched when it was not.
+//
+// WHY THIS MATTERS MORE THAN IT LOOKS. Without it a session sampled only in the hour after the
+// bell prints "first value +0.98h / no revision observed across the samples taken", which reads as
+// "the close was served and stayed" — when in truth nobody looked during the hours when it might
+// have been taken back. That is the same error the report already guards in the other direction
+// ("treat a late null as NOT SEEN, never as never published"), and it would quietly turn a gap in
+// the sampling schedule into evidence of stability. A missed scheduled sample is the normal case
+// on a laptop, so this had to be said out loud.
+const WATCH_WINDOW = { from: 8, to: 21 };
 function report() {
   const log = load();
   if (!log.length) { console.error(`${logPath} is empty — take a sample first.`); process.exit(1); }
@@ -198,8 +211,14 @@ function report() {
       for (const c of changes) console.log(`      REVISED at +${c.at}h: ${c.from.toFixed(2)} -> ${c.to.toFixed(2)}  (${(((c.to / c.from) - 1) * 100).toFixed(4)}%)`);
       // Say "no revision" only about the values actually seen. A withdrawal is not a revision,
       // and printing the reassuring line beside one would read as "nothing happened".
+      // Did ANY sample land in the window where a withdrawal has been seen? If not, say so —
+      // 'no revision observed' would otherwise be read as 'nothing happened'.
+      const watched = arr.some((e) => e.hoursSinceClose >= WATCH_WINDOW.from && e.hoursSinceClose <= WATCH_WINDOW.to);
       if (firstNonNull && !changes.length && arr.length > 1 && !trailingNull) {
-        console.log('      no revision observed across the samples taken');
+        console.log(watched
+          ? '      no revision observed across the samples taken'
+          : `      no revision observed — but NO SAMPLE fell in the +${WATCH_WINDOW.from}h..+${WATCH_WINDOW.to}h window`
+            + ' where a withdrawal has been seen, so this is NOT evidence the close stayed put');
       } else if (firstNonNull && !changes.length && trailingNull) {
         console.log('      (no REVISION among the values served — but see the withdrawal above)');
       }
@@ -212,6 +231,9 @@ function report() {
   console.log('  served and then taken back. It means availability is a WINDOW, not a threshold —');
   console.log('  sampling late can miss a close that really was published. Treat any single late');
   console.log('  null as "not seen", never as "never published".');
+  console.log(`★ And the same caution in reverse: a session with no sample between +${WATCH_WINDOW.from}h and`);
+  console.log(`  +${WATCH_WINDOW.to}h was never WATCHED across the window a withdrawal has been seen in, so`);
+  console.log('  "no revision observed" there means nobody looked — not that nothing happened.');
   console.log(`\n★ Count only the ${sessionDates} SESSION date${sessionDates === 1 ? '' : 's'} above toward that.`);
   if (skipped) {
     console.log(`  ${skipped} date${skipped === 1 ? ' is' : 's are'} marked NOT A SESSION — the feed emits a daily row for days the`);
