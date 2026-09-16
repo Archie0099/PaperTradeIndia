@@ -246,7 +246,12 @@ test('the capital flow: first use asks for a drawdown tolerance, scales to whole
   assert.match(txt, /buy 83/i, 'whole-share sizing for RELIANCE');
   assert.match(txt, /buy 69/i, 'whole-share sizing for TCS');
   assert.match(txt, /Est\. cost/i, 'each action carries an estimated real cost');
-  assert.match(txt, /your 25% tolerance/i, 'the drawdown is shown against the stored tolerance');
+  // ★ Wording updated with the fix below it: the drawdown shown is the STRATEGY's, taken from the
+  // server's `track`, not a number derived from this browser's ledger — so the sentence has to name
+  // which thing is down, and against what. The old text read "current drawdown X% vs your 25%
+  // tolerance", which put a strategy figure where a reader would take it for their own money.
+  assert.match(txt, /25% fall you said you could stomach/i, 'the fall is still shown against the stored tolerance');
+  assert.match(txt, /strategy is [\d.]+% below its best/i, 'and it is named as the STRATEGY\'s drawdown, not the book\'s');
   assert.equal(Object.keys(app.engine.state.positions).length, 0, 'SUGGESTION-ONLY: the paper engine account is untouched');
 });
 
@@ -821,4 +826,59 @@ test('CONTROL: across a CHAMPION SWITCH every name is described, drift or not', 
   const eq2 = 100 * px.A + 100 * px.B;
   const today = { date: '2026-08-04', botId: 'b2', eligible: true, equity: eq2, targets: Object.keys(px).map((s) => tgt(s, 100, px[s], eq2)) };
   assert.ok(weightDiffLines(prev, today).length > 0, 'a different champion is a real change, however the shares line up');
+});
+
+// --- the drawdown gate must not depend on when the tab was open --------------
+// ★ THE DISTINGUISHING CASE. `book.peakValue` only advanced on days this tab happened to be OPEN
+// (it is updated inside the `lastAppliedDate !== today.date` branch), and the payload carries only
+// `today` and `prev` — so the missing days can never be replayed and the ledger is a curve with
+// holes, not a lagged copy of the track. A running maximum over a curve with holes is wrong, and
+// the number it produced gated the red BREACHED line that says to re-read the honesty check BEFORE
+// ADDING MONEY. Measured on one log, one capital, one final value: 33.33% if the tab was open every
+// day, 0.17% if it was open on two days of three.
+const withTrack = (over) => advisorPayload({ track: { ...advisorPayload().track, ...over } });
+
+test('the drawdown shown is the server track, so a stale local ledger cannot change it', async () => {
+  const dom = setupDom();
+  localStorage.setItem('paper-trade-india:advisor', JSON.stringify({
+    capital: 500000, ddTolerancePct: 25,
+    // A ledger claiming a huge peak — exactly what an intermittently-open tab produces.
+    book: { cash: 500000, positions: [], lastAppliedDate: '2026-08-04', lastActions: [], peakValue: 9_000_000, startedDate: '2026-08-01' },
+  }));
+  const app = appWith(dom, withTrack({ currentDrawdownPct: 3.2, from: '2026-08-01' }));
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  const txt = dom.$('#ap-suggestions').textContent;
+  assert.match(txt, /strategy is 3\.2% below its best since 2026-08-01/i, 'the server number is what is shown');
+  assert.ok(!/94\.4%|BREACHED/i.test(txt), 'the ledger-derived figure (~94%) must not appear, and must not trip the gate');
+});
+
+test('BREACHED fires on the SERVER drawdown crossing the tolerance', async () => {
+  const dom = setupDom();
+  localStorage.setItem('paper-trade-india:advisor', JSON.stringify({
+    capital: 500000, ddTolerancePct: 25,
+    book: { cash: 500000, positions: [], lastAppliedDate: '2026-08-04', lastActions: [], peakValue: 500000, startedDate: '2026-08-01' },
+  }));
+  const app = appWith(dom, withTrack({ currentDrawdownPct: 33.3 }));
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  const txt = dom.$('#ap-suggestions').textContent;
+  assert.match(txt, /BREACHED/, 'a 33.3% fall against a 25% tolerance is a breach');
+  assert.match(txt, /before adding money/i, 'and it says what to do about it');
+});
+
+test('CONTROL: no track yet means NO drawdown is claimed at all', async () => {
+  // Better to say nothing than to invent a figure from a ledger that cannot produce one.
+  const dom = setupDom();
+  localStorage.setItem('paper-trade-india:advisor', JSON.stringify({
+    capital: 500000, ddTolerancePct: 25,
+    book: { cash: 500000, positions: [], lastAppliedDate: '2026-08-04', lastActions: [], peakValue: 9_000_000, startedDate: '2026-08-01' },
+  }));
+  const app = appWith(dom, advisorPayload({ track: null }));
+  initAutoPilot(app);
+  await renderAutoPilot(app);
+  const txt = dom.$('#ap-suggestions').textContent;
+  assert.ok(!/below its best/i.test(txt), 'no drawdown sentence without a track');
+  assert.ok(!/BREACHED/i.test(txt), 'and no breach claim either');
+  assert.match(txt, /If followed since/i, 'the book value is still reported — that part is computable');
 });

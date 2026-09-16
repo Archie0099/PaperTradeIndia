@@ -1421,8 +1421,28 @@ function renderSuggestions(app) {
     return p && p.avg > 0 ? p.avg : 0;
   };
   const value = book.cash + book.positions.reduce((s, p) => s + p.qty * priceOf(p.symbol), 0);
-  const ddPct = book.peakValue > 0 ? Math.max(0, (1 - value / book.peakValue) * 100) : 0;
-  const breached = adv.ddTolerancePct != null && ddPct > adv.ddTolerancePct;
+  // ★★ THE DRAWDOWN IS THE SERVER'S, NOT THIS LEDGER'S, AND THE REASON IS THAT THIS LEDGER CANNOT
+  // PRODUCE ONE. `book.peakValue` only advances inside the `lastAppliedDate !== today.date` branch
+  // above — i.e. on days this tab happened to be OPEN — and the payload carries only `today` and
+  // `prev`, so the missing days can never be replayed. The assumed book is therefore not a lagged
+  // copy of the track; it is a different curve with holes in it, and a running maximum taken over a
+  // curve with holes is simply wrong.
+  //
+  // MEASURED on one log, one capital, one final value: the same data reported **33.33%** if the tab
+  // had been open every day and **0.17%** if it had been open on two days of three. So the red
+  // BREACHED line — the one that says to re-read the honesty check BEFORE ADDING MONEY — fired or
+  // stayed silent according to browsing habits, and the panel could print "current drawdown 0.2%"
+  // two lines above the server's own "worst drawdown 33.3%".
+  //
+  // `track.currentDrawdownPct` is computed over EVERY logged entry, server-side, with no hindsight.
+  // It answers a slightly different question — how far the STRATEGY is below its best, not this
+  // book — and that is the better question for this gate anyway: `ddTolerancePct` was asked as "the
+  // worst fall you could stomach" about the thing being followed. The sentence below says which it
+  // is, rather than letting a strategy figure read as a statement about the reader's own money.
+  // When there is no track yet, no drawdown is claimed at all.
+  const track = advisor.track;
+  const ddPct = track && Number.isFinite(track.currentDrawdownPct) ? track.currentDrawdownPct : null;
+  const breached = adv.ddTolerancePct != null && ddPct != null && ddPct > adv.ddTolerancePct;
 
   const actions = book.lastActions || [];
   if (!actions.length) {
@@ -1462,8 +1482,13 @@ function renderSuggestions(app) {
     ]));
   }
   box.append(el('div', { style: `font-size: 12px; margin: 6px 0; ${breached ? 'color: var(--down); font-weight: 600' : ''}` },
-    `If followed since ${book.startedDate}: value ${rupee(value, 0)} · current drawdown ${ddPct.toFixed(1)}%` +
-    (adv.ddTolerancePct != null ? ` vs your ${adv.ddTolerancePct}% tolerance${breached ? ' — BREACHED. Re-read the honesty check above before adding money.' : '.'}` : '.')));
+    `If followed since ${book.startedDate}: value ${rupee(value, 0)}.` +
+    (ddPct != null
+      ? ` The strategy is ${ddPct.toFixed(1)}% below its best since ${track.from}` +
+        (adv.ddTolerancePct != null
+          ? ` — against the ${adv.ddTolerancePct}% fall you said you could stomach${breached ? '. BREACHED. Re-read the honesty check above before adding money.' : '.'}`
+          : '.')
+      : '')));
   // the two risk questions, in RUPEES on this book. The champion's one-day 99% VaR
   // and ES (historical simulation on its trailing 500 daily returns, from the board row) scaled
   // to the assumed book's current value. Stated honestly: this is the CHAMPION's risk applied
