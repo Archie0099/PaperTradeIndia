@@ -414,6 +414,37 @@ test('CONTROL: a FILLED F&O order is not marked — the caveat is about resting 
     'nothing is waiting, so there is nothing to warn about');
 });
 
+// The marker is built by positions.js's shared `staleMark`, so the Orders pill inherits the same
+// role/tabindex/handlers as the Positions markers — but "inherits" is an assumption until it is
+// driven. HOVERS DO NOT EXIST ON TOUCH, and this pill is the only place the reason is written, so
+// on a phone a non-tappable marker means the caveat is unreadable rather than merely inconvenient.
+// The positions table has this lock; the pill did not, and a divergence would be silent.
+test('the ·chain only pill is tappable and keyboard-activatable, like the position markers', () => {
+  const dom = setupDom();
+  const app = mountOrders(dom);
+  app.engine.placeOrder({
+    instrument: { kind: 'OPT', symbol: 'NIFTY', expiry: '30-Oct-2026', strike: 23500, optType: 'CE', lotSize: 75, underlyingPrice: 23500 },
+    side: 'BUY', orderType: 'LIMIT', lots: 1, price: 50, limitPrice: 50,
+  });
+  renderOrders(app);
+
+  const mark = dom.document.querySelector('#orders-table .stale-mark');
+  assert.ok(mark, 'the dormant order carries a marker');
+  assert.equal(mark.getAttribute('role'), 'button', 'it is announced as something you can activate');
+  assert.equal(mark.getAttribute('tabindex'), '0', 'and it is reachable by keyboard');
+
+  mark.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+  assert.equal(dom.alerts.length, 1, 'a tap shows the reason');
+  assert.equal(dom.alerts[0], mark.getAttribute('title'), 'the same text the hover carries');
+  assert.match(dom.alerts[0], /only fill while the Option Chain tab is OPEN/, 'and it is the dormancy reason');
+
+  // A role with no key handler is a dead tab stop — worse than no role at all.
+  mark.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  mark.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+  mark.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+  assert.equal(dom.alerts.length, 3, 'Enter and Space activate it; an ordinary key does not');
+});
+
 // --- the ticket fills a MARKET order at the same frozen price ----------------
 // A MARKET order with no typed price fills at whatever the engine last saw. For a contract
 // nothing is feeding, that is the frozen mark — so an offsetting sell typed into the ticket

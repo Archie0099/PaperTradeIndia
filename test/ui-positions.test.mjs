@@ -404,6 +404,14 @@ test('CONTROL: closing an equity never asks — its price is always being polled
   assert.equal(app.engine.state.positions['EQ:RELIANCE'], undefined, 'and it closed in one click');
 });
 
+// ★ WHAT THIS CONTROL LOCKS, AND WHAT IT DOES NOT. It feeds the chain and renders back to back,
+// so the contract is inside LIVE_PRICE_MS when Close is clicked — that is the MECHANISM (a fed
+// contract closes in one click), not the behaviour a user sees. The real UI cannot reach this
+// state for long: the chain refreshes only while its own tab is ACTIVE, and Close lives on a
+// mutually exclusive panel, so in ordinary use the contract goes unfed ~20s after you leave the
+// Chain tab and the dialog DOES ask. See the note on LIVE_PRICE_MS in positions.js. Do not read a
+// green run here as "manual F&O closes are one click" — they are not, and saying so was a wrong
+// claim already corrected once.
 test('CONTROL: closing an option whose own expiry is on screen never asks', () => {
   const dom = setupDom();
   const app = mount(dom);
@@ -777,4 +785,58 @@ test('Enter and Space on a focused marker show its reason, like a tap', () => {
   mark.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
   assert.equal(dom.alerts.length, 2, 'Enter and Space activate; an ordinary key does not');
   assert.equal(dom.alerts[0], mark.getAttribute('title'));
+});
+
+// --- a resting LIMIT that fills does NOT leave a fill price wearing a live stamp -------------
+// THE WORRY, written down because it sounds right and is not: `onPriceUpdate` stores the incoming
+// price, stamps `lastPriceAt` LIVE, and only then walks the order book — and a fill ends in
+// `fillOrder`, which writes `state.lastPrices[key] = fillPrice` over the top. If those two prices
+// could differ, the LTP cell would show a FILL price carrying a fresh live stamp: the exact thing
+// the ·not live marker exists to prevent, reintroduced through the one door that stamps.
+//
+// They cannot differ. A limit only crosses when the market has already reached it, and the fill is
+// `min(limit, price)` for a BUY and `max(limit, price)` for a SELL — which in the crossing case is
+// `price` both times, gap or no gap. The bracket-exit branch passes the same `price` straight to
+// `closePositionAtMarket`. So the write-back is the value just stamped, every time.
+//
+// That is an accident of two independent pieces of arithmetic agreeing, not a stated invariant, so
+// it is locked here: add slippage to a limit fill, or fill at the limit instead of the market
+// price, and this goes red with the LTP cell quietly lying.
+test('a limit fill leaves the LTP showing the price that was fed, not the fill', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  const inst = OPT('30-Oct-2026');
+  buyOpt(app.engine, inst, 120);
+  feedChain(app, '30-Oct-2026', 23500); // the contract is genuinely being fed
+
+  // Rest a BUY limit above the market, then let the price GAP well through it — the case where a
+  // fill price could plausibly diverge from the traded price.
+  app.engine.placeOrder({ instrument: inst, side: 'BUY', orderType: 'LIMIT', lots: 1, price: 100, limitPrice: 100 });
+  app.engine.onPriceUpdate(OPT_KEY, 95);
+  renderPositions(app);
+
+  const filled = app.engine.state.orders.find((o) => o.orderType === 'LIMIT');
+  assert.equal(filled.status, 'FILLED', 'the gap crossed the limit, so it filled');
+  assert.equal(filled.fillPrice, 95, 'and it filled at the traded price, never at the limit');
+  assert.equal(app.engine.state.lastPrices[OPT_KEY], 95,
+    'the fill must not overwrite the mark with anything other than the price that was fed');
+
+  const row = dom.$('#positions-table').textContent;
+  assert.match(row, /95\.00/, 'the LTP cell shows the fed price');
+  assert.ok(!/·not live/.test(row), 'and it is genuinely live, so it carries no marker');
+});
+
+test('CONTROL: a SELL limit gapped through is the same — the mark follows the market, not the limit', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  const inst = OPT('30-Oct-2026');
+  buyOpt(app.engine, inst, 120);
+  feedChain(app, '30-Oct-2026', 23500);
+
+  app.engine.placeOrder({ instrument: inst, side: 'SELL', orderType: 'LIMIT', lots: 1, price: 130, limitPrice: 130 });
+  app.engine.onPriceUpdate(OPT_KEY, 145);
+  const filled = app.engine.state.orders.find((o) => o.orderType === 'LIMIT');
+  assert.equal(filled.status, 'FILLED');
+  assert.equal(filled.fillPrice, 145, 'a SELL gapped up fills at the better market price');
+  assert.equal(app.engine.state.lastPrices[OPT_KEY], 145, 'and the mark is that same price');
 });
