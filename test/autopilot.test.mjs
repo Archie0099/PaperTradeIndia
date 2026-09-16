@@ -421,3 +421,22 @@ test('CONTROL: the default is unchanged, so nothing moves for an account that ne
   assert.equal(withSetting.state.lastPrices[KEY], missing.state.lastPrices[KEY],
     'a missing setting falls back to the same 6.5% the default carries');
 });
+
+test('a legitimate imported riskFreeRate of 0 is USED, not treated as missing', () => {
+  // ★ `importJson` accepts 0 (engine.js validates only "finite number"), so a truthiness fallback
+  // would price the mark at 6.5% while `portfolioGreeks` back-solves at 0% — the exact mismatch the
+  // rate fix removed, reintroduced at a different rate by a `||`.
+  const EXP = Date.parse('2026-12-31T10:00:00Z');
+  const NOW = EXP - 30 * 864e5;
+  const KEY = 'OPT:NIFTY:cyc1:23500:CE';
+  const leg = () => ({ kind: 'OPT', symbol: 'NIFTY', expiry: 'cyc1', expiryMs: EXP, strike: 23500, optType: 'CE', lotSize: 75, iv: 0.14, underlyingPrice: 23500 });
+  const markAt = (rate) => {
+    const eng = freshUser(10_000_000);
+    if (rate === undefined) delete eng.state.settings.riskFreeRate; else eng.state.settings.riskFreeRate = rate;
+    eng.state.positions[KEY] = { instrument: leg(), qty: 75, avgPrice: 200 };
+    remarkOptionPositions({ engine: eng, state: { quotes: { NIFTY: { ltp: 23500 } } } }, NOW);
+    return eng.state.lastPrices[KEY];
+  };
+  assert.notEqual(markAt(0), markAt(6.5), 'a zero rate is a real rate and must change the price');
+  assert.equal(markAt(undefined), markAt(6.5), 'only an ABSENT setting falls back to the default');
+});

@@ -1192,11 +1192,37 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     // never a back-filled one.
     // The stand-in verdict for the CURRENT champion, from the SAME function that refuses to
     // record — so the panel can never claim a day was refused when it was not, or stay silent
-    // when it was. Cheap: it only reads a Set and the already-built detail.
+    // when it was.
+    //
+    // ★★ BUILT FROM THE ROSTER, NEVER FROM getBotDetail. The first version called
+    // `getBotDetail(champ.id)` and its comment claimed that was cheap because the detail was
+    // already built. It is not: `detailCache.clear()` runs at the head of BOTH recompute paths,
+    // so this call was always a MISS and always ran a full trade-recording backtest of the
+    // champion — MEASURED at 0.4-2.0s for a basket bot, synchronously, inside `assembleStandings`,
+    // which is the ONE step `computeStandingsYielding` never yields in. That yielding path exists
+    // precisely so a recompute cannot freeze the event loop (that once took the deployed site down
+    // that way), and this quietly put a multi-second block back into it on every daily tick, every
+    // intraday tick and every control op.
+    //
+    // Everything the verdict needs is already to hand without re-running anything: the roster bot
+    // gives its declared inputs and its symbol, and the walk-forward already publishes the
+    // champion's HOLDINGS on `currentBot`. So this is genuinely a Set read now.
     const standInFor = (autopilot) => {
       const champ = autopilot && autopilot.currentBot;
-      const detail = champ ? getBotDetail(champ.id) : null;
-      return syntheticDataBlock({ detail: detail && detail.ok !== false ? detail : null, isSynthetic: isSyntheticSymbol });
+      if (!champ) return null;
+      const bot = bots.find((b) => b.id === champ.id);
+      if (!bot) return null;
+      return syntheticDataBlock({
+        detail: {
+          symbol: bot.symbol,
+          syntheticInputs: syntheticInputsFor(bot),
+          // `holdings` carries the names the champion actually holds. qty is not published there
+          // and is not needed — a listed holding is held by definition — so a nominal 1 satisfies
+          // the `qty !== 0` filter without pretending to a size this does not know.
+          mirror: { positions: (champ.holdings || []).map((h) => ({ symbol: h.symbol, qty: 1 })) },
+        },
+        isSynthetic: isSyntheticSymbol,
+      });
     };
     function advisorTick() {
       if (!standings || !standings.autopilot) return false;

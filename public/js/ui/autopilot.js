@@ -182,7 +182,12 @@ function instrumentFromMirror(p) {
 const DEFAULT_OPT_R_PCT = 6.5; // only the fallback for a state missing the setting entirely
 function remarkOptionPositions(app, nowMs = Date.now()) {
   const eng = app.engine;
-  const optR = ((eng.state.settings && eng.state.settings.riskFreeRate) || DEFAULT_OPT_R_PCT) / 100;
+  // ★ `Number.isFinite`, not `||`. A truthiness fallback treats a VALID imported rate of 0 as
+  // missing — and `importJson` accepts 0 (engine.js validates only that it is a finite number).
+  // The mark would then be priced at 6.5% while `portfolioGreeks` back-solves at 0%, which is the
+  // very mismatch this line was written to remove, just at a different rate.
+  const rf = eng.state.settings && eng.state.settings.riskFreeRate;
+  const optR = (Number.isFinite(rf) ? rf : DEFAULT_OPT_R_PCT) / 100;
   let changed = false;
   for (const key in eng.state.positions) {
     const pos = eng.state.positions[key];

@@ -905,3 +905,37 @@ test('CONTROL: a second equity that IS still being polled is not marked alongsid
   assert.ok(!/·not live/.test(tcs.textContent), 'the healthy one is not');
   assert.match(dom.$('#pnl-summary').textContent, /1 not live/, 'and the headline counts exactly one');
 });
+
+// --- a fresh page load is not a stale-price warning --------------------------
+// ★ `app.js` renders before it polls, and `lastPriceAt` is deliberately not persisted — so for the
+// first moments of EVERY reload nothing has been fed, simply because nothing has been asked yet.
+// Reading that as "stale" put a marker on every held row after a routine reload and made Close and
+// Square off all raise their "no live price" dialog for ordinary equities, for up to ~30 seconds on
+// a cold free-tier boot. "Not asked yet" is a third state, and it is not a warning.
+test('before the first quote poll completes, nothing is marked and Close does not ask', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  app.state.pricesPolled = false; // exactly the state app.js is in when it first renders
+  buy(app.engine, 'RELIANCE', 10, 2500);
+  app.engine.forgetPriceTimes();  // a reload starts with no stamps at all
+  renderPositions(app);
+
+  assert.ok(!/·not live/.test(dom.$('#positions-table').textContent), 'no marker before the first poll');
+  assert.ok(!/not live/.test(dom.$('#pnl-summary').textContent), 'and nothing in the headline either');
+
+  dom.setConfirm(false);
+  dom.fire(dom.$$('#positions-table tbody tr button').find((b) => b.textContent === 'Close'), 'click');
+  assert.equal(dom.confirms.length, 0, 'and Close must not ask about a price nobody has requested yet');
+  assert.equal(app.engine.state.positions['EQ:RELIANCE'], undefined, 'it just closes');
+});
+
+test('CONTROL: once a poll HAS completed, an unfed position is marked again', () => {
+  // The flag must not become a permanent excuse — it says "not asked yet", not "never judge".
+  const dom = setupDom();
+  const app = mount(dom);
+  buy(app.engine, 'RELIANCE', 10, 2500);
+  app.state.pricesPolled = true;
+  app.engine.forgetPriceTimes();
+  renderPositions(app);
+  assert.match(dom.$('#positions-table').textContent, /·not live/, 'after a poll, unfed really is unfed');
+});

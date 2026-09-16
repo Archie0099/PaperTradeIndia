@@ -493,11 +493,36 @@ class Engine {
   previewFunds(instrument, side, qty, price, orderType, candidate = null) {
     if (orderType === 'LIMIT') {
       const required = this.reservedForPending(null, candidate || { instrument, side, qty, limitPrice: price });
+      // Free cash BEFORE pending reservations — because `required` above already includes every
+      // resting order. Using `availableFunds()` here would subtract those reservations twice.
       const available = this.state.cash - this.blockedMargin();
-      // The breakdown describes the FULL quantity here, not the new-exposure part: a resting order
-      // reserves for what it may become, which is what the reader needs to see.
-      const { breakdown } = this.estimateMargin(instrument, side, qty, price);
-      return { mode: 'LIMIT', ok: required <= available + 1e-6, required, available, breakdown, newQty: qty };
+      // ★ THE BREAKDOWN MUST DESCRIBE THE NUMBER ABOVE IT. The first version priced the FULL order
+      // quantity while `required` was the netted all-pendings reservation, so the two said
+      // different things — and both ways round:
+      //   * hold 1000, LIMIT SELL 1000 @1300 -> "Estimated requirement ₹0" printed directly above
+      //     "Short proxy: notional 1000 x 1300", putting back for LIMIT exactly the alarming
+      //     wording already removed for MARKET (which correctly says it is a close).
+      //   * one resting BUY 1000 @100, preview a LIMIT BUY 200 -> "₹1,20,000" above
+      //     "Full cash: 200 x 100", a sixfold disagreement with no explanation.
+      // Netting against the CURRENT position gives a breakdown that matches in the ordinary case,
+      // and where OTHER orders are resting the aggregate is what makes the figure larger — so that
+      // is stated rather than left as an unexplained gap.
+      const newQty = this.exposureIncreaseQty(instrument, side, qty);
+      const { breakdown } = newQty > 0
+        ? this.estimateMargin(instrument, side, newQty, price)
+        : { breakdown: 'Closes an existing position — no new margin required' };
+      const resting = this.state.orders.filter((o) => o.status === 'PENDING').length;
+      return {
+        mode: 'LIMIT',
+        ok: required <= available + 1e-6,
+        required,
+        available,
+        breakdown: resting
+          ? `${breakdown} — but the requirement above reserves for all ${resting + 1} resting orders together`
+          : breakdown,
+        newQty,
+        resting,
+      };
     }
     // MARKET fills immediately against the live position, so only the part that opens NEW exposure
     // needs funding — estimating the full quantity priced a pure close as a fresh opposite position.

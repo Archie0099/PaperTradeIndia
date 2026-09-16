@@ -554,7 +554,7 @@ test('a LIMIT order the engine will REJECT is shown as INSUFFICIENT, not OK', ()
   const box = dom.$('#ticket-estimate').textContent;
   assert.match(box, /INSUFFICIENT/, 'the preview must agree with what Place will do');
   assert.ok(!/requirement ₹0\b/.test(box), 'and must not report a zero requirement for a resting order');
-  assert.match(box, /reserves for ALL your pending orders together/i,
+  assert.match(box, /reserves for all 2 of your pending orders together/i,
     'and it says WHY the figure is larger than this one order');
 
   // Ground truth: the engine really does refuse it.

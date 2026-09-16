@@ -74,6 +74,14 @@ const app = {
   api,
   state: {
     quotes: {}, // symbol -> latest quote
+    // ★ Has the FIRST quote poll finished? `renderEngineViews()` runs before `pollQuotes()` on
+    // boot, and `lastPriceAt` is deliberately not persisted — so for the first moments of every
+    // page load nothing has been fed and every held position looks unfed. That is a THIRD state,
+    // distinct from "being fed" and "was fed, then stopped": nothing has been ASKED yet, so no
+    // judgement is possible. Without this the whole Positions table carried a stale-price marker
+    // on every reload, and Close / Square off all raised their "no live price" dialog for ordinary
+    // equities — up to ~30s on a cold free-tier boot (§11).
+    pricesPolled: false,
     watch: [],
     status: null, // last /api/status payload
     market: null,
@@ -231,6 +239,9 @@ app.pollQuotes = async function pollQuotes() {
   // modelled cyc{i} expiry has no real chain feed, so they'd otherwise freeze at fill price).
   // Silent — the recordEquitySample/render below emits once for the whole poll cycle.
   remarkOptionPositions(app);
+  // A cycle has now completed, so "nothing is being fed" becomes a real observation rather than
+  // the app simply not having looked yet. Set AFTER the fetches, never before.
+  app.state.pricesPolled = true;
 
   // Update the active chart header LTP. Pass the displayed candles + timeframe so a
   // 1W/1M/… view keeps showing that PERIOD's change (refreshed as the live price moves),

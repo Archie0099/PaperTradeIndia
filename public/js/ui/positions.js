@@ -160,6 +160,14 @@ function staleMark(title, text) {
 // will.
 function priceIsLive(app, inst) {
   if (!inst) return true;
+  // ★ BEFORE THE FIRST POLL HAS FINISHED, NOTHING IS KNOWN — and "unknown" must not render as
+  // "stale". `app.js` calls renderEngineViews() before pollQuotes(), and `lastPriceAt` is
+  // deliberately not persisted, so on every page load there is a window where nothing has been fed
+  // simply because nothing has been ASKED yet. Treating that as not-live put a marker on every
+  // held row after a routine reload and made Close / Square off all raise their dialog for
+  // ordinary equities — for up to ~30s on a cold free-tier boot. A missing flag reads as "polled",
+  // so a caller that never sets it (a test harness, another surface) behaves exactly as before.
+  if (app.state && app.state.pricesPolled === false) return true;
   const at = app.engine.lastPriceAt && app.engine.lastPriceAt[instrumentKey(inst)];
   return Number.isFinite(at) && Date.now() - at < LIVE_PRICE_MS;
 }

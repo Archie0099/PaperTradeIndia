@@ -67,16 +67,19 @@ function renderEstimate(app) {
   // REJECTED on Place citing ₹1,00,000), and a false RED (INSUFFICIENT on an order the engine
   // accepted). The old comment here said "The two must agree" — it is structural now.
   const v = app.engine.previewFunds(t.instrument, t.side, qty, price, t.orderType === 'LIMIT' ? 'LIMIT' : 'MARKET');
-  const partial = v.mode === 'MARKET' && v.newQty > 0 && v.newQty < qty; // a flip: part closes, the rest opens new
+  // A flip: part closes, the rest opens new. Applies to a resting order too — it was briefly
+  // gated to MARKET, which silently dropped the hint for exactly the LIMIT flips that need it most.
+  const partial = v.newQty > 0 && v.newQty < qty;
   box.innerHTML = '';
   box.append(
     el('div', {}, `Quantity: ${qty} unit(s)  •  Estimated requirement: ${rupee(v.required, 0)}`),
     el('div', { class: 'muted' }, v.breakdown + (partial ? ` — ${qty - v.newQty} of ${qty} unit(s) just close the existing position` : '') + '  (ESTIMATE, not broker-accurate)'),
-    // A LIMIT order's requirement covers EVERY resting order together, not this one alone, and the
-    // reader has no way to guess that from a bare rupee figure — so it is said, and only when it
-    // can actually differ (there is something else resting).
-    v.mode === 'LIMIT' && app.engine.state.orders.some((o) => o.status === 'PENDING')
-      ? el('div', { class: 'muted' }, 'A resting order fills later, so this figure reserves for ALL your pending orders together, not this one on its own.')
+    // The LIMIT figure covers every resting order together AND is measured against free cash
+    // before reservations (they are already inside it), so both halves of the line change basis
+    // at once. Said only when something else is actually resting — otherwise it explains a
+    // difference that does not exist.
+    v.mode === 'LIMIT' && v.resting
+      ? el('div', { class: 'muted' }, `A resting order fills later, so this reserves for all ${v.resting + 1} of your pending orders together — and the funds shown are your cash before those reservations, not after.`)
       : '',
     el('div', { class: v.ok ? 'up' : 'down' }, `Available funds: ${rupee(v.available, 0)} — ${v.ok ? 'OK' : 'INSUFFICIENT'}`)
   );

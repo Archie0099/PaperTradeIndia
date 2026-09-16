@@ -109,7 +109,13 @@ async function sample() {
   // and the rest of the sample is still worth having — but it says so, because a sample missing the
   // one symbol you care about reads as evidence about that symbol otherwise.
   if (captured === 0) {
-    console.error(`\n★ CAPTURED NOTHING — all ${SYMBOLS.length} fetches failed, so this sample recorded NO rows.`);
+    // ★ SAY WHICH IT WAS, rather than asserting a cause. `captured` counts ROWS, so zero rows is
+    // reachable with some fetches SUCCEEDING — a well-formed chart whose 5-day window happens to
+    // carry no timestamps. Printing "all N fetches failed" there would be a message contradicting
+    // its own data, which is the shape this tool exists to catch in the FEED.
+    console.error(failed === SYMBOLS.length
+      ? `\n★ CAPTURED NOTHING — all ${SYMBOLS.length} fetches FAILED, so this sample recorded NO rows.`
+      : `\n★ CAPTURED NOTHING — ${SYMBOLS.length - failed} of ${SYMBOLS.length} fetches SUCCEEDED but served no rows (${failed} failed), so this sample recorded nothing.`);
     console.error('  Nothing was added to the log. If this ran from a scheduler, treat it as a MISSED sample,');
     console.error('  not a quiet one: an empty run and a run that never happened look the same in the log.');
     process.exitCode = 1;

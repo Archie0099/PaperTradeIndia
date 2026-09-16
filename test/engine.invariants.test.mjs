@@ -329,7 +329,14 @@ test('fuzz: 5000 random valid order sequences preserve all invariants', () => {
 // This is the INVARIANT rather than a re-typed number: whatever `previewFunds` says, `placeOrder`
 // must do. It is asserted across a matrix that includes the two reproduced cases.
 const ACME = { kind: 'EQ', symbol: 'ACME', lotSize: 1 };
-const fresh = (cash) => { const e = new Engine(); e.state.cash = cash; e.onPriceUpdate('EQ:ACME', 100); return e; };
+// ★ RESET, not just `state.cash = cash`. The Engine constructor calls `load()`, which reads the
+// module-level `localStorage` stub this file shares across every test — so `new Engine()` inherits
+// whatever the previous test happened to save, positions and resting orders included. The matrix
+// below still PASSED with a polluted engine (it compares the preview against the outcome on the
+// same object, so both saw the same mess), but the scenarios were not the clean setups their names
+// claim, and the first absolute-value assertion written against `fresh` failed immediately:
+// "closing a held long reserves nothing" got ₹25,39,713 of somebody else's book.
+const fresh = (cash) => { const e = new Engine(); e.reset(cash); e.onPriceUpdate('EQ:ACME', 100); return e; };
 
 const SCENARIOS = [
   ['MARKET buy, plenty of cash', (e) => {}, 'BUY', 1000, 'MARKET', 5_000_000],
@@ -369,4 +376,42 @@ test('previewFunds is a PURE READ — it changes nothing', () => {
   const before = JSON.stringify(e.state);
   for (const ot of ['MARKET', 'LIMIT']) for (const s of ['BUY', 'SELL']) e.previewFunds(ACME, s, 1000, 100, ot);
   assert.equal(JSON.stringify(e.state), before, 'no preview may touch cash, positions or orders');
+});
+
+// --- the preview's WORDS must agree with the preview's NUMBER -----------------
+// ★ The invariant above locks `ok` against the outcome, which is the safety property — and it
+// happily passed while the sentence under the figure described something else entirely. For LIMIT,
+// `required` is the netted all-pendings reservation while the breakdown was priced on this order's
+// FULL quantity, so the ticket rendered "Estimated requirement ₹0" directly above "Short proxy:
+// notional 1000 x 1300" (putting back for LIMIT the alarming wording already removed for MARKET),
+// and "₹1,20,000" above "Full cash: 200 x 100".
+test('a LIMIT that purely CLOSES says so, instead of pricing a short it is not opening', () => {
+  const e = fresh(2_000_000);
+  e.onPriceUpdate('EQ:ACME', 1300);
+  e.placeOrder({ instrument: ACME, side: 'BUY', orderType: 'MARKET', lots: 1000, qty: 1000, price: 1300, refPrice: 1300 });
+  const v = e.previewFunds(ACME, 'SELL', 1000, 1300, 'LIMIT');
+  assert.equal(v.required, 0, 'closing a held long reserves nothing');
+  assert.match(v.breakdown, /Closes an existing position/, 'and the words must say that, not "Short proxy"');
+  assert.ok(!/Short proxy/.test(v.breakdown), 'a close is not a short — the MARKET path never said it was');
+});
+
+test('when other orders are resting, the LIMIT breakdown SAYS the figure is the aggregate', () => {
+  const e = fresh(200_000);
+  e.onPriceUpdate('EQ:ACME', 100);
+  e.placeOrder({ instrument: ACME, side: 'BUY', orderType: 'LIMIT', lots: 1000, qty: 1000, limitPrice: 100, price: 100 });
+  const v = e.previewFunds(ACME, 'BUY', 200, 100, 'LIMIT');
+  assert.ok(v.required > 100_000, 'the requirement covers the resting order too');
+  assert.match(v.breakdown, /reserves for all 2 resting orders together/,
+    'an unexplained sixfold gap between the number and its own description is not acceptable');
+  assert.equal(v.resting, 1, 'and the count of OTHER resting orders is published for the UI');
+});
+
+test('CONTROL: with nothing else resting, the LIMIT breakdown carries no aggregate note', () => {
+  // Otherwise it would explain a difference that does not exist.
+  const e = fresh(500_000);
+  e.onPriceUpdate('EQ:ACME', 100);
+  const v = e.previewFunds(ACME, 'BUY', 100, 100, 'LIMIT');
+  assert.equal(v.resting, 0);
+  assert.ok(!/resting orders together/.test(v.breakdown), 'nothing else is pending, so no note');
+  assert.match(v.breakdown, /Full cash/, 'just the ordinary requirement description');
 });
