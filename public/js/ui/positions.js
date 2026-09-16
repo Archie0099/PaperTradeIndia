@@ -216,6 +216,23 @@ const isCopiedFuture = (inst) => inst.kind === 'FUT' && isCopiedLeg(inst);
 // fill price) or a chain price a ticket is about to OPEN against (then there was no fill).
 function staleCause(inst, priceText, held = true) {
   const what = inst.kind === 'FUT' ? 'future' : 'option';
+  // ★ AN EQUITY HAS NO CHAIN AND NO EXPIRY, so it must never reach the chain sentence below.
+  // `priceIsLive()` used to exempt equities BY KIND, which made this branch unreachable
+  // for them; dropping that exemption was right (one throttled symbol used to render a frozen
+  // price as live) but it left the WORDING with only its three F&O branches. An unfed equity was
+  // then told "This option is only marked while the Option Chain tab is OPEN on RELIANCE
+  // undefined" and sent to open an expiry that does not exist — on the hover, on the Close
+  // dialog that books a realised P&L, and on the ticket's MARKET confirm. Reproduced in a real
+  // browser before this was written. The true cause is the background quote poll: app.js polls
+  // every held symbol every 5s and try/catches each one, so a single symbol can stop arriving
+  // while the status bar still reads the feed as healthy.
+  if (inst.kind === 'EQ') {
+    return (
+      `The ${inst.symbol} quote is not arriving — every held symbol is polled in the background, ` +
+      `and this one has not come back for several cycles — so ${priceText} is the last price ` +
+      `seen${held ? ', not a current one' : ''}`
+    );
+  }
   if (isCopiedFuture(inst)) {
     return (
       `This copied future carries a modelled expiry (${inst.expiry}) that no chain serves and is ` +
@@ -239,9 +256,12 @@ function staleCause(inst, priceText, held = true) {
 // The ONE thing the reader can do about it. Branches with the cause, never asserted alone.
 function staleRemedy(inst) {
   if (isCopiedFuture(inst)) return `accept that there is no live price for it — nothing can feed a modelled expiry`;
-  return isCopiedLeg(inst)
-    ? `wait for the ${inst.symbol} quote to resume (the status bar shows the feed's state)`
-    : `open that expiry in the Option Chain first`;
+  // An equity is fed by the background quote poll, never by the chain — same remedy as a copied
+  // leg (wait for the symbol to come back), never "open that expiry".
+  if (inst.kind === 'EQ' || isCopiedLeg(inst)) {
+    return `wait for the ${inst.symbol} quote to resume (the status bar shows the feed's state)`;
+  }
+  return `open that expiry in the Option Chain first`;
 }
 
 // A short tag for a list line, so "Square off all" can say per contract why it is unfed.
@@ -265,7 +285,7 @@ function stalePriceKinds(insts) {
 function staleReason(inst) {
   const remedy = isCopiedFuture(inst)
     ? `Nothing can feed a modelled expiry; the P&L stays frozen until the position is closed.`
-    : isCopiedLeg(inst)
+    : (inst.kind === 'EQ' || isCopiedLeg(inst))
       ? `Wait for the ${inst.symbol} quote to resume (the status bar shows the feed's state); it is re-marked on the next poll.`
       : `Open that expiry in the Option Chain to mark it again.`;
   return (
@@ -279,9 +299,12 @@ function staleReason(inst) {
 // a REALISED P&L against a price that may be hours or days old, and nothing said so. There is no
 // better price available (that is the whole point: nothing is feeding this contract), so the
 // answer is not to refuse — trapping someone in a position is worse — it is to say what is about
-// to happen and let them decide. Equities are untouched and stay one click; a contract on the
-// displayed chain stays one click only inside LIVE_PRICE_MS of leaving that tab (see its note),
-// so in practice this asks for most manual F&O closes — and asks ONLY when nothing is feeding it.
+// to happen and let them decide. It asks ONLY when nothing is feeding the row: an equity whose
+// quote is arriving, and a contract on the displayed chain, both stay one click — though for a
+// contract that exemption lasts only LIVE_PRICE_MS after leaving the Chain tab (see its note), so
+// in practice this asks for most manual F&O closes. ★ An equity is NOT exempt by kind (that
+// exemption was removed); a symbol the background poll has stopped delivering reaches this dialog too, and
+// gets the quote-poll cause and remedy rather than the chain story.
 function confirmStalePriceClose(app, pos, last) {
   if (priceIsLive(app, pos.instrument)) return true;
   if (typeof window === 'undefined' || typeof window.confirm !== 'function') return true;

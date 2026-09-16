@@ -328,13 +328,20 @@ test('CONTROL: the same option IS live while its own expiry is the chain on scre
   assert.ok(!dom.document.querySelector('.stale-mark'), 'a contract being fed must NOT be marked');
 });
 
-test('CONTROL: an equity is never marked — every held symbol is polled regardless of the screen', () => {
+// ★ RENAMED, not weakened: the assertion below is unchanged and still correct, but its old name
+// ("an equity is never marked") and message ("equities are polled by symbolsToPoll(), never stale
+// this way") asserted a by-KIND exemption that was deliberately removed — and which the
+// control further down ("once a poll HAS completed, an unfed position is marked again") directly
+// contradicts on an equity. What this actually locks is narrower and still worth locking: `buy()`
+// calls `feed()`, which pushes the price through onPriceUpdate and stamps `lastPriceAt`, so this
+// equity really IS being fed and must not be marked no matter what the chain on screen shows.
+test('CONTROL: an equity whose quote IS arriving is not marked, whatever the chain shows', () => {
   const dom = setupDom();
   const app = mount(dom);
-  buy(app.engine, 'RELIANCE', 10, 1200);
+  buy(app.engine, 'RELIANCE', 10, 1200); // feed() stamps lastPriceAt — this symbol is genuinely live
   app.state.chain = { symbol: 'NIFTY', expiry: '24-Sep-2026', strikes: [] };
   renderPositions(app);
-  assert.ok(!dom.document.querySelector('.stale-mark'), 'equities are polled by symbolsToPoll(), never stale this way');
+  assert.ok(!dom.document.querySelector('.stale-mark'), 'a freshly-fed equity is live, and the chain on screen is irrelevant to it');
 });
 
 test('CONTROL: an Auto-Pilot copied leg that IS being re-marked is not called stale', () => {
@@ -938,4 +945,65 @@ test('CONTROL: once a poll HAS completed, an unfed position is marked again', ()
   app.engine.forgetPriceTimes();
   renderPositions(app);
   assert.match(dom.$('#positions-table').textContent, /·not live/, 'after a poll, unfed really is unfed');
+});
+
+// --- an unfed EQUITY must be told the truth about WHY -----------------------
+// ★ THE VERDICT WAS LOCKED AND THE WORDS WERE NOT. The control above already proves an unfed
+// equity gets a marker; nothing asserted what the marker SAYS. Dropping the by-KIND
+// equity exemption from priceIsLive() was correct, but staleCause/staleRemedy still had only
+// their three F&O branches, so an equity fell through to the chain sentence. REPRODUCED in a
+// real browser before the fix: the hover read "This option is only marked while the Option Chain
+// tab is OPEN on RELIANCE undefined", and the Close dialog — the one that books a realised P&L —
+// told the reader to "cancel and open that expiry in the Option Chain first", which for an equity
+// is not merely unhelpful but impossible. An equity is fed by the background quote poll, which
+// try/catches each symbol, so one symbol can stop arriving while the status bar reads healthy.
+test('an unfed EQUITY hover blames the quote poll, never the Option Chain', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  buy(app.engine, 'RELIANCE', 10, 2500);
+  app.state.pricesPolled = true;   // a poll HAS completed, so "unfed" is a real observation
+  app.engine.forgetPriceTimes();   // ...and this symbol is not coming back
+  renderPositions(app);
+
+  const mark = dom.$('#positions-table').querySelector('.stale-mark');
+  assert.ok(mark, 'the equity row carries the marker');
+  const title = mark.getAttribute('title');
+  assert.match(title, /Not a live price/, 'it states the fact');
+  assert.match(title, /RELIANCE quote is not arriving/, 'it names the real cause — the background quote poll');
+  assert.match(title, /status bar/, 'and the remedy is to wait for the quote, which is the only one that exists');
+  assert.ok(!/Option Chain/.test(title), 'an equity has no chain, so the chain must never be named');
+  assert.ok(!/\bthis option\b/i.test(title), 'and it must not be called an option');
+  assert.ok(!/undefined/.test(title), 'an equity has no expiry — no undefined may reach the screen');
+});
+
+test('the Close dialog on an unfed EQUITY gives the quote-poll remedy, not an impossible one', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  buy(app.engine, 'RELIANCE', 10, 2500);
+  app.state.pricesPolled = true;
+  app.engine.forgetPriceTimes();
+  renderPositions(app);
+
+  dom.setConfirm(false); // read it and back out, so the position must survive
+  dom.fire(dom.$$('#positions-table tbody tr button').find((b) => b.textContent === 'Close'), 'click');
+  assert.equal(dom.confirms.length, 1, 'it does ask before booking a P&L against a price nobody is feeding');
+  const msg = dom.confirms[0];
+  assert.match(msg, /RELIANCE quote is not arriving/, 'the dialog names the real cause too');
+  assert.ok(!/Option Chain/.test(msg), 'and never sends an equity holder to the Option Chain');
+  assert.ok(!/undefined/.test(msg), 'no undefined expiry in a dialog either');
+  assert.ok(app.engine.state.positions['EQ:RELIANCE'], 'cancelling leaves the position held');
+});
+
+test('CONTROL: an unfed OPTION still gets the chain story — the equity branch must not over-fire', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  buyOpt(app.engine, OPT('30-Oct-2026'), 120);
+  app.state.pricesPolled = true;
+  app.state.chain = { symbol: 'NIFTY', expiry: '24-Sep-2026', strikes: [] };
+  renderPositions(app);
+
+  const title = dom.$('#positions-table').querySelector('.stale-mark').getAttribute('title');
+  assert.match(title, /Option Chain/, 'a real F&O contract keeps the chain cause and remedy');
+  assert.match(title, /NIFTY 30-Oct-2026/, 'and is still named in full');
+  assert.ok(!/quote is not arriving/.test(title), 'and must not be given the equity wording');
 });

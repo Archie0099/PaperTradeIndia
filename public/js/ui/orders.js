@@ -216,9 +216,11 @@ function loadTicket(app, inst, side, price, lots = 1) {
 // Silent for anything being priced, and silent when a price was typed (then it is your number,
 // not a stale one).
 function confirmStaleTicketFill(app, inst, last) {
-  // No separate equity case: priceIsLive() already exempts equities, and a second check here
-  // would be a line no test can turn red — the kind of dead guard someone later "fixes" in the
-  // wrong direction. One definition of liveness, asked once.
+  // No separate equity case — but NOT because equities are exempt. They were, by kind, until
+  // that exemption was dropped (a throttled symbol used to render a frozen price as live),
+  // so an equity whose quote has stopped arriving DOES reach this dialog now. It is still one
+  // definition of liveness, asked once; the cause and remedy text branches on kind instead
+  // (staleCause/staleRemedy in positions.js), which is where that difference belongs.
   if (priceIsLive(app, inst)) return true;
   if (typeof window === 'undefined' || typeof window.confirm !== 'function') return true;
   // Same text as the Close button's dialog (ONE definition of cause and remedy, in positions.js —

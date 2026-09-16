@@ -16,13 +16,28 @@
 // deliberate difference. A BANKNIFTY leg was being built at 43% of the real contract.
 // `test/ui-instruments.test.mjs` now cross-locks the overlap, the same way the NSE holiday list is
 // locked across its two copies, so the two tables cannot drift apart again in silence.
+// ★★ NOW CHECKED AGAINST NSE ITSELF, AND EVERY INDEX ROW BELOW IS ONE REVISION STALE.
+// The cross-lock above only ever proved the two tables AGREE; it cannot prove they are RIGHT, and
+// they are not. NSE circular NSE/FAOP/70616 (Ref 176/2025, 03-Oct-2025), "Revision in Market Lot
+// of Derivative Contracts on Indices", read from the primary PDF, gives Present -> Revised:
+//     NIFTY 75 -> 65 | BANKNIFTY 35 -> 30 | FINNIFTY 65 -> 60 | MIDCPNIFTY 140 -> 120
+//     (NIFTYNXT50 unchanged at 25)
+// In force from 28-Oct-2025 EOD; weekly/monthly contracts ran on the old sizes until the
+// 30-Dec-2025 expiry, quarterly/half-yearly revised 30-Dec-2025 EOD. No later revision found.
+// So the four index rows here are the circular's PRESENT column — the values it replaced.
+// ★ DELIBERATELY NOT CHANGED, because it is not a one-line edit: the test cross-locks these to
+// `FNO_INDICES`, so the two must move together, and moving FNO_INDICES changes how every F&O bot
+// sizes its positions and therefore RESTATES the published F&O board figures. That is a decision
+// to take deliberately, not a silent repair. Note also that the correct lot size is
+// TIME-VARYING across a 20-year backtest, so today's value is not automatically the right one for
+// history — only for a contract being sized right now.
 const LOT_SIZES = {
   NIFTY: 75,
   BANKNIFTY: 35,
   FINNIFTY: 65,
-  // ★ NOT cross-locked: MIDCPNIFTY is not in FNO_INDICES (no bot trades it), so nothing in this
-  // repo can confirm it. It is left as found rather than guessed at — treat it as unverified and
-  // check NSE's contract circular before relying on it.
+  // ★ NOT cross-locked: MIDCPNIFTY is not in FNO_INDICES (no bot trades it). It was left as found
+  // and flagged unverified; the circular above now shows 75 matches NEITHER the old 140 nor the
+  // new 120, so this one is simply wrong rather than stale.
   MIDCPNIFTY: 75,
   RELIANCE: 250,
   TCS: 175,

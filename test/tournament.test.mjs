@@ -830,3 +830,51 @@ test('tick() REFUSES a carried-forward zero-volume bar, and still admits one who
     freeProvider.getHistory = orig;
   }
 });
+
+// ---------------------------------------------------------------------------
+// The advisor's stand-in verdict must NOT cost a backtest on the recompute path.
+//
+// `standInFor` originally called `getBotDetail(champ.id)`, and the comment above it claimed
+// that was cheap because the detail was "already built". It is not: `detailCache.clear()` runs
+// at the head of BOTH recompute paths, so the call was always a MISS and always ran a full
+// trade-recording backtest of the champion — measured at 0.4–2.0s for a basket bot, run
+// SYNCHRONOUSLY inside `assembleStandings`, the one step `computeStandingsYielding` never
+// yields in. That yielding path is what keeps a recompute from freezing the event loop (a
+// freeze took the deployed site down once), so this put a multi-second block back into every
+// daily tick, every intraday tick and every control op.
+//
+// WHY THE CONTROL OP IS THE DISCRIMINATING PATH, and why checking after init() proves nothing:
+// `init()` runs `advisorTick()`, which legitimately calls `getBotDetail` — so the champion's
+// detail is cached after a boot whether or not `standInFor` also built it. A control op
+// (add/remove/reset) recomputes WITHOUT an advisorTick, so on that path a cached champion
+// detail can only have come from `standInFor`. Verified to fail against the pre-fix code:
+// restoring the `getBotDetail(champ.id)` line makes the final assertion read `true`.
+// ---------------------------------------------------------------------------
+test('a control-op recompute builds the advisor stand-in verdict WITHOUT backtesting the champion', async () => {
+  // AP_MIN_HISTORY is 252 bars, so a shorter fixture has no eligible bot and no champion at
+  // all — the assertion would then pass vacuously. 400 bars gives a real one.
+  const longSeries = [];
+  let p = 18000;
+  for (let i = 0; i < 400; i++) { p *= 1 + Math.sin(i / 11) * 0.006 + 0.0006; longSeries.push({ t: i * 864e5, c: +p.toFixed(2) }); }
+
+  const seed = [
+    ...SEED.filter((b) => b.kind === 'EQ'),
+    { id: 'spare', name: 'Spare', kind: 'EQ', symbol: 'NIFTY', spec: { kind: 'EQ', name: 'Spare', entry: ['<', ['rsi', 5], 40], exit: ['>', ['rsi', 5], 60] } },
+    { id: 'extra', name: 'Extra', kind: 'EQ', symbol: 'NIFTY', spec: { kind: 'EQ', name: 'Extra', entry: ['<', ['rsi', 9], 35], exit: ['>', ['rsi', 9], 65] } },
+  ];
+  const t = await createTournament({ seed, backfillData: { NIFTY: longSeries }, persist: false });
+  await t.init();
+
+  const champ = t.getStandings().autopilot && t.getStandings().autopilot.currentBot;
+  assert.ok(champ && champ.id, 'the fixture really does produce an Auto-Pilot champion to reason about');
+  // The confound, asserted rather than assumed: after a boot the detail IS cached, by advisorTick.
+  assert.equal(t.detailIsCached(champ.id), true, 'init() warms the champion detail via advisorTick — so a post-boot check cannot discriminate');
+
+  // A control op: clears the detail cache, recomputes synchronously, runs no advisorTick.
+  assert.equal(t.removeBot('extra').ok, true, 'the control op succeeded');
+
+  const champ2 = t.getStandings().autopilot.currentBot;
+  assert.ok(champ2 && champ2.id, 'there is still a champion after the control op');
+  assert.equal(t.detailIsCached(champ2.id), false,
+    'the champion detail is NOT rebuilt by the recompute — standInFor reads the roster and the published holdings, it does not backtest');
+});
