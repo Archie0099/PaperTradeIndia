@@ -59,19 +59,33 @@ async function sample() {
       const r = JSON.parse(txt).chart.result[0];
       const q = r.indicators.quote[0];
       const adjArr = r.indicators.adjclose && r.indicators.adjclose[0] && r.indicators.adjclose[0].adjclose;
-      const n = r.timestamp.length - 1;
-      const date = istDate(r.timestamp[n] * 1000);
-      const entry = {
-        at, sym, date,
-        close: q.close[n] != null ? q.close[n] : null,
-        adjclose: adjArr && adjArr[n] != null ? adjArr[n] : null,
-        marketTime: r.meta.regularMarketTime ? r.meta.regularMarketTime * 1000 : null,
-        marketPrice: r.meta.regularMarketPrice != null ? r.meta.regularMarketPrice : null,
-        hoursSinceClose: +((at - closeOf(date)) / 3600000).toFixed(2),
-      };
-      log.push(entry);
-      const shown = entry.close == null ? 'NULL' : entry.close.toFixed(2);
-      console.log(`  ${sym.padEnd(14)} ${entry.date}  close=${shown.padStart(10)}  +${entry.hoursSinceClose}h  (quote ${entry.marketPrice})`);
+      // ★ RECORD EVERY ROW IN THE WINDOW, NOT ONLY THE NEWEST. The first version logged the last
+      // row alone, which was fine while one session was under observation — and blind the moment
+      // the next session opened: on 2026-09-16 the midday sample logged the FORMING 09-16 row and
+      // could not see that the 09-15 close (withdrawn overnight) had come BACK. Whether a withdrawn
+      // close returns is the question this log exists to answer, so every row the feed serves is
+      // recorded, each under its own date; the report groups by date, so nothing else changes.
+      // ★ A row whose session has NOT CLOSED yet is a forming bar, not a published close; it is
+      // recorded (a true record of what was served) with a NEGATIVE hoursSinceClose so the report
+      // can exclude it from "first value" instead of reading a running intraday print as one.
+      const lines = [];
+      for (let i = 0; i < r.timestamp.length; i++) {
+        const date = istDate(r.timestamp[i] * 1000);
+        const entry = {
+          at, sym, date,
+          close: q.close[i] != null ? q.close[i] : null,
+          adjclose: adjArr && adjArr[i] != null ? adjArr[i] : null,
+          volume: q.volume && q.volume[i] != null ? q.volume[i] : null,
+          marketTime: r.meta.regularMarketTime ? r.meta.regularMarketTime * 1000 : null,
+          marketPrice: r.meta.regularMarketPrice != null ? r.meta.regularMarketPrice : null,
+          hoursSinceClose: +((at - closeOf(date)) / 3600000).toFixed(2),
+        };
+        log.push(entry);
+        const shown = entry.close == null ? 'NULL' : entry.close.toFixed(2);
+        const age = entry.hoursSinceClose < 0 ? `FORMING (${entry.hoursSinceClose}h)` : `+${entry.hoursSinceClose}h`;
+        lines.push(`${entry.date} ${shown.padStart(9)} ${age}`);
+      }
+      console.log(`  ${sym.padEnd(14)} ${lines.join('  |  ')}  (quote ${r.meta.regularMarketPrice})`);
     } catch (err) {
       console.error(`  ${sym.padEnd(14)} FAILED — ${err.message}`);
     }
@@ -124,7 +138,16 @@ function report() {
     const cls = classify(date);
     if (cls.session) sessionDates++; else skipped++;
     console.log(`=== ${cls.session ? 'session' : 'NOT A SESSION:'} ${date} ===${cls.why ? `  (${cls.why})` : ''}`);
-    for (const { sym, arr } of rows) {
+    for (const { sym, arr: all } of rows) {
+      // ★ A sample taken BEFORE the bell sees the forming bar — a running intraday print, not a
+      // published close. Those samples are kept in the log but excluded here, or the report would
+      // print "first value -3.19h" for a session still in progress and later read it as a close
+      // that appeared before the market shut.
+      const arr = all.filter((e) => e.hoursSinceClose >= 0);
+      if (!arr.length) {
+        console.log(`  ${sym.padEnd(14)} samples ${String(all.length).padStart(2)}  (all taken before the bell — forming bar only, nothing to read yet)`);
+        continue;
+      }
       const firstNonNull = arr.find((e) => e.close != null);
       const lastNull = [...arr].reverse().find((e) => e.close == null);
       // every time the value changed after it first appeared
@@ -148,9 +171,24 @@ function report() {
       // exactly backwards once a value HAS been served and the row has gone empty again, which is
       // a WITHDRAWAL — the feed taking back something it had already published. Telling those two
       // apart is the entire reason this log exists, so the wording has to branch.
-      const trailingNull = lastNull && (!firstNonNull || lastNull.at > firstNonNull.at);
+      // "Trailing" means the LATEST sample is null — not merely "a null came after the first
+      // value", which is also true of a close that was withdrawn and then came back (the branch
+      // below), and used to print that shape as still withdrawn.
+      const latest = arr[arr.length - 1];
+      const trailingNull = latest.close == null && lastNull;
+      // ★ THE FOURTH OUTCOME, measured 2026-09-16: served, WITHDRAWN overnight, then BACK the next
+      // day. A null that sits BETWEEN two served values is that shape, and without this branch the
+      // line would read "first value … no revision observed" — true, and silent about the one
+      // thing worth knowing. Say when it vanished and when it was next seen, and whether it came
+      // back at the same value.
+      const gapNull = firstNonNull && arr.find((e) => e.close == null && e.at > firstNonNull.at);
+      const returned = gapNull && arr.find((e) => e.close != null && e.at > gapNull.at);
+      const roundTrip = returned
+        ? `  ★ WITHDRAWN at +${gapNull.hoursSinceClose}h, RETURNED by +${returned.hoursSinceClose}h ` +
+          `(${returned.close === firstNonNull.close ? 'same value' : `REVISED: ${firstNonNull.close.toFixed(2)} -> ${returned.close.toFixed(2)}`})`
+        : '';
       const stillNull = !trailingNull
-        ? ''
+        ? roundTrip
         : firstNonNull
           ? `  ★ WITHDRAWN: served a close, then null again at +${lastNull.hoursSinceClose}h`
           // Not "has not appeared yet" — that asserts the close was never served, which a late
