@@ -592,6 +592,16 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
   // the offline app — still come up. The board may show invented data and say so; the APPEND-ONLY
   // advisor log may not record from it (see buildAdvisorEntry). Re-derived on every boot, never
   // persisted: it is a fact about THIS process's data, and a restart re-answers it from scratch.
+  //
+  // ★ IT CANNOT GO STALE WITHIN A PROCESS, and it is worth saying why rather than leaving it to be
+  // rediscovered. `loadOne` is the only caller of loadCandles and runs ONLY inside init(), so a key
+  // is classified once and the backfill behind it is never re-fetched.
+  // ★ BUT A LATER tick() DOES APPEND REAL BARS ON TOP OF A SYNTHETIC BACKFILL — so once the network
+  // recovers, the series becomes fabricated history with a REAL edge, and the flag deliberately
+  // keeps refusing. That is not staleness, it is the point: the advisor scores every recorded day
+  // against NIFTY closes read back through `closeAtOrBefore`, and `possibleDays` counts NIFTY bars,
+  // so invented HISTORY corrupts the comparison and the coverage metric even when today's bar is
+  // real. A restart is what clears it, and on an ephemeral host that happens often.
   const syntheticKeys = new Set();
   const isSyntheticSymbol = (symbol, interval = null) =>
     interval
