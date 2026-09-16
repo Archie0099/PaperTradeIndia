@@ -819,13 +819,27 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
   // The deploy-boundary TIMESTAMP for a bot (the last backfill bar at-or-before
   // deployment) — trades after it are LIVE/forward, before it are the track record.
   // Mirrors the deployIdx logic in computeStandings but yields a timestamp.
-  function deployCutoffFor(bot) {
+  // EVERY data key a bot's run reads. ONE definition, because two consumers need the same
+  // answer: the deploy-boundary calculation below, and the check for whether any series this bot
+  // depends on is a fabricated stand-in. A basket's market-gate proxy (NIFTY) is always DAILY;
+  // its constituents follow the bot's interval. An EQ/FNO bot is its single symbol.
+  // ★ For a BASKET this is the RANKING POOL, not today's holdings — which is the whole point: a
+  // basket ranks its entire universe at every rebalance, so a fabricated series in that pool
+  // steers the selection whether or not the bot ends up holding that name.
+  function botDataKeys(bot) {
     const interval = bot.interval || '1d';
-    // A basket's market-gate proxy (NIFTY) is always DAILY; its constituents follow the
-    // bot's interval. An EQ/FNO bot is its single symbol at its own interval.
-    const keys = spansUniverse(bot.kind)
-      ? [...bot.spec.universe.map((s) => dataKey(s, interval)), dataKey('NIFTY', '1d')]
+    return spansUniverse(bot.kind)
+      ? [...(bot.spec && bot.spec.universe ? bot.spec.universe : []).map((s) => dataKey(s, interval)), dataKey('NIFTY', '1d')]
       : [dataKey(bot.symbol, interval)];
+  }
+
+  // The SYMBOLS among those whose series is the offline synthetic fallback (empty in normal
+  // operation). Published on the bot detail so the advisor can refuse to record from a run whose
+  // inputs were invented — it has no access to `syntheticKeys` itself.
+  const syntheticInputsFor = (bot) => [...new Set(botDataKeys(bot).filter((k) => syntheticKeys.has(k)).map((k) => parseKey(k).symbol))];
+
+  function deployCutoffFor(bot) {
+    const keys = botDataKeys(bot);
     const cutoffs = keys
       // The deployment boundary: the last backfill bar. Trades after it are live/forward,
       // before it are the bot's track record.
@@ -921,6 +935,11 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       // ★ Deliberately NOT inside `metrics`: that object is about how the bot PERFORMED, and a
       // never-traded bot is given a neutral one that would carry no such field at all.
       shortOnly: !!(bot.spec && bot.spec.side === 'short'),
+      // ★ Which of this bot's INPUT series are fabricated stand-ins (see W28). Normally empty.
+      // For a BASKET this covers the whole RANKING POOL, which `detail.symbol` cannot: that field
+      // is a label like '10 ETFs', so the identity check has nothing to test, and a scan of
+      // today's holdings misses a pool name the bot ranked against and then did not buy.
+      syntheticInputs: syntheticInputsFor(bot),
       symbol: bot.symbol,
       interval: bot.interval || '1d',
       gen: bot.gen || 0,

@@ -10,7 +10,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTournament } from '../tournament/tournament.mjs';
-import { scoreAdvisorLog, sanitizeAdvisorLog, closeAtOrBefore, buildAdvisorEntry, buildAdvisorPayload, ADVISOR_BENCHMARK_FINDING } from '../tournament/advisor.mjs';
+import { scoreAdvisorLog, sanitizeAdvisorLog, closeAtOrBefore, buildAdvisorEntry, buildAdvisorPayload, syntheticDataBlock, ADVISOR_BENCHMARK_FINDING } from '../tournament/advisor.mjs';
 
 const DAY = 86_400_000;
 const START = 1_500_000_000_000;
@@ -821,4 +821,76 @@ test('WIRING CONTROL: a LONG spec publishes shortOnly false, not undefined', asy
   const t = await createTournament({ seed: EQ_SEED, backfillData: { NIFTY: series(), NIFTYBEES: series() }, persist: false, evolutionEnabled: false });
   await t.init();
   assert.equal(t.getBotDetail('bh').shortOnly, false, 'the field is computed for every bot, not only short ones');
+});
+
+// --- a basket's RANKING POOL counts, not just what it holds today -----------
+// ★ ONE LEVEL UP from the champion check above, and the case it could not see. For a BASKET,
+// `detail.symbol` is a LABEL ("10 ETFs") — so the identity test has nothing to test — and scanning
+// today's positions misses a pool name the bot RANKED against and then did not buy. The refusal
+// therefore fired only on the days the champion happened to hold the fabricated name: intermittent,
+// and looking exactly like a guard that works.
+//
+// Reachable because `requiredKeys` keeps a single-symbol bot's series even when synthetic:
+// NIFTYBEES is kept for `etf-trend-nifty` AND sits in `ETF_UNIVERSE`, which is `etf-rotation`'s
+// ranking pool.
+const basketDetail = (positions, syntheticInputs) => ({
+  ok: true, id: 'rot', name: 'ETF rotation', kind: 'BASKET', symbol: '10 ETFs', syntheticInputs,
+  mirror: { followable: true, equity: 1_000_000, positions },
+});
+
+test('a BASKET is refused when a name in its ranking pool is a stand-in, even if it holds none of it', () => {
+  const held = [{ symbol: 'GOLDBEES', kind: 'EQ', qty: 10, price: 60 }];
+  const e = buildAdvisorEntry({
+    autopilot: { currentBot: { id: 'rot' } },
+    getBotDetail: () => basketDetail(held, ['NIFTYBEES']), // ranked against it; rotated OUT of it
+    seriesFor: () => [{ t: START, c: 100 }],
+  });
+  assert.equal(e, null, 'the selection was made against an invented series, so nothing may be recorded');
+});
+
+test('CONTROL: the same basket with a clean pool records normally', () => {
+  const held = [{ symbol: 'GOLDBEES', kind: 'EQ', qty: 10, price: 60 }];
+  const e = buildAdvisorEntry({
+    autopilot: { currentBot: { id: 'rot' } },
+    getBotDetail: () => basketDetail(held, []),
+    seriesFor: () => [{ t: START, c: 100 }],
+  });
+  assert.ok(e, 'a clean pool is followable');
+  assert.equal(e.eligible, true);
+});
+
+test('NIFTY in a basket\'s inputs is reported as the BENCHMARK case, never twice', () => {
+  // The gate proxy rides in every basket's input set. It already has its own, wider meaning
+  // (the track record and coverage are fiction too), so it must not also be listed as a
+  // champion-level problem — the panel would name it in two different sentences.
+  const t = { scope: 'benchmark', symbols: ['NIFTY'] };
+  const block = syntheticDataBlock({
+    detail: basketDetail([], ['NIFTY']),
+    isSynthetic: (s) => s === 'NIFTY',
+  });
+  assert.deepEqual(block, t, 'NIFTY is the benchmark case');
+  const championOnly = syntheticDataBlock({
+    detail: basketDetail([], ['NIFTY', 'GOLDBEES']),
+    isSynthetic: () => false, // NIFTY itself loaded fine; only the pool entry is a stand-in
+  });
+  assert.deepEqual(championOnly, { scope: 'champion', symbols: ['GOLDBEES'] },
+    'a stale NIFTY entry in the input list must not be re-reported as a champion issue');
+});
+
+test('WIRING: getBotDetail publishes syntheticInputs, and it is empty on clean data', async () => {
+  // A guard reading a field nothing populates is decorative — the trap this session has hit twice.
+  const t = await createTournament({ seed: EQ_SEED, backfillData: { NIFTY: series(), NIFTYBEES: series() }, persist: false, evolutionEnabled: false });
+  await t.init();
+  assert.deepEqual(t.getBotDetail('bh').syntheticInputs, [], 'computed for every bot, empty when the feed is real');
+});
+
+test('WIRING: a synthetic pool name reaches the detail as a stand-in input', async () => {
+  const t = await createTournament({
+    seed: EQ_SEED,
+    backfillData: { NIFTY: series(), NIFTYBEES: { candles: series(), synthetic: true } },
+    persist: false, evolutionEnabled: false,
+  });
+  await t.init();
+  assert.deepEqual(t.getBotDetail('bh').syntheticInputs, ['NIFTYBEES'],
+    'the bot reads NIFTYBEES, so a stand-in there must show on its detail');
 });

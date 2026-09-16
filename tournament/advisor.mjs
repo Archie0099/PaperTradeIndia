@@ -154,10 +154,28 @@ function syntheticDataBlock({ detail, isSynthetic = () => false }) {
   if (isSynthetic('NIFTY')) return { scope: 'benchmark', symbols: ['NIFTY'] };
   if (!detail) return null;
   const names = new Set();
+  // ★★ THE BOT'S WHOLE INPUT SET, which for a BASKET is its RANKING POOL rather than its holdings.
+  // The two checks below cannot see that, and it is the case that matters: `detail.symbol` for a
+  // basket is a LABEL ("10 ETFs"), so the identity test has nothing to test, and scanning today's
+  // positions misses a pool name the bot ranked against and then did not buy. So the refusal fired
+  // only on the days the champion happened to HOLD the fabricated name — intermittent, and looking
+  // for all the world like the guard was working.
+  //
+  // It is reachable: `requiredKeys` keeps a single-symbol bot's series even when synthetic, and
+  // NIFTYBEES is kept for `etf-trend-nifty` while also sitting in `ETF_UNIVERSE` — which is
+  // `etf-rotation`'s ranking pool. That bot could rank ten ETFs with one of them invented, pick the
+  // other two, and record the result. REPRODUCED: holding the fake name → refused; rotated out of
+  // it → recorded.
+  for (const s of detail.syntheticInputs || []) names.add(s);
+  // Belt-and-braces for a detail from before `syntheticInputs` existed, and for a book that somehow
+  // holds a name outside the declared inputs.
   if (detail.symbol && isSynthetic(detail.symbol)) names.add(detail.symbol);
   for (const p of (detail.mirror && detail.mirror.positions) || []) {
     if (p && p.qty !== 0 && p.symbol && isSynthetic(p.symbol)) names.add(p.symbol);
   }
+  // NIFTY rides in every basket's input set as the gate proxy. It is already handled above with its
+  // own wider meaning (the benchmark case), so it must not be re-reported here as a champion issue.
+  names.delete('NIFTY');
   return names.size ? { scope: 'champion', symbols: [...names] } : null;
 }
 
