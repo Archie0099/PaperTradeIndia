@@ -472,6 +472,44 @@ class Engine {
     return this.state.cash - this.blockedMargin() - this.reservedForPending();
   }
 
+  // ★ THE ONE ANSWER TO "CAN THIS ORDER BE FUNDED?", shared by placeOrder (which decides) and the
+  // order ticket's preview (which tells the reader what will happen). It is a PURE READ — it
+  // mutates nothing — so the screen and the engine cannot give different answers.
+  //
+  // They used to. The ticket applied ONE rule with no branch on order type: new-exposure quantity
+  // against `availableFunds()`. That is right for MARKET and wrong for LIMIT, because a resting
+  // order fills LATER, alongside the other pendings, so it must be reserved against the position as
+  // it would be once they all apply. REPRODUCED in both directions:
+  //   * false GREEN, the worse one — hold 1000, one resting SELL 1000, cash ₹20,000: the ticket
+  //     showed "Estimated requirement ₹0 … OK", and pressing Place returned REJECTED citing a
+  //     ₹1,00,000 short-proxy requirement the preview never mentioned.
+  //   * false RED — own nothing, a resting BUY 1000 @100, cash ₹1,20,000: the ticket said
+  //     INSUFFICIENT and the engine accepted the order.
+  // The comment above the ticket's old code said "The two must agree"; that is now structural
+  // rather than aspirational. (The MARKET path always did agree — same expressions, same epsilon.)
+  //
+  // `candidate` lets placeOrder pass the REAL order object it has already built, so the preview and
+  // the decision reserve against byte-identical input; callers without one get an equivalent stub.
+  previewFunds(instrument, side, qty, price, orderType, candidate = null) {
+    if (orderType === 'LIMIT') {
+      const required = this.reservedForPending(null, candidate || { instrument, side, qty, limitPrice: price });
+      const available = this.state.cash - this.blockedMargin();
+      // The breakdown describes the FULL quantity here, not the new-exposure part: a resting order
+      // reserves for what it may become, which is what the reader needs to see.
+      const { breakdown } = this.estimateMargin(instrument, side, qty, price);
+      return { mode: 'LIMIT', ok: required <= available + 1e-6, required, available, breakdown, newQty: qty };
+    }
+    // MARKET fills immediately against the live position, so only the part that opens NEW exposure
+    // needs funding — estimating the full quantity priced a pure close as a fresh opposite position.
+    const newQty = this.exposureIncreaseQty(instrument, side, qty);
+    if (newQty <= 0) {
+      return { mode: 'MARKET', ok: true, required: 0, available: this.availableFunds(), breakdown: 'Closes an existing position — no new margin required', newQty: 0 };
+    }
+    const { margin, breakdown } = this.estimateMargin(instrument, side, newQty, price);
+    const available = this.availableFunds();
+    return { mode: 'MARKET', ok: margin <= available + 1e-6, required: margin, available, breakdown, newQty };
+  }
+
   // --- P&L ----------------------------------------------------------------
   unrealisedFor(key) {
     const p = this.state.positions[key];
@@ -615,33 +653,31 @@ class Engine {
       // instrument, so reserve against the position as it would be once they all
       // apply. The TOTAL reserved (existing pendings + this new one) must fit
       // within cash minus the margin already blocked by OPEN positions.
-      const reservedWithNew = this.reservedForPending(null, order);
-      const ceiling = this.state.cash - this.blockedMargin();
-      if (reservedWithNew > ceiling + 1e-6) {
-        const { breakdown } = this.estimateMargin(inst, req.side, qty, refPrice);
+      // Through previewFunds, which the order ticket's preview also calls — so what the screen
+      // showed a moment ago and what happens here cannot be two different rules.
+      const v = this.previewFunds(inst, req.side, qty, refPrice, 'LIMIT', order);
+      if (!v.ok) {
         order.status = 'REJECTED';
         order.reason =
-          `Insufficient funds. Pending orders would reserve ~₹${Math.round(reservedWithNew).toLocaleString('en-IN')} ` +
-          `(${breakdown}); available ₹${Math.round(ceiling).toLocaleString('en-IN')}.`;
+          `Insufficient funds. Pending orders would reserve ~₹${Math.round(v.required).toLocaleString('en-IN')} ` +
+          `(${v.breakdown}); available ₹${Math.round(v.available).toLocaleString('en-IN')}.`;
         this.state.orders.unshift(order);
         this.emit();
         return order;
       }
     } else {
-      // MARKET: fills immediately against the live position.
-      const newExposureQty = this.exposureIncreaseQty(inst, req.side, qty);
-      if (newExposureQty > 0) {
-        const { margin, breakdown } = this.estimateMargin(inst, req.side, newExposureQty, refPrice);
-        const available = this.availableFunds();
-        if (margin > available + 1e-6) {
-          order.status = 'REJECTED';
-          order.reason =
-            `Insufficient funds. Needs ~₹${Math.round(margin).toLocaleString('en-IN')} ` +
-            `(${breakdown}); available ₹${Math.round(available).toLocaleString('en-IN')}.`;
-          this.state.orders.unshift(order);
-          this.emit();
-          return order;
-        }
+      // MARKET: fills immediately against the live position. Same shared rule as the ticket's
+      // preview (previewFunds returns ok for a pure close, which is what the old `newQty > 0`
+      // guard expressed).
+      const v = this.previewFunds(inst, req.side, qty, refPrice, 'MARKET');
+      if (!v.ok) {
+        order.status = 'REJECTED';
+        order.reason =
+          `Insufficient funds. Needs ~₹${Math.round(v.required).toLocaleString('en-IN')} ` +
+          `(${v.breakdown}); available ₹${Math.round(v.available).toLocaleString('en-IN')}.`;
+        this.state.orders.unshift(order);
+        this.emit();
+        return order;
       }
     }
 

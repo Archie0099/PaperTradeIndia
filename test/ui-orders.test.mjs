@@ -523,3 +523,78 @@ test('CONTROL: a TYPED price is your own number, so the ticket does not ask', ()
   assert.equal(dom.confirms.length, 0, 'the stale mark is not being used, so there is nothing to warn about');
   assert.equal(app.engine.state.orders.length, 1);
 });
+
+// --- the preview must not promise what Place will refuse --------------------
+// ★ WIRING, and it is the part that matters: the engine-level invariant in
+// engine.invariants.test.mjs proves `previewFunds` agrees with `placeOrder`, but it cannot prove
+// the TICKET calls it. Re-deriving the rule here is exactly how the two came apart, so the ticket
+// is driven for real.
+test('a LIMIT order the engine will REJECT is shown as INSUFFICIENT, not OK', () => {
+  // The reproduced false GREEN: hold 1000, one resting SELL 1000 already live, little cash. The
+  // old preview reported "Estimated requirement ₹0 … OK" (it saw a pure close of the held long),
+  // and pressing Place returned REJECTED citing a ₹1,00,000 short-proxy requirement it never
+  // mentioned — because a resting order fills LATER, alongside the other pendings.
+  const dom = setupDom();
+  const app = mountOrders(dom);
+  const INST = { kind: 'EQ', symbol: 'ACME', lotSize: 1 };
+  app.engine.reset(200_000);
+  app.engine.updateEquityPrice('ACME', 100, true);
+  app.engine.placeOrder({ instrument: INST, side: 'BUY', orderType: 'MARKET', lots: 1000, qty: 1000, price: 100, refPrice: 100 });
+  app.engine.state.cash = 20_000;
+  app.engine.placeOrder({ instrument: INST, side: 'SELL', orderType: 'LIMIT', lots: 1000, qty: 1000, limitPrice: 100, price: 100 });
+
+  dom.setValue(dom.$('#t-kind'), 'EQ');
+  dom.setValue(dom.$('#t-symbol'), 'ACME');
+  dom.setValue(dom.$('#t-side'), 'SELL');
+  dom.setValue(dom.$('#t-ordertype'), 'LIMIT');
+  dom.setValue(dom.$('#t-lots'), '1000');
+  dom.setValue(dom.$('#t-price'), '100');
+  renderEstimate(app);
+
+  const box = dom.$('#ticket-estimate').textContent;
+  assert.match(box, /INSUFFICIENT/, 'the preview must agree with what Place will do');
+  assert.ok(!/requirement ₹0\b/.test(box), 'and must not report a zero requirement for a resting order');
+  assert.match(box, /reserves for ALL your pending orders together/i,
+    'and it says WHY the figure is larger than this one order');
+
+  // Ground truth: the engine really does refuse it.
+  const o = app.engine.placeOrder({ instrument: INST, side: 'SELL', orderType: 'LIMIT', lots: 1000, qty: 1000, limitPrice: 100, price: 100 });
+  assert.equal(o.status, 'REJECTED', 'the preview was telling the truth');
+});
+
+test('CONTROL: a LIMIT order the engine ACCEPTS is shown as OK', () => {
+  // The other direction — the reproduced false RED. Own nothing, a resting BUY, ample cash: the
+  // old preview said INSUFFICIENT for an order the engine happily accepted.
+  const dom = setupDom();
+  const app = mountOrders(dom);
+  const INST = { kind: 'EQ', symbol: 'ACME', lotSize: 1 };
+  app.engine.reset(120_000);
+  app.engine.updateEquityPrice('ACME', 100, true);
+  app.engine.placeOrder({ instrument: INST, side: 'BUY', orderType: 'LIMIT', lots: 1000, qty: 1000, limitPrice: 100, price: 100 });
+
+  dom.setValue(dom.$('#t-kind'), 'EQ');
+  dom.setValue(dom.$('#t-symbol'), 'ACME');
+  dom.setValue(dom.$('#t-side'), 'SELL');
+  dom.setValue(dom.$('#t-ordertype'), 'LIMIT');
+  dom.setValue(dom.$('#t-lots'), '1000');
+  dom.setValue(dom.$('#t-price'), '100');
+  renderEstimate(app);
+  assert.match(dom.$('#ticket-estimate').textContent, /— OK/, 'the engine accepts this, so the preview must too');
+  assert.equal(app.engine.placeOrder({ instrument: INST, side: 'SELL', orderType: 'LIMIT', lots: 1000, qty: 1000, limitPrice: 100, price: 100 }).status, 'PENDING');
+});
+
+test('CONTROL: the pending-orders note appears only when something else is resting', () => {
+  // Otherwise it would be permanent furniture on every LIMIT ticket, explaining a difference
+  // that does not exist.
+  const dom = setupDom();
+  const app = mountOrders(dom);
+  app.engine.reset(1_000_000);
+  app.engine.updateEquityPrice('ACME', 100, true);
+  dom.setValue(dom.$('#t-kind'), 'EQ');
+  dom.setValue(dom.$('#t-symbol'), 'ACME');
+  dom.setValue(dom.$('#t-ordertype'), 'LIMIT');
+  dom.setValue(dom.$('#t-lots'), '10');
+  dom.setValue(dom.$('#t-price'), '100');
+  renderEstimate(app);
+  assert.ok(!/reserves for ALL/i.test(dom.$('#ticket-estimate').textContent), 'nothing is resting, so no note');
+});

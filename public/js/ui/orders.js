@@ -57,22 +57,28 @@ function renderEstimate(app) {
     return;
   }
   const qty = t.lots * t.instrument.lotSize;
-  // Fund only the NEW-exposure part of the order, exactly as placeOrder does. Estimating
-  // the FULL quantity priced a pure close as if it were opening a fresh opposite position,
-  // so selling shares you already own was shown in red as "INSUFFICIENT" (and described as
-  // a "Short proxy") — and then filled instantly when submitted. The two must agree.
-  const newQty = app.engine.exposureIncreaseQty(t.instrument, t.side, qty);
-  const { margin, breakdown } = newQty > 0
-    ? app.engine.estimateMargin(t.instrument, t.side, newQty, price)
-    : { margin: 0, breakdown: 'Closes an existing position — no new margin required' };
-  const available = app.engine.availableFunds();
-  const ok = margin <= available + 1e-6;
-  const partial = newQty > 0 && newQty < qty; // a flip: part closes, the rest opens new
+  // ★ ASK THE ENGINE, never re-derive. `previewFunds` is the SAME function `placeOrder` uses to
+  // decide, so the preview and the outcome cannot be two different rules.
+  //
+  // They used to be. This applied one rule with no branch on order type — new-exposure quantity
+  // against `availableFunds()` — which is right for MARKET and wrong for LIMIT, because a resting
+  // order fills later alongside the other pendings and must be reserved against the position as it
+  // would be once they all apply. REPRODUCED both ways: a false GREEN ("requirement ₹0 … OK", then
+  // REJECTED on Place citing ₹1,00,000), and a false RED (INSUFFICIENT on an order the engine
+  // accepted). The old comment here said "The two must agree" — it is structural now.
+  const v = app.engine.previewFunds(t.instrument, t.side, qty, price, t.orderType === 'LIMIT' ? 'LIMIT' : 'MARKET');
+  const partial = v.mode === 'MARKET' && v.newQty > 0 && v.newQty < qty; // a flip: part closes, the rest opens new
   box.innerHTML = '';
   box.append(
-    el('div', {}, `Quantity: ${qty} unit(s)  •  Estimated requirement: ${rupee(margin, 0)}`),
-    el('div', { class: 'muted' }, breakdown + (partial ? ` — ${qty - newQty} of ${qty} unit(s) just close the existing position` : '') + '  (ESTIMATE, not broker-accurate)'),
-    el('div', { class: ok ? 'up' : 'down' }, `Available funds: ${rupee(available, 0)} — ${ok ? 'OK' : 'INSUFFICIENT'}`)
+    el('div', {}, `Quantity: ${qty} unit(s)  •  Estimated requirement: ${rupee(v.required, 0)}`),
+    el('div', { class: 'muted' }, v.breakdown + (partial ? ` — ${qty - v.newQty} of ${qty} unit(s) just close the existing position` : '') + '  (ESTIMATE, not broker-accurate)'),
+    // A LIMIT order's requirement covers EVERY resting order together, not this one alone, and the
+    // reader has no way to guess that from a bare rupee figure — so it is said, and only when it
+    // can actually differ (there is something else resting).
+    v.mode === 'LIMIT' && app.engine.state.orders.some((o) => o.status === 'PENDING')
+      ? el('div', { class: 'muted' }, 'A resting order fills later, so this figure reserves for ALL your pending orders together, not this one on its own.')
+      : '',
+    el('div', { class: v.ok ? 'up' : 'down' }, `Available funds: ${rupee(v.available, 0)} — ${v.ok ? 'OK' : 'INSUFFICIENT'}`)
   );
 }
 

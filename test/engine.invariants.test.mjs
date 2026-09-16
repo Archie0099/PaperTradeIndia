@@ -318,3 +318,55 @@ test('fuzz: 5000 random valid order sequences preserve all invariants', () => {
   }
   assert.ok(totalSteps > 5000, `ran ${totalSteps} fuzz steps`);
 });
+
+// --- the preview and the decision are ONE rule -------------------------------
+// ★ The order ticket shows "Estimated requirement … OK / INSUFFICIENT" and then `placeOrder`
+// decides. Those used to be two separate expressions, and for LIMIT orders they disagreed in BOTH
+// directions: a false GREEN (ticket "requirement ₹0 … OK", Place returns REJECTED citing
+// ₹1,00,000) and a false RED (INSUFFICIENT on an order the engine accepted). MARKET always agreed,
+// which is exactly why it went unnoticed.
+//
+// This is the INVARIANT rather than a re-typed number: whatever `previewFunds` says, `placeOrder`
+// must do. It is asserted across a matrix that includes the two reproduced cases.
+const ACME = { kind: 'EQ', symbol: 'ACME', lotSize: 1 };
+const fresh = (cash) => { const e = new Engine(); e.state.cash = cash; e.onPriceUpdate('EQ:ACME', 100); return e; };
+
+const SCENARIOS = [
+  ['MARKET buy, plenty of cash', (e) => {}, 'BUY', 1000, 'MARKET', 5_000_000],
+  ['MARKET buy, not enough cash', (e) => {}, 'BUY', 1000, 'MARKET', 50_000],
+  ['MARKET sell that purely CLOSES a long', (e) => {
+    e.placeOrder({ instrument: ACME, side: 'BUY', orderType: 'MARKET', lots: 1000, qty: 1000, price: 100, refPrice: 100 });
+    e.state.cash = 1; // a pure close needs no new margin even with no cash
+  }, 'SELL', 1000, 'MARKET', 500_000],
+  ['LIMIT sell against a resting BUY (was a false RED)', (e) => {
+    e.placeOrder({ instrument: ACME, side: 'BUY', orderType: 'LIMIT', lots: 1000, qty: 1000, limitPrice: 100, price: 100 });
+  }, 'SELL', 1000, 'LIMIT', 120_000],
+  ['second LIMIT sell on a held long (was a false GREEN)', (e) => {
+    e.placeOrder({ instrument: ACME, side: 'BUY', orderType: 'MARKET', lots: 1000, qty: 1000, price: 100, refPrice: 100 });
+    e.state.cash = 20_000;
+    e.placeOrder({ instrument: ACME, side: 'SELL', orderType: 'LIMIT', lots: 1000, qty: 1000, limitPrice: 100, price: 100 });
+  }, 'SELL', 1000, 'LIMIT', 200_000],
+  ['LIMIT buy with nothing resting', (e) => {}, 'BUY', 1000, 'LIMIT', 500_000],
+  ['LIMIT buy the cash cannot cover', (e) => {}, 'BUY', 1000, 'LIMIT', 5_000],
+];
+
+for (const [label, setup, side, qty, orderType, cash] of SCENARIOS) {
+  test(`previewFunds agrees with placeOrder: ${label}`, () => {
+    const e = fresh(cash);
+    setup(e);
+    const v = e.previewFunds(ACME, side, qty, 100, orderType);
+    const o = e.placeOrder({ instrument: ACME, side, orderType, lots: qty, qty, limitPrice: 100, price: 100, refPrice: 100 });
+    const accepted = o.status !== 'REJECTED';
+    assert.equal(v.ok, accepted,
+      `preview said ${v.ok ? 'OK' : 'INSUFFICIENT'} (needs ${Math.round(v.required)}, has ${Math.round(v.available)}) but the order came back ${o.status}${o.reason ? ' — ' + o.reason : ''}`);
+  });
+}
+
+test('previewFunds is a PURE READ — it changes nothing', () => {
+  // It runs on every keystroke in the ticket, so a mutation would corrupt the account silently.
+  const e = fresh(500_000);
+  e.placeOrder({ instrument: ACME, side: 'BUY', orderType: 'MARKET', lots: 100, qty: 100, price: 100, refPrice: 100 });
+  const before = JSON.stringify(e.state);
+  for (const ot of ['MARKET', 'LIMIT']) for (const s of ['BUY', 'SELL']) e.previewFunds(ACME, s, 1000, 100, ot);
+  assert.equal(JSON.stringify(e.state), before, 'no preview may touch cash, positions or orders');
+});
