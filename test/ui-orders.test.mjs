@@ -598,3 +598,35 @@ test('CONTROL: the pending-orders note appears only when something else is resti
   renderEstimate(app);
   assert.ok(!/reserves for ALL/i.test(dom.$('#ticket-estimate').textContent), 'nothing is resting, so no note');
 });
+
+// --- the THIRD surface the equity wording reaches ---------------------------
+// The two tests above cover an unfed OPTION (asks, chain wording) and a FED equity (silent).
+// Neither reaches the case the equity branch exists for: an equity whose quote has STOPPED,
+// typed into the ticket. It is the same root cause as the row hover and the Close dialog —
+// staleCause/staleRemedy had only F&O branches — and this is where it would tell someone
+// placing an order to go open an expiry their equity does not have.
+test('a MARKET ticket order on an UNFED equity asks, and blames the quote poll', () => {
+  const dom = setupDom();
+  const app = mountOrders(dom);
+  // Fed for real first (the only path that stamps `lastPriceAt`), then the feed stops —
+  // which is the state the running app actually reaches, unlike a hand-written price.
+  app.engine.updateEquityPrice('RELIANCE', 1200, true);
+  app.engine.forgetPriceTimes();
+
+  dom.setConfirm(false);
+  dom.setValue(dom.$('#t-kind'), 'EQ');
+  dom.setValue(dom.$('#t-symbol'), 'RELIANCE');
+  dom.setValue(dom.$('#t-lots'), '10');
+  dom.setValue(dom.$('#t-ordertype'), 'MARKET');
+  dom.setValue(dom.$('#t-price'), '');
+  dom.submit('#order-ticket');
+
+  assert.equal(dom.confirms.length, 1, 'a stopped equity quote is worth asking about too');
+  const msg = dom.confirms[0];
+  assert.match(msg, /NOT a live price/, 'it states the fact');
+  assert.match(msg, /RELIANCE quote is not arriving/, 'and names the real cause');
+  assert.match(msg, /status bar/, 'with the only remedy that exists for an equity');
+  assert.ok(!/Option Chain/.test(msg), 'never the Option Chain — an equity has none');
+  assert.ok(!/undefined/.test(msg), 'and no undefined expiry');
+  assert.equal(app.engine.state.orders.length, 0, 'cancelling places no order');
+});

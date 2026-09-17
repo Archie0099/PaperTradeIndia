@@ -1007,3 +1007,46 @@ test('CONTROL: an unfed OPTION still gets the chain story — the equity branch 
   assert.match(title, /NIFTY 30-Oct-2026/, 'and is still named in full');
   assert.ok(!/quote is not arriving/.test(title), 'and must not be given the equity wording');
 });
+
+// --- the FOURTH surface, and the one the first removal matrix missed --------
+// ★ `staleCause`/`staleRemedy`/`staleReason` got the equity branch and three tests went red
+// without it — so the matrix read 3/3 and looked complete. It was not: `staleTag()` and
+// `stalePriceKinds()` are a SEPARATE pair of wording functions, used only by the square-off
+// dialog, and neither had an equity case. A later review found them. This is the dialog
+// that books realised P&L across the WHOLE book at once, and it was printing
+// "RELIANCE — chain not open on RELIANCE undefined" plus "usually the fill price for a contract
+// whose chain is not open" — a chain an equity does not have, an expiry it does not have, and a
+// fill price the number is not. The lesson is the one the project keeps relearning: ask what ELSE
+// reads this, and let the test prove the answer rather than the author's memory of it.
+test('square off all describes an unfed EQUITY by its quote, never by a chain it does not have', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  buy(app.engine, 'RELIANCE', 10, 2500);
+  app.state.pricesPolled = true;  // a poll completed, so "unfed" is a real observation
+  app.engine.forgetPriceTimes();  // ...and this symbol stopped coming back
+
+  dom.setConfirm(false);
+  assert.equal(confirmStaleSquareOff(app), false, 'it asks, and cancelling is reported to the caller');
+  const msg = dom.confirms[0];
+  assert.match(msg, /RELIANCE/, 'the unfed equity is named');
+  assert.match(msg, /quote not arriving/, 'tagged with the real cause');
+  assert.match(msg, /last quoted price for an equity/, 'and the frozen number is described as what it is');
+  assert.ok(!/chain/i.test(msg), 'an equity has no chain, so no dialog may mention one');
+  assert.ok(!/undefined/.test(msg), 'and it has no expiry to print as "undefined"');
+  assert.ok(!/fill price/.test(msg), 'the number is the last quote, not a fill');
+  assert.equal(app.engine.state.positions['EQ:RELIANCE'].qty, 10, 'cancelling closed nothing');
+});
+
+test('CONTROL: an unfed OPTION keeps the chain wording in the square-off dialog', () => {
+  const dom = setupDom();
+  const app = mount(dom);
+  buyOpt(app.engine, OPT('30-Oct-2026'), 120);
+  app.state.pricesPolled = true;
+  dom.setConfirm(false);
+
+  assert.equal(confirmStaleSquareOff(app), false, 'it still asks about the contract');
+  const msg = dom.confirms[0];
+  assert.match(msg, /chain not open on NIFTY 30-Oct-2026/, 'the F&O tag is unchanged');
+  assert.match(msg, /whose chain is not open/, 'and so is the F&O description of the number');
+  assert.ok(!/quoted price for an equity/.test(msg), 'the equity wording must not leak onto a contract');
+});

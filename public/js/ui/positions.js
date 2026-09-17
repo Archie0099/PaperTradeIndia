@@ -266,6 +266,12 @@ function staleRemedy(inst) {
 
 // A short tag for a list line, so "Square off all" can say per contract why it is unfed.
 function staleTag(inst) {
+  // ★ EQ FIRST, for the same reason staleCause branches on it: an equity has no chain and no
+  // expiry, so the fallthrough below would name a chain it does not have and print its absent
+  // expiry as the literal "undefined". This one was MISSED when the other three wording functions
+  // got their equity branch — found by a later review, on the square-off dialog, which is
+  // the one that books realised P&L across the WHOLE book at once.
+  if (inst.kind === 'EQ') return `${inst.symbol} quote not arriving`;
   if (isCopiedFuture(inst)) return `copied future, never re-priced`;
   return isCopiedLeg(inst)
     ? `copied leg, ${inst.symbol} quote not arriving`
@@ -276,9 +282,15 @@ function staleTag(inst) {
 // so a dialog listing only copied legs never mentions a chain, and vice versa.
 function stalePriceKinds(insts) {
   const kinds = [];
+  // ★ An equity's frozen number is the last QUOTE the background poll delivered — never a fill
+  // price, and never anything to do with a chain. Without its own branch it fell into the F&O
+  // clause below and the dialog described it as "usually the fill price for a contract whose chain
+  // is not open", which is wrong twice over. The F&O clause is narrowed to match, or both would
+  // fire for one equity.
+  if (insts.some((i) => i.kind === 'EQ')) kinds.push('the last quoted price for an equity whose feed has stopped');
   if (insts.some(isCopiedFuture)) kinds.push('the price it was copied at for a copied future');
   if (insts.some((i) => isCopiedLeg(i) && !isCopiedFuture(i))) kinds.push('the last modelled price for a copied leg');
-  if (insts.some((i) => !isCopiedLeg(i))) kinds.push('usually the fill price for a contract whose chain is not open');
+  if (insts.some((i) => i.kind !== 'EQ' && !isCopiedLeg(i))) kinds.push('usually the fill price for a contract whose chain is not open');
   return kinds.join(', ');
 }
 

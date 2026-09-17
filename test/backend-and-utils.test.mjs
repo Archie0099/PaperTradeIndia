@@ -28,7 +28,7 @@ import {
   HOLIDAYS as clientHolidays,
   HOLIDAY_YEARS as clientHolidayYears,
 } from '../public/js/core/marketHours.js';
-import { guessLotSize, parseExpiryMs } from '../public/js/ui/instruments.js';
+import { guessLotSize, parseExpiryMs, LOT_SIZES } from '../public/js/ui/instruments.js';
 import { fmt, rupee, signed, moveClass } from '../public/js/ui/dom.js';
 
 const {
@@ -315,10 +315,15 @@ test('rupee and signed format signs, currency and infinities correctly', () => {
 // ===========================================================================
 // Instruments: lot size + expiry parsing.
 // ===========================================================================
+// ★ UPDATED when the browser table moved to NSE's current contract (NIFTY 75 -> 65). This was the
+// SECOND copy of the same assertion re-typing the same literals — ui-instruments.test.mjs had the
+// other — which is part of why the tables drifted unnoticed for months: two tests agreed with the
+// stale number and neither compared it to anything real. The lookup is what belongs here; the
+// VALUES are locked in ui-instruments.test.mjs against the server table and NSE's own circular.
 test('guessLotSize is case-insensitive with a default of 1', () => {
-  assert.equal(guessLotSize('NIFTY'), 75);
-  assert.equal(guessLotSize('nifty'), 75);
-  assert.equal(guessLotSize('RELIANCE'), 250);
+  assert.equal(guessLotSize('NIFTY'), LOT_SIZES.NIFTY);
+  assert.equal(guessLotSize('nifty'), LOT_SIZES.NIFTY);
+  assert.equal(guessLotSize('RELIANCE'), LOT_SIZES.RELIANCE);
   assert.equal(guessLotSize('SOMETHINGELSE'), 1);
   assert.equal(guessLotSize(''), 1);
 });
