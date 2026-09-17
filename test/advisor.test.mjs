@@ -10,6 +10,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTournament } from '../tournament/tournament.mjs';
+import freeProvider from '../src/dataSources/freeProvider.js';
 import { scoreAdvisorLog, sanitizeAdvisorLog, closeAtOrBefore, buildAdvisorEntry, buildAdvisorPayload, syntheticDataBlock, ADVISOR_BENCHMARK_FINDING } from '../tournament/advisor.mjs';
 
 const DAY = 86_400_000;
@@ -893,4 +894,89 @@ test('WIRING: a synthetic pool name reaches the detail as a stand-in input', asy
   await t.init();
   assert.deepEqual(t.getBotDetail('bh').syntheticInputs, ['NIFTYBEES'],
     'the bot reads NIFTYBEES, so a stand-in there must show on its detail');
+});
+
+// --- the refusal must be able to HEAL ---------------------------------------
+// ★ Refusing to record from invented data is right, but on its own it never recovers.
+// `syntheticKeys` is written only by `loadOne`, which runs only inside `init()`, and `tick()`
+// never re-fetched a backfill — so ONE transient feed failure at boot silenced the advisor for the
+// LIFE of the process. On a host kept awake for weeks (with an ephemeral disk that forces a live
+// fetch on every redeploy) that is weeks of permanently-lost days, in the one artifact that only
+// time can produce: missed days are never back-filled.
+//
+// The injected `backfillData` object is held by reference, so mutating it between init() and
+// tick() is exactly "the feed was broken at boot and recovered later", and it drives the REAL
+// loadOne -> syntheticKeys path rather than reaching into internals.
+//
+// ★ getHistory is STUBBED to deliver no new bar. Unstubbed, tick() really fetches, and a genuine
+// live bar would satisfy "changed" and append an advisor entry on its own — so these tests would
+// pass whether or not the probe did anything, and would flake with the market. Offline, the probe
+// is the ONLY thing that can move them.
+const noNewBars = async () => ({ symbol: 'X', candles: [] });
+
+test('a required key that booted on stand-in data is re-fetched, and recording resumes', async () => {
+  const orig = freeProvider.getHistory;
+  freeProvider.getHistory = noNewBars;
+  try {
+    const injected = { NIFTY: { candles: series(), synthetic: true }, NIFTYBEES: series() };
+    const t = await createTournament({
+      seed: EQ_SEED, backfillData: injected, persist: false, evolutionEnabled: false,
+    });
+    await t.init();
+    assert.deepEqual(t.getStandings().syntheticKeys, ['NIFTY'], 'boot: the benchmark is a stand-in');
+    assert.equal(t._state().advisorLog.length, 0, 'so nothing is recorded');
+
+    injected.NIFTY = series();            // the feed recovers (a plain array is real data)
+    const changed = await t.tick({ now: Date.now() });
+
+    assert.deepEqual(t.getStandings().syntheticKeys, [], 'the stand-in is gone — real data replaced it');
+    assert.equal(changed, true, 'the tick reports a change: with no new bar, only the recovery can have done that');
+    assert.ok(t._state().advisorLog.length > 0, 'and the day is recorded, which is the whole point');
+  } finally { freeProvider.getHistory = orig; }
+});
+
+test('CONTROL: a healthy boot never probes, so nothing is re-read', async () => {
+  // The probe must be a genuine no-op when no REQUIRED key is synthetic — that is what keeps it
+  // off the boot data path in normal operation. If it ran regardless it would re-fetch every
+  // required source every hour, on a free feed, forever.
+  const orig = freeProvider.getHistory;
+  freeProvider.getHistory = noNewBars;
+  try {
+    const injected = { NIFTY: series(), NIFTYBEES: series() };
+    const t = await createTournament({
+      seed: EQ_SEED, backfillData: injected, persist: false, evolutionEnabled: false,
+    });
+    await t.init();
+    assert.deepEqual(t.getStandings().syntheticKeys, [], 'nothing was a stand-in');
+
+    // Swap in data that WOULD be classified synthetic if anything re-read the injection. Nothing
+    // should: with no required synthetic key the probe returns before touching a source.
+    injected.NIFTY = { candles: series(), synthetic: true };
+    const changed = await t.tick({ now: Date.now() });
+
+    assert.deepEqual(t.getStandings().syntheticKeys, [], 'the probe did not run, so nothing was re-read');
+    assert.equal(changed, false, 'and with no new bar there is nothing to report');
+  } finally { freeProvider.getHistory = orig; }
+});
+
+test('the probe is rate-limited, so a broken feed is not re-fetched on every 10-minute tick', async () => {
+  const orig = freeProvider.getHistory;
+  freeProvider.getHistory = noNewBars;
+  try {
+    const injected = { NIFTY: { candles: series(), synthetic: true }, NIFTYBEES: series() };
+    const t = await createTournament({
+      seed: EQ_SEED, backfillData: injected, persist: false, evolutionEnabled: false,
+    });
+    await t.init();
+    const t0 = Date.now();
+    await t.tick({ now: t0 });                 // first probe: still broken, still a stand-in
+    assert.deepEqual(t.getStandings().syntheticKeys, ['NIFTY'], 'still broken after the first probe');
+
+    injected.NIFTY = series();                  // recovers immediately afterwards...
+    await t.tick({ now: t0 + 60_000 });         // ...but a tick one minute later must NOT re-probe
+    assert.deepEqual(t.getStandings().syntheticKeys, ['NIFTY'], 'too soon — the probe is on a cadence');
+
+    await t.tick({ now: t0 + 3_600_000 });      // an hour on, it probes again and heals
+    assert.deepEqual(t.getStandings().syntheticKeys, [], 'an hour later it re-probes and recovers');
+  } finally { freeProvider.getHistory = orig; }
 });

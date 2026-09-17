@@ -626,6 +626,25 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     for (const key of syntheticKeys) if (parseKey(key).symbol === symbol) return true;
     return false;
   };
+  // ★ THE RECOVERY FOR A REQUIRED KEY THAT CAME UP SYNTHETIC. Refusing to record from invented data
+  // is right, but on its own it never heals: `syntheticKeys` is written only by `loadOne`, which
+  // runs only inside `init()`, and `tick()` never re-fetches a backfill. So ONE transient feed
+  // failure at boot — on a host deliberately kept awake for weeks, with an ephemeral disk that
+  // forces a live fetch on every redeploy — silenced the advisor for the life of the process, and
+  // every missed day is lost permanently because none is ever back-filled.
+  //
+  // `init()` fills this in (it is the only scope where `loadOne` and the source list exist) and
+  // `tick()` calls it. Null before the first init, so a caller must tolerate that.
+  // ★ It is a NO-OP, with no network call at all, unless a REQUIRED key is currently synthetic —
+  // which is the state this exists for and is otherwise never true. That property is what keeps
+  // this off the boot data path in normal operation.
+  let retryRequiredSynthetic = null;
+  // When that retry last ran, so a broken feed is re-probed on a sane cadence rather than on every
+  // 10-minute tick. Hourly: the failure state records NOTHING while it lasts, so a day of latency
+  // would itself cost the artifact this is protecting, while the probe is at most three fetches and
+  // only happens while genuinely broken.
+  let lastSyntheticRetryMs = 0;
+  const SYNTHETIC_RETRY_MS = 3600000;
   let roster = seed.map((b) => asRosterEntry(b)); // mutable bot definitions
   let bots = []; // compiled view of the roster
   // advisorLog: the ADVISOR's append-only "Today's Suggestions" record (advisor.mjs) —
@@ -1413,6 +1432,28 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     // resolves instantly, so the deadline never fires and behaviour is unchanged.
     const requiredSrc = sources.filter((s) => requiredKeys.has(s.key));
     const poolSrc = sources.filter((s) => !requiredKeys.has(s.key));
+    // Expose the recovery declared at the top of the closure. It reuses `loadOne` rather than
+    // re-implementing it, so a retry gets the SAME hygiene as the boot — the forming-bar drop, the
+    // synthetic classification, the never-abort-the-boot catch — and the two can never drift.
+    // ★ Only REQUIRED keys are retried. A pool name that came back synthetic was DROPPED (not
+    // tracked), which is the correct outcome for it and nothing here should resurrect it.
+    // ★ HONEST NOTE ON THAT LINE: filtering `requiredSrc` rather than all `sources` is stated
+    // intent, not a working guard — `loadOne` drops a non-required synthetic key BEFORE it can
+    // reach `syntheticKeys`, so the set can only ever hold required keys and the two expressions
+    // are equivalent today. A mutation swapping them is therefore NOT caught by any test, and that
+    // is recorded rather than papered over: it is unobservable, not untested-by-oversight. It stays
+    // as written because it says what this may touch, and it stays correct if that drop ever moves.
+    retryRequiredSynthetic = async () => {
+      const stale = requiredSrc.filter((s) => syntheticKeys.has(s.key));
+      if (!stale.length) return false; // the normal case: no network, no work
+      console.log(`tournament: re-attempting ${stale.length} required source(s) that loaded as stand-in data.`);
+      for (const src of stale) await loadOne(src);
+      const healed = stale.filter((s) => !syntheticKeys.has(s.key));
+      // A successful retry REPLACES a fabricated backfill with the real history. Any live bars
+      // appended on top are genuine closes and survive: `seriesFor` merges by timestamp.
+      if (healed.length) console.log(`tournament: recovered real data for ${healed.map((s) => s.key).join(', ')}.`);
+      return healed.length > 0;
+    };
     await mapLimit(requiredSrc, BOOT_FETCH_CONCURRENCY, loadOne);
     let poolDone = false;
     const poolLoad = mapLimit(poolSrc, BOOT_FETCH_CONCURRENCY, loadOne).then(() => { poolDone = true; });
@@ -1471,6 +1512,18 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     const sessionClosed = (t) => dailySessionClosed(t, now);
     const seq0 = opSeq; // snapshot: if a control op mutates state during our await, bail
     let changed = false;
+    // ★ HEAL A REQUIRED SOURCE THAT BOOTED ON STAND-IN DATA, before anything reads the series.
+    // Without this the process stays poisoned for its whole life (see `retryRequiredSynthetic`),
+    // and the advisor — which correctly refuses to record from invented data — records nothing at
+    // all, permanently, because missed days are never back-filled.
+    // A recovery is treated as `changed`: no NEW bar arrived, but the data underneath every bot
+    // just went from fabricated to real, so the board must be recomputed and the day can be
+    // recorded. Failures are swallowed on purpose — a probe must never stop the ordinary tick.
+    if (retryRequiredSynthetic && now - lastSyntheticRetryMs >= SYNTHETIC_RETRY_MS) {
+      lastSyntheticRetryMs = now;
+      try { if (await retryRequiredSynthetic()) changed = true; } catch { /* probe failed; try again next hour */ }
+      if (opSeq !== seq0) return changed; // a control op landed during the probe
+    }
     for (const { symbol, interval, key } of rosterSources()) {
       if (isIntradayInterval(interval)) continue; // intraday sources are handled by tickIntraday()
       // Skip a DROPPED (synthetic, no-real-data) symbol: it has no backfill, so seriesFor ignores it
