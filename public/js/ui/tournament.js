@@ -83,6 +83,52 @@ let pageReqId = 0;
 
 const th = (t, title) => el('th', title ? { title } : {}, t);
 
+// When a Position string is long enough that the 260px cap may clip it. ★ MEASURED, not guessed:
+// rendered in a real browser, the shortest string that actually clipped was **32 characters** and
+// the longest that did not was also 32 — the boundary is genuinely ambiguous there, because
+// "INFY 48% · TCS 33% · HCL…" and "open: S10x 24150CE  S10x…" are the same length and different
+// widths. So no character count can be exactly right, and this deliberately errs LOW.
+// ★ My first attempt used 60 and was wrong in the way that matters: eleven rows between 32 and 55
+// characters were ellipsized with NO hover and NO tap, i.e. cut off with no way to read them —
+// worse than the wide table it replaced. That is why the title below is set unconditionally.
+const POSITION_CLIP_CHARS = 30;
+
+// ★ THE POSITION CELL IS CLIPPED, BECAUSE ONE ROW WAS SETTING THE WHOLE TABLE'S WIDTH.
+// This cell lists a basket's holdings inline, unwrapped. MEASURED in a real browser: the fair bar
+// holds 104 names, so its string is **1,415 characters** — ten times the next longest — and it
+// rendered as a **9,619px** cell inside a 10,856px table. Every other column is 32–362px, so that
+// ONE cell was 89% of the table: the leaderboard scrolled ~29 viewport-widths sideways on a phone
+// and ~7 on a desktop. (The plan file blamed "7 return columns scroll horizontally" for the width —
+// that was the wrong cause; the return columns are 59–66px each.)
+//
+// Clipped rather than SHORTENED at the source: `position` stays the complete string in the payload
+// and on the per-bot page, so nothing is lost — this is presentation only, and no figure moves.
+// The full text is on the hover, and because a hover does not exist on touch the cell is also
+// tappable (the same rule the "·not live" markers follow). Both affordances appear ONLY on a row
+// long enough to actually clip, so an ordinary row stays plain text with no dead tab stop.
+function positionCell(text) {
+  const s = String(text == null ? '' : text);
+  // ★ THE HOVER IS UNCONDITIONAL, ON PURPOSE. Whether a cell clips depends on rendered WIDTH, which
+  // this cannot know, so any character threshold will misjudge borderline rows. Setting the title
+  // on every cell means a misjudgement can only ever cost the TOUCH affordance on a borderline row
+  // — never readability. On a cell that is not clipped the title simply repeats what is visible,
+  // which is harmless; a row of text with no way to read it is not.
+  const attrs = { class: 'muted pos-cell', title: s };
+  if (s.length <= POSITION_CLIP_CHARS) return el('td', attrs, s);
+  // Above the measured boundary it is very likely clipped, so add the touch affordance too — a
+  // hover does not exist on a phone. Held back from short rows so the board does not collect a
+  // tab stop on every line for cells with nothing extra to show.
+  const show = (ev) => { ev.stopPropagation(); if (typeof alert === 'function') alert(s); };
+  return el('td', {
+    ...attrs,
+    class: 'muted pos-cell pos-cell-clipped',
+    role: 'button',
+    tabindex: '0',
+    onclick: show,
+    onkeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); show(ev); } },
+  }, s);
+}
+
 // Re-order the leaderboard rows by the active sort column. Numeric columns sort by
 // value (a non-finite metric sinks to the bottom either way); the text columns
 // (Bot/Symbol/Kind) sort alphabetically. With no sort chosen we keep the server's
@@ -319,7 +365,7 @@ function render(app, data) {
         })(),
       }, String(b.sharpe)),
       el('td', { class: 'num' }, b.maxDrawdownPct + '%'),
-      el('td', { class: 'muted' }, b.position),
+      positionCell(b.position),
       // Colour equity by profit/loss vs the ₹1cr starting cash (green = in profit, red = down).
       // Compact crore form (the precise rupee value is the cell tooltip).
       el('td', { class: 'num ' + moveClass(b.equity - (data.startingCash || 10000000)), title: rupee(b.equity, 0) }, compactCr(b.equity)),

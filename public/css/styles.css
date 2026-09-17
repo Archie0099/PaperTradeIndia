@@ -404,6 +404,13 @@ label input, label select { color: var(--text); text-transform: none; letter-spa
 
 /* ---------- Tables ---------- */
 .table-wrap { overflow-x: auto; border-radius: var(--radius); border: 1px solid var(--border-soft); }
+/* The leaderboard's Position cell lists a basket's holdings inline. A bot holding a large universe
+   produced a 1,415-character string and a 9,619px cell — 89% of a 10,856px table — so the board
+   scrolled sideways for screens. Cap it: the full text stays in the payload, on the title hover and
+   behind a tap (see `positionCell` in ui/tournament.js). Rows short enough not to clip are
+   unaffected, so this never adds an ellipsis to "flat (cash)". */
+.pos-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.pos-cell-clipped { cursor: pointer; }
 table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 th, td { padding: 10px 13px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--border-soft); }
 th {

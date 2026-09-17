@@ -494,7 +494,13 @@ test('the Unrealised P&L card says when part of the total is not being priced', 
   const mark = summary.querySelector('.stale-mark');
   const title = mark.getAttribute('title');
   assert.match(title, /1 open position is marked at a last-seen price/, 'singular reads correctly');
-  assert.match(title, /frozen — usually at zero/, 'it says why the contribution is misleading');
+  // ★ UPDATED, not loosened. This asserted "frozen — usually at zero", which describes an unfed
+  // CONTRACT: its mark really is the fill price, so its unrealised share really is ~0. Dropping the
+  // by-kind equity exemption made this hover reachable for an equity too, whose mark is the last
+  // QUOTE — so its share is generally NOT zero and was never a fill. The sentence now covers both
+  // instruments, and this asserts the part that is true of either.
+  assert.match(title, /frozen at whatever that price was/, 'it says why the contribution is misleading');
+  assert.match(title, /the last quote that arrived/, 'and gives the equity case, not just the contract one');
   assert.match(title, /Positions table below marks which one/, 'it points at where to look');
 });
 

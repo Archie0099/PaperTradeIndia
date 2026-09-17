@@ -74,17 +74,20 @@ const LOT_SIZES = {
 const LOT_SIZE_DIVERGENCE = {
   NIFTY: {
     nseLot: 65,
+    backtestLot: 75,
     circular: 'NSE/FAOP/70616 (Ref 176/2025, 03-Oct-2025), in force 28-Oct-2025 EOD',
     why: 'NSE cut the contract 75 -> 65. The backtest keeps 75 as its documented all-history '
       + 'convention; changing it would restate every published F&O board figure.',
   },
   BANKNIFTY: {
     nseLot: 30,
+    backtestLot: 35,
     circular: 'NSE/FAOP/70616 (Ref 176/2025, 03-Oct-2025), in force 28-Oct-2025 EOD',
     why: 'NSE cut the contract 35 -> 30. The backtest keeps 35, for the reason above.',
   },
   FINNIFTY: {
     nseLot: 60,
+    backtestLot: 65,
     circular: 'NSE/FAOP/70616 (Ref 176/2025, 03-Oct-2025), in force 28-Oct-2025 EOD',
     why: 'NSE cut the contract 65 -> 60. The backtest keeps 65, for the reason above.',
   },

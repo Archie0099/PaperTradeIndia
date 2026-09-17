@@ -710,3 +710,92 @@ test('with no benchmark on the board there is no badge and no footnote', async (
   assert.doesNotMatch(txt, /reference row/);
   assert.equal(dom.$('#tourn-table .bot-row-ref'), null);
 });
+
+// --- the Position cell must not set the whole table's width -----------------
+// ★ MEASURED IN A REAL BROWSER before this was written: the Position cell lists a basket's
+// holdings inline and unwrapped, so the fair bar (104 names) produced a **1,415-character** string
+// that rendered as a **9,619px** cell inside a 10,856px table — 89% of the table from ONE cell,
+// while every other column is 32-362px. The leaderboard scrolled ~29 viewport-widths sideways on a
+// phone. (The plan file blamed the seven return columns; they are 59-66px each.) After the fix the
+// same board measures 1,497px.
+//
+// It is CLIPPED, never shortened: the payload and the per-bot page keep the whole string, so these
+// tests assert that the text is still all there AND that it can be read on a device with no hover.
+const longPosition = Array.from({ length: 40 }, (_, i) => `NAME${i} 2%`).join(' · ');
+
+const appWithPosition = (dom, position) => {
+  const base = standings();
+  base.bots = base.bots.map((b, i) => (i === 0 ? { ...b, position } : b));
+  return dom.makeApp({
+    api: Object.assign(dom.makeApiStub(), {
+      tournament: async () => base,
+      tournamentBot: async (id) => baseDetail(id),
+    }),
+  });
+};
+
+test('a long Position cell keeps its full text and can be read without a hover', async () => {
+  const dom = setupDom();
+  await renderTournament(appWithPosition(dom, longPosition));
+
+  // Found by CONTENT, not by position: the board applies its own default sort, so "the first
+  // clipped cell" is whatever today's ordering puts on top — the same trap that made an earlier
+  // test assert a hardcoded row order.
+  const cell = [...dom.$('#tourn-table').querySelectorAll('.pos-cell-clipped')]
+    .find((td) => td.textContent === longPosition);
+  assert.ok(cell, 'the long cell is marked as clipped');
+  assert.equal(cell.getAttribute('title'), longPosition, 'the hover carries the COMPLETE holdings list');
+  assert.equal(cell.textContent, longPosition, 'and the text is clipped by CSS, never shortened — nothing is lost');
+  assert.equal(cell.getAttribute('role'), 'button', 'announced as activatable');
+  assert.equal(cell.getAttribute('tabindex'), '0', 'and reachable by keyboard');
+
+  // A hover does not exist on touch, so a tap must produce the same text.
+  dom.fire(cell, 'click');
+  assert.equal(dom.alerts.length, 1, 'tapping it shows the full list');
+  assert.equal(dom.alerts[0], longPosition, 'and shows ALL of it, not the clipped form');
+});
+
+test('CONTROL: an ordinary Position cell stays plain — no hover, no dead tab stop', async () => {
+  // Most rows read "flat (cash)" or "100% long". Marking those would put an affordance on every
+  // row of the board and a tab stop on a cell with nothing extra to say.
+  const dom = setupDom();
+  await renderTournament(appWithPosition(dom, '100% long'));
+
+  // ★ Scoped to the SHORT cell by its content, not "the first .pos-cell" and not "no clipped cell
+  // anywhere". Other rows in this fixture hold real basket strings that legitimately DO clip, and
+  // the board applies its own sort — so a table-wide or position-based assertion asserts about
+  // whichever row happens to be on top, which is not what this control is about.
+  const plain = [...dom.$('#tourn-table').querySelectorAll('.pos-cell')]
+    .find((td) => td.textContent === '100% long');
+  assert.ok(plain, 'the short cell is rendered as a position cell');
+  assert.ok(!plain.classList.contains('pos-cell-clipped'), 'and is NOT marked clipped');
+  assert.equal(plain.getAttribute('role'), null, 'not announced as a button');
+  assert.equal(plain.getAttribute('tabindex'), null, 'and not a tab stop');
+  // ★ It DOES still carry a title, and that is deliberate — this assertion was the reverse until a
+  // browser measurement showed why. Whether a cell clips depends on rendered WIDTH: the shortest
+  // string that actually clipped was 32 characters and the longest that did not was also 32. So a
+  // character threshold misjudges borderline rows, and the first version left eleven rows
+  // ellipsized with no hover and no tap — unreadable. An unconditional title makes a misjudgement
+  // cost only the touch affordance, never the text itself.
+  assert.equal(plain.getAttribute('title'), '100% long', 'but it does carry the full text, so a clipped row is never unreadable');
+});
+
+// ★ THE DISTINGUISHING CASE, and it was missing. The two tests above use a 9-character string and
+// a 400-character one — every threshold agrees about those. The rows that actually got hurt sit in
+// between: a browser measurement found eleven of them, 32 to 55 characters, ellipsized with no
+// hover and no tap. A mutation raising POSITION_CLIP_CHARS back to 60 left this file green until
+// this test existed, which is exactly the gap — a matrix that only exercises inputs where the old
+// and new rules agree proves nothing about the change.
+test('a mid-length Position cell — the length that really clips — is readable by tap too', async () => {
+  const dom = setupDom();
+  const mid = 'SUNPHARMA 32% · APOLLOHOSP 27% · ALKEM 21%'; // 41 chars: clips at the 260px cap
+  assert.ok(mid.length > 32 && mid.length < 60, 'the fixture really is in the disputed band');
+  await renderTournament(appWithPosition(dom, mid));
+
+  const cell = [...dom.$('#tourn-table').querySelectorAll('.pos-cell')].find((td) => td.textContent === mid);
+  assert.ok(cell, 'the cell is rendered');
+  assert.equal(cell.getAttribute('title'), mid, 'the hover carries the full text');
+  assert.ok(cell.classList.contains('pos-cell-clipped'), 'and it is treated as clipped');
+  dom.fire(cell, 'click');
+  assert.equal(dom.alerts[0], mid, 'so a phone, which has no hover, can still read it');
+});

@@ -84,6 +84,18 @@ test('an index lot size either matches the server table or is a DECLARED diverge
         + `${decl.nseLot}. A declared divergence is allowed only at the declared number — otherwise `
         + `the declaration is a blank cheque and any drift on this symbol passes silently.`,
     );
+    // ★★ AND THE SERVER END MUST BE PINNED TOO, or this lock protects only half of what it used to.
+    // Every overlapping symbol is now a declared divergence, so the equality check above never runs
+    // and NOTHING here would look at `FNO_INDICES` at all — a review verified that mutating
+    // `FNO_INDICES.NIFTY.lotSize` from 75 to 100 left this file 5/5 green. That is precisely the
+    // silent drift this lock exists to catch, moved to the table that sizes every F&O bot's
+    // positions. Pinning BOTH ends means a divergence stays exactly the one that was signed off.
+    assert.equal(
+      FNO_INDICES[sym].lotSize, decl.backtestLot,
+      `${sym}: the backtest trades ${FNO_INDICES[sym].lotSize} but the declared convention is `
+        + `${decl.backtestLot}. If the backtest convention is being changed deliberately, update the `
+        + `declaration (and expect every published F&O figure to be restated); if not, this is drift.`,
+    );
   }
 });
 

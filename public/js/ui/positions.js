@@ -476,9 +476,16 @@ function renderPnlSummary(app) {
   if (unfed > 0) {
     unrealSub.push(
       staleMark(
+        // ★ The FIFTH wording surface, and it carried the F&O-only story too: it said the frozen
+        // share is "usually at zero, because the mark is still the price it was filled at". That
+        // describes an unfed CONTRACT, whose mark really is its fill price. Since the by-kind
+        // equity exemption was dropped, an equity whose background quote has stopped is counted
+        // here as well — and its mark is the last QUOTE, so its share is generally not zero and was
+        // never a fill. Say what is true of both instead of what is true of one.
         `${unfed} open ${unfed === 1 ? 'position is' : 'positions are'} marked at a last-seen ` +
           `price rather than a live one, so ${unfed === 1 ? 'its' : 'their'} share of this total ` +
-          `is frozen — usually at zero, because the mark is still the price it was filled at. ` +
+          `is frozen at whatever that price was — for a contract that is usually the price it was ` +
+          `filled at, and for a share the last quote that arrived. ` +
           `The Positions table below marks which ${unfed === 1 ? 'one' : 'ones'}.`,
         `· ${unfed} not live`
       )

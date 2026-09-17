@@ -1189,8 +1189,13 @@ function renderSuggestions(app) {
       `The live feed could not be reached for ${names.join(', ')}, so the app is using generated ` +
       'prices there to keep the screens working. Those prices are not real, and their dates are not ' +
       'real trading sessions either, so nothing is written to the record rather than risk a made-up ' +
-      'price becoming advice. Nothing already saved is affected. It clears once the feed returns ' +
-      'and the server restarts.',
+      // ★ This used to end "It clears once the feed returns AND THE SERVER RESTARTS." That was true
+      // when the stand-in flag could only be set at boot; the server now re-attempts a required
+      // source on its own, so it recovers without anyone doing anything. Leaving the old sentence
+      // would tell a reader the board is stuck until a redeploy — and a needless redeploy discards
+      // anything held only in memory, which is a real hazard on this host.
+      'price becoming advice. Nothing already saved is affected. The server keeps retrying, so this ' +
+      'clears on its own once the feed returns — usually within an hour, with nothing to do.',
       // ★ The benchmark case is WORSE than a skipped day and has to say so. `track` and `coverage`
       // are recomputed from the LIVE series on every payload, so refusing to record does not clean
       // them up — when the index itself is a stand-in, the score and the day-count below are

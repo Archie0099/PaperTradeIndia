@@ -593,9 +593,15 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
   // advisor log may not record from it (see buildAdvisorEntry). Re-derived on every boot, never
   // persisted: it is a fact about THIS process's data, and a restart re-answers it from scratch.
   //
-  // ★ IT CANNOT GO STALE WITHIN A PROCESS, and it is worth saying why rather than leaving it to be
-  // rediscovered. `loadOne` is the only caller of loadCandles and runs ONLY inside init(), so a key
-  // is classified once and the backfill behind it is never re-fetched.
+  // ★★ IT CAN NOW CHANGE MID-PROCESS, AND THIS NOTE USED TO SAY THE OPPOSITE. It read "it cannot go
+  // stale within a process… `loadOne` runs ONLY inside init(), so a key is classified once and the
+  // backfill behind it is never re-fetched", and "a restart is what clears it". All of that was
+  // true until `retryRequiredSynthetic` (declared below) began calling `loadOne` from `tick()` to
+  // re-fetch a required source that booted on stand-in data. A key can therefore be RE-CLASSIFIED
+  // and its backfill REPLACED while the process runs.
+  // ★ That is not a footnote: a serious defect came from reasoning on the old wording — code that
+  // assumed a heal could never happen mid-tick let it record an advisor entry over a half-loaded
+  // universe. If you are about to rely on "this cannot change", it can.
   // ★ BUT A LATER tick() DOES APPEND REAL BARS ON TOP OF A SYNTHETIC BACKFILL — so once the network
   // recovers, the series becomes fabricated history with a REAL edge, and the flag deliberately
   // keeps refusing. That is not staleness, it is the point: the advisor scores every recorded day
@@ -645,6 +651,20 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
   // only happens while genuinely broken.
   let lastSyntheticRetryMs = 0;
   const SYNTHETIC_RETRY_MS = 3600000;
+  // ★★ TRUE WHILE THE BASKET POOL IS STILL LOADING IN THE BACKGROUND, and the probe MUST NOT run
+  // then. This is not caution, it is a bug that was caught in review: `server.js` ticks immediately
+  // after `init()` returns, and on a cold boot `init()` returns at the 45s deadline with ~105 pool
+  // names still in flight. A probe that HEALED there would set `changed`, which drives
+  // `advisorTick()` — recording the champion's target book computed over a PARTIALLY LOADED
+  // universe. `init()` refuses to record in exactly that state for exactly that reason, deferring
+  // to the pool-completion continuation; and because `appendAdvisorEntry` rejects any entry dated
+  // at-or-before the last one, the thin entry would WIN and the corrected one would be refused —
+  // permanently, in the append-only real-money log.
+  // ★ Waiting also puts the probe somewhere it can plausibly succeed: at boot it would fire seconds
+  // after the fetch that failed (usually rate-limiting), burning the attempt and adding a
+  // full-range re-fetch on top of the still-running pool load, which is the cold-boot data path that
+  // has taken this host down before. Once the pool has finished, the feed is demonstrably answering again.
+  let poolLoading = false;
   let roster = seed.map((b) => asRosterEntry(b)); // mutable bot definitions
   let bots = []; // compiled view of the roster
   // advisorLog: the ADVISOR's append-only "Today's Suggestions" record (advisor.mjs) —
@@ -1488,7 +1508,18 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     // snapshot, NOT a re-read of poolDone, so the race above can't skip it. Idempotent: if the pool
     // already finished during the recompute above, .then fires immediately and recomputes over the
     // now-full universe (one extra cheap pass over a consistent snapshot).
-    if (deadlineFired) poolLoad.then(async () => { try { await computeStandingsYielding(); advisorTick(); save(); } catch { /* best-effort */ } }).catch(() => {});
+    // The probe in tick() is gated on this: while it is true the universe is incomplete, so a heal
+    // must not be allowed to drive advisorTick(). Cleared in the continuation below (in a finally,
+    // so a failed recompute cannot strand the probe off forever).
+    poolLoading = deadlineFired;
+    if (deadlineFired) {
+      poolLoad
+        .then(async () => {
+          try { await computeStandingsYielding(); advisorTick(); save(); } catch { /* best-effort */ }
+          finally { poolLoading = false; }
+        })
+        .catch(() => { poolLoading = false; });
+    }
     return standings;
   }
 
@@ -1519,7 +1550,7 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     // A recovery is treated as `changed`: no NEW bar arrived, but the data underneath every bot
     // just went from fabricated to real, so the board must be recomputed and the day can be
     // recorded. Failures are swallowed on purpose — a probe must never stop the ordinary tick.
-    if (retryRequiredSynthetic && now - lastSyntheticRetryMs >= SYNTHETIC_RETRY_MS) {
+    if (retryRequiredSynthetic && !poolLoading && now - lastSyntheticRetryMs >= SYNTHETIC_RETRY_MS) {
       lastSyntheticRetryMs = now;
       try { if (await retryRequiredSynthetic()) changed = true; } catch { /* probe failed; try again next hour */ }
       if (opSeq !== seq0) return changed; // a control op landed during the probe
@@ -1952,6 +1983,11 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
     },
     getBotDetail,
     detailIsCached: (id) => detailCache.has(id), // a cache HIT serves getBotDetail for free (no backtest)
+    // Test-only: drive the pool-loading gate that holds off the stand-in recovery probe. On a real
+    // cold boot `init()` sets this and the pool-completion continuation clears it, but an injected
+    // backfill resolves instantly so a test can never observe that window — and the window is
+    // exactly where the HIGH lived (a heal there records over a partial universe, permanently).
+    _setPoolLoading: (v) => { poolLoading = !!v; },
     botCount: () => bots.length,
     rosterSize: () => roster.length,
     evolutionEnabled, // so the server can skip the daily auto-evolve timer when off

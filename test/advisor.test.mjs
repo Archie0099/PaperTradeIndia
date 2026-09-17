@@ -980,3 +980,43 @@ test('the probe is rate-limited, so a broken feed is not re-fetched on every 10-
     assert.deepEqual(t.getStandings().syntheticKeys, [], 'an hour later it re-probes and recovers');
   } finally { freeProvider.getHistory = orig; }
 });
+
+// ★★ THE PROBE MUST NOT RECORD OVER A HALF-LOADED UNIVERSE (a HIGH found in review, in the
+// recovery immediately above). `server.js` ticks the moment `init()` returns, and on a cold boot
+// `init()` returns at its 45-second deadline with ~105 pool names still in flight. A probe that
+// healed at that moment would set `changed`, which drives `advisorTick()` — writing the champion's
+// target book as computed over a PARTIAL universe. `init()` refuses to record in exactly that state
+// and defers to the pool-completion continuation; and since `appendAdvisorEntry` rejects any entry
+// dated at-or-before the last one, the thin entry would WIN and the corrected one would be refused
+// for good, in the append-only real-money log. The probe is gated on the pool being complete.
+//
+// The gate is exercised through the PUBLIC surface: `_setPoolLoading` is a test-only hook, so this
+// drives the same flag `init()` sets rather than asserting on a private.
+test('the recovery probe does not run while the basket pool is still loading', async () => {
+  const orig = freeProvider.getHistory;
+  freeProvider.getHistory = noNewBars;
+  try {
+    const injected = { NIFTY: { candles: series(), synthetic: true }, NIFTYBEES: series() };
+    const t = await createTournament({
+      seed: EQ_SEED, backfillData: injected, persist: false, evolutionEnabled: false,
+    });
+    await t.init();
+    assert.deepEqual(t.getStandings().syntheticKeys, ['NIFTY'], 'booted on a stand-in');
+    const logged = t._state().advisorLog.length;
+
+    injected.NIFTY = series();          // the feed recovers...
+    t._setPoolLoading(true);            // ...but the universe is still filling in
+    const changed = await t.tick({ now: Date.now() });
+
+    assert.deepEqual(t.getStandings().syntheticKeys, ['NIFTY'],
+      'the probe is held off — healing here would record over a thin universe');
+    assert.equal(changed, false, 'and nothing is reported as changed, so advisorTick cannot run');
+    assert.equal(t._state().advisorLog.length, logged, 'nothing was written to the append-only log');
+
+    t._setPoolLoading(false);           // the pool finishes
+    await t.tick({ now: Date.now() + 2 });
+    assert.deepEqual(t.getStandings().syntheticKeys, [],
+      'once the universe is complete the probe runs and heals');
+    assert.ok(t._state().advisorLog.length > logged, 'and only NOW is the day recorded');
+  } finally { freeProvider.getHistory = orig; }
+});
