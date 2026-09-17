@@ -109,24 +109,24 @@ const POSITION_CLIP_CHARS = 30;
 function positionCell(text) {
   const s = String(text == null ? '' : text);
   // ★ THE HOVER IS UNCONDITIONAL, ON PURPOSE. Whether a cell clips depends on rendered WIDTH, which
-  // this cannot know, so any character threshold will misjudge borderline rows. Setting the title
-  // on every cell means a misjudgement can only ever cost the TOUCH affordance on a borderline row
-  // — never readability. On a cell that is not clipped the title simply repeats what is visible,
-  // which is harmless; a row of text with no way to read it is not.
-  const attrs = { class: 'muted pos-cell', title: s };
-  if (s.length <= POSITION_CLIP_CHARS) return el('td', attrs, s);
-  // Above the measured boundary it is very likely clipped, so add the touch affordance too — a
-  // hover does not exist on a phone. Held back from short rows so the board does not collect a
-  // tab stop on every line for cells with nothing extra to show.
-  const show = (ev) => { ev.stopPropagation(); if (typeof alert === 'function') alert(s); };
-  return el('td', {
-    ...attrs,
-    class: 'muted pos-cell pos-cell-clipped',
-    role: 'button',
-    tabindex: '0',
-    onclick: show,
-    onkeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); show(ev); } },
-  }, s);
+  // this cannot know, so any character threshold will misjudge borderline rows. Putting the title
+  // on every cell means a misjudgement can never cost readability. On a cell that is not clipped it
+  // simply repeats what is visible, which is harmless; a row of text with no way to read it is not.
+  //
+  // ★★ AND THERE IS DELIBERATELY NO TAP HANDLER HERE — an earlier version had one and it was a
+  // REGRESSION, caught in review. Its `stopPropagation()` killed the ROW's click-to-open, so
+  // tapping a basket's holdings popped an alert instead of opening the bot page — and baskets are
+  // precisely the rows with long strings, i.e. every row the handler applied to. The page is the
+  // better destination anyway: it lists the holdings IN FULL, unclipped, so the row click is both
+  // the primary action and the complete answer. That also works on touch, where the title does not,
+  // so nothing is lost by leaving the cell a plain cell.
+  //
+  // ★ The clip lives on an inner <span>, not on the <td>: `max-width` on a table cell is undefined
+  // under `table-layout: auto` (CSS 2.1 §17.5.2) and browsers disagree about honouring it, whereas
+  // a block-level span inside the cell is well-defined everywhere. It also leaves the <td> a plain
+  // table cell, so assistive tech keeps its column-header association.
+  const inner = el('span', { class: 'pos-clip' }, s);
+  return el('td', { class: 'muted pos-cell' + (s.length > POSITION_CLIP_CHARS ? ' pos-cell-clipped' : ''), title: s }, inner);
 }
 
 // Re-order the leaderboard rows by the active sort column. Numeric columns sort by

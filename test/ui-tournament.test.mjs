@@ -734,7 +734,7 @@ const appWithPosition = (dom, position) => {
   });
 };
 
-test('a long Position cell keeps its full text and can be read without a hover', async () => {
+test('a long Position cell keeps its full text and never swallows the row click', async () => {
   const dom = setupDom();
   await renderTournament(appWithPosition(dom, longPosition));
 
@@ -746,13 +746,22 @@ test('a long Position cell keeps its full text and can be read without a hover',
   assert.ok(cell, 'the long cell is marked as clipped');
   assert.equal(cell.getAttribute('title'), longPosition, 'the hover carries the COMPLETE holdings list');
   assert.equal(cell.textContent, longPosition, 'and the text is clipped by CSS, never shortened — nothing is lost');
-  assert.equal(cell.getAttribute('role'), 'button', 'announced as activatable');
-  assert.equal(cell.getAttribute('tabindex'), '0', 'and reachable by keyboard');
+  assert.ok(cell.querySelector('.pos-clip'), 'the clip is on an inner span, so the td stays a table cell');
+  assert.equal(cell.getAttribute('role'), null, 'the cell keeps its implicit table-cell role');
 
-  // A hover does not exist on touch, so a tap must produce the same text.
-  dom.fire(cell, 'click');
-  assert.equal(dom.alerts.length, 1, 'tapping it shows the full list');
-  assert.equal(dom.alerts[0], longPosition, 'and shows ALL of it, not the clipped form');
+  // ★ THE REGRESSION LOCK. An earlier version made this cell tappable, and its stopPropagation()
+  // killed the ROW's click-to-open — on exactly the rows it applied to, since baskets are the ones
+  // with long strings. Nothing asserted the row still navigated, so it shipped. The per-bot page
+  // lists the holdings IN FULL, so the row click is both the primary action and the better answer.
+  // ★ Fire on the INNER SPAN, which is the element a reader actually taps — the text itself. The
+  // first version of this lock fired on the <td> and stayed green against the very regression it
+  // was written for, because the handler had been attached to the span: a mutation reinstating
+  // `stopPropagation()` there changed nothing the test could see.
+  dom.fire(cell.querySelector('.pos-clip'), 'click');
+  await flush();
+  assert.equal(dom.alerts.length, 0, 'tapping the holdings does NOT pop an alert');
+  assert.equal(dom.$('#tourn-botpage').hidden, false,
+    'it opens the bot page, which shows the whole position unclipped');
 });
 
 test('CONTROL: an ordinary Position cell stays plain — no hover, no dead tab stop', async () => {
@@ -786,7 +795,7 @@ test('CONTROL: an ordinary Position cell stays plain — no hover, no dead tab s
 // hover and no tap. A mutation raising POSITION_CLIP_CHARS back to 60 left this file green until
 // this test existed, which is exactly the gap — a matrix that only exercises inputs where the old
 // and new rules agree proves nothing about the change.
-test('a mid-length Position cell — the length that really clips — is readable by tap too', async () => {
+test('a mid-length Position cell — the length that really clips — still carries its full text', async () => {
   const dom = setupDom();
   const mid = 'SUNPHARMA 32% · APOLLOHOSP 27% · ALKEM 21%'; // 41 chars: clips at the 260px cap
   assert.ok(mid.length > 32 && mid.length < 60, 'the fixture really is in the disputed band');
@@ -796,6 +805,5 @@ test('a mid-length Position cell — the length that really clips — is readabl
   assert.ok(cell, 'the cell is rendered');
   assert.equal(cell.getAttribute('title'), mid, 'the hover carries the full text');
   assert.ok(cell.classList.contains('pos-cell-clipped'), 'and it is treated as clipped');
-  dom.fire(cell, 'click');
-  assert.equal(dom.alerts[0], mid, 'so a phone, which has no hover, can still read it');
+  assert.ok(cell.querySelector('.pos-clip'), 'clipped on the inner span, where max-width is defined');
 });

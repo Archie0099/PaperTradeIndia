@@ -1020,3 +1020,39 @@ test('the recovery probe does not run while the basket pool is still loading', a
     assert.ok(t._state().advisorLog.length > logged, 'and only NOW is the day recorded');
   } finally { freeProvider.getHistory = orig; }
 });
+
+// ★★ THE SAME HOLE ON THE ORDINARY PATH, found by asking "what ELSE reaches advisorTick without
+// the pool guard?" after adding that guard to the recovery probe. A NEW BAR — not a recovery —
+// also sets `changed` and drives `advisorTick()`, and nothing there checked the pool either.
+// Reachable whenever the pool load outlasts a tick interval: the required keys (NIFTY, and each
+// single-symbol bot) already have their backfill, so the loop still admits their bars, while the
+// basket pool behind the champion is only half-loaded. The book recorded then is thin, and
+// `appendAdvisorEntry` refuses a later entry for the same date — so it would be permanent.
+// Only the RECORDING is deferred; the live bar itself must still be admitted, or the forward
+// record would develop a hole instead.
+test('a new bar arriving while the pool is still loading is ADMITTED but not recorded', async () => {
+  const orig = freeProvider.getHistory;
+  const barT = Date.parse('2026-03-02T10:00:00Z'); // a Monday, comfortably after the fixture series
+  freeProvider.getHistory = async () => ({ symbol: 'X', candles: [{ t: barT, c: 12345, v: 9999 }] });
+  try {
+    const injected = { NIFTY: series(), NIFTYBEES: series() };
+    const t = await createTournament({
+      seed: EQ_SEED, backfillData: injected, persist: false, evolutionEnabled: false,
+    });
+    await t.init();
+    const before = t._state().advisorLog.length;
+    const barsBefore = t.getStandings().liveBars;
+
+    t._setPoolLoading(true);                     // the universe is still filling in
+    const changed = await t.tick({ now: barT + 6 * 3600000 }); // well past the settle margin
+
+    assert.equal(changed, true, 'the bar is still admitted — the forward record must not gain a hole');
+    assert.ok(t.getStandings().liveBars > barsBefore, 'and it really did land in the live series');
+    assert.equal(t._state().advisorLog.length, before,
+      'but nothing is recorded: the champion’s book would be computed over a partial universe');
+
+    t._setPoolLoading(false);                    // the pool finishes
+    assert.equal(t._advisorTick(), true, 'and only then is the day recordable');
+    assert.ok(t._state().advisorLog.length > before, 'so the day is not lost, only deferred');
+  } finally { freeProvider.getHistory = orig; }
+});

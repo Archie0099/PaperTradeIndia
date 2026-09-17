@@ -1618,7 +1618,19 @@ async function createTournament({ seed = SEED_BOTS, backfillData = null, persist
       // A new daily bar arrived — record today's suggestion off the fresh standings.
       // save() again only if an entry was actually appended (the log must be durable
       // the moment it exists — it is the artifact that must never be lost).
-      if (advisorTick()) save();
+      //
+      // ★★ BUT NOT WHILE THE BASKET POOL IS STILL LOADING, for the same reason `init()` will not:
+      // the champion's target book would be computed over a PARTIAL universe, and because
+      // `appendAdvisorEntry` refuses an entry dated at-or-before the last one, that thin book would
+      // be permanent. This guard was ORIGINALLY MISSING HERE — it was added to the recovery probe
+      // above, and asking "what else reaches advisorTick without it?" found this ordinary path had
+      // the same hole. Reachable whenever the pool load outlasts a tick: the required keys (NIFTY
+      // and each single-symbol bot) already have backfill, so the loop above still admits their
+      // bars and sets `changed`, while the basket pool behind the champion is half-loaded.
+      // ★ Only the RECORDING is deferred — the live bars above are still admitted and saved, which
+      // is what keeps the forward record complete. The day is then recorded by the pool-completion
+      // continuation, or by any later tick.
+      if (!poolLoading && advisorTick()) save();
     }
     return changed;
   }
